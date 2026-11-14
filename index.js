@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 4;
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
@@ -10,8 +10,10 @@ const KNOWN_WEB = /(^|\.)(wikimedia\.org|wikipedia\.org|pexels\.com|unsplash\.co
 const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky', 'outdoor', 'indoor', 'urban', 'city_street', 'rooftop', 'building', 'house', 'road', 'standing', 'sitting', 'walking', 'running', 'lying', 'kneeling', 'squatting', 'crouching', 'leaning', 'leaning_forward', 'jumping', 'fighting', 'holding', 'talking', 'walking_away', 'looking_at_viewer', 'looking_away', 'looking_back', 'looking_down', 'looking_up', 'arms_crossed', 'hands_on_hips', 'from_side', 'from_behind', 'from_above', 'from_below', 'full_body', 'upper_body', 'cowboy_shot', 'portrait', 'close-up']);
 const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', female: '1girl', woman: '1girl', girl: '1girl', lady: '1girl', men: 'multiple_boys', women: 'multiple_girls', two_girls: '2girls', two_boys: '2boys', blond: 'blonde_hair', blonde: 'blonde_hair', blond_hair: 'blonde_hair', redhead: 'red_hair', ginger_hair: 'orange_hair', dark_skinned: 'dark_skin', pale: 'pale_skin', elf_ears: 'pointy_ears' };
 
-const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
-const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}'];
+const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
+const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
+const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
+const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
 
 const DEFAULTS = {
     enabled: true,
@@ -24,7 +26,9 @@ const DEFAULTS = {
     extraExcluded: '',
     tagProfile: '',
     prefetch: true,
-    maxSuggested: 8,
+    maxSuggested: 6,
+    minTagPosts: 50,
+    suggestBlacklist: 'human',
     contextMessages: 3,
     contextChars: 500,
     tagMaxTokens: 100,
@@ -80,6 +84,12 @@ function settings() {
     if (!Array.isArray(s.lastTags)) {
         s.lastTags = [];
     }
+    if ((Number(s.schema) || 0) < 2) {
+        if (s.maxSuggested === 8) {
+            s.maxSuggested = 6;
+        }
+        s.schema = 2;
+    }
     if (OLD_TAG_PROMPTS.includes(s.tagPrompt)) {
         s.tagPrompt = DEFAULT_TAG_PROMPT;
     }
@@ -112,6 +122,28 @@ function personalTags() {
 function isCleanupTag(tag) {
     const t = String(tag).toLowerCase();
     return cleanupTags.has(t) || personalTags().has(t);
+}
+
+function suggestBlacklist() {
+    return new Set(normalizeTagList(settings().suggestBlacklist));
+}
+
+function addToSuggestBlacklist(tag) {
+    const s = settings();
+    const list = normalizeTagList(s.suggestBlacklist);
+    if (!list.includes(tag)) {
+        list.push(tag);
+        s.suggestBlacklist = list.join('\n');
+        save();
+    }
+    const box = document.getElementById('st_imagesearch_blacklist');
+    if (box) {
+        box.value = s.suggestBlacklist;
+    }
+}
+
+function isDetailTag(tag) {
+    return DETAIL_TAGS.has(tag) || EYE_COLOR.test(tag);
 }
 
 function isBlockedQueryTag(tag) {
@@ -590,10 +622,12 @@ function buildTagPrompt() {
             const text = cleanForPrompt(m.mes);
             return `${m.name || (m.is_user ? 'User' : 'Character')}: ${text.length > chars ? '…' + text.slice(-chars) : text}`;
         });
+    const avoid = [...suggestBlacklist()].slice(0, 40);
+    const context = (avoid.length ? `Never use these tags: ${avoid.join(', ')}.\n\n` : '') + lines.join('\n');
     return String(s.tagPrompt || DEFAULT_TAG_PROMPT)
         .replace(/\{\{max\}\}/g, String(maxSuggested() + 2))
         .replace(/\{\{char\}\}/g, c.name2 || 'the main character')
-        .replace(/\{\{context\}\}/g, lines.join('\n'));
+        .replace(/\{\{context\}\}/g, () => context);
 }
 
 function storyNames() {
@@ -621,6 +655,7 @@ function isStoryName(tag, names) {
 function parseSuggestion(text) {
     const limit = maxSuggested() + 2;
     const names = storyNames();
+    const banned = suggestBlacklist();
     const body = String(text || '')
         .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
         .replace(/^\s*tags?\s*:/i, '');
@@ -646,8 +681,16 @@ function parseSuggestion(text) {
             dropped.push(`${tag} (a name)`);
             continue;
         }
+        if (banned.has(tag)) {
+            dropped.push(`${tag} (blacklisted)`);
+            continue;
+        }
         if (DROP_TAGS.has(tag)) {
             dropped.push(`${tag} (pose or setting)`);
+            continue;
+        }
+        if (isDetailTag(tag)) {
+            dropped.push(`${tag} (too specific)`);
             continue;
         }
         if (isBlockedQueryTag(tag)) {
@@ -778,9 +821,15 @@ async function checkSuggested(domain, suggestion) {
             await lookupTags(domain, engineName, tags);
         }
     }
+    const minimum = Math.max(0, Number(settings().minTagPosts) || 0);
     const kept = tags.filter(tag => {
-        if (knownCount(domain, tag) === 0) {
+        const count = knownCount(domain, tag);
+        if (count === 0) {
             dropped.push(`${tag} (not on ${domain})`);
+            return false;
+        }
+        if (count !== null && count < minimum) {
+            dropped.push(`${tag} (too rare: ${count} posts)`);
             return false;
         }
         return true;
@@ -1183,7 +1232,18 @@ async function openPicker(initialTags = null) {
                 chip.title += ` ${count} posts.`;
             }
             chip.appendChild(el('span', '', tag));
+            const ban = el('i', 'fa-solid fa-ban stis-chip-x');
+            ban.title = 'Never suggest this tag again';
+            ban.addEventListener('click', event => {
+                event.stopPropagation();
+                addToSuggestBlacklist(tag);
+                tags.splice(index, 1);
+                toastr.info(`"${tag}" will not be suggested again. You can undo this in the settings.`, 'Image Search');
+                tagsChanged();
+            });
+            chip.appendChild(ban);
             const remove = el('i', 'fa-solid fa-xmark stis-chip-x');
+            remove.title = 'Remove from this search';
             remove.addEventListener('click', () => {
                 tags.splice(index, 1);
                 tagsChanged();
@@ -1652,6 +1712,8 @@ function buildSettings() {
                 <select id="st_imagesearch_profile" class="text_pole"></select>
                 <small id="st_imagesearch_profile_note"></small>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_prefetch"> <span>Prepare tags and pictures after each AI reply</span></label>
+                <div>Never suggest these tags (one per line, or tap <i class="fa-solid fa-ban"></i> on a tag in the picker)</div>
+                <textarea id="st_imagesearch_blacklist" class="text_pole"></textarea>
                 <div>Allowed ratings</div>
                 <div class="st-imagesearch-row">
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
@@ -1665,6 +1727,7 @@ function buildSettings() {
                 <details>
                     <summary>Advanced</summary>
                     <div class="st-imagesearch-row"><span>Max suggested tags</span><input type="number" min="1" max="20" id="st_imagesearch_max" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Minimum posts for a suggested tag</span><input type="number" min="0" max="100000" id="st_imagesearch_min_posts" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Messages sent to the tag model</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Characters per message</span><input type="number" min="100" max="4000" id="st_imagesearch_ctx_chars" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
@@ -1732,6 +1795,8 @@ function buildSettings() {
     bind('st_imagesearch_attach', 'attachOnSend', 'checked');
     bind('st_imagesearch_debug', 'debug', 'checked');
     bind('st_imagesearch_max', 'maxSuggested', 'number');
+    bind('st_imagesearch_min_posts', 'minTagPosts', 'number');
+    bind('st_imagesearch_blacklist', 'suggestBlacklist');
     bind('st_imagesearch_ctx_count', 'contextMessages', 'number');
     bind('st_imagesearch_ctx_chars', 'contextChars', 'number');
     bind('st_imagesearch_tokens', 'tagMaxTokens', 'number');

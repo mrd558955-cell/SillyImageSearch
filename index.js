@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 4;
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
@@ -12,6 +12,8 @@ const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', fema
 
 const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
 const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
+const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}';
+const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
 const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
 
@@ -32,6 +34,11 @@ const DEFAULTS = {
     contextMessages: 3,
     contextChars: 500,
     tagMaxTokens: 100,
+    describe: true,
+    visionProfile: '',
+    visionPrompt: DEFAULT_VISION_PROMPT,
+    visionMaxTokens: 300,
+    describeWaitSec: 15,
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
     lastTags: [],
@@ -51,6 +58,7 @@ class BlockedError extends Error {}
 
 const noOrderSites = new Set();
 const tagCounts = new Map();
+const descriptions = new Map();
 const noTagLookup = new Set();
 
 const state = {
@@ -449,7 +457,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats) {
         const full = engine.full(post, origin);
         const thumb = engine.thumb(post, origin);
         const alts = [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
-        items.push({ img, thumb: thumb || img, alts, page: engine.postUrl(post, origin) });
+        items.push({ img, thumb: thumb || img, alts, page: engine.postUrl(post, origin), tags });
     }
     return items;
 }
@@ -1077,6 +1085,116 @@ function insertIntoChatBox(text) {
     box.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function summaryTags(tags) {
+    return [...new Set((tags || []).map(normalizeTag))]
+        .filter(tag => tag && !META_TAG.test(tag) && !EXCLUDED_TAGS.has(tag))
+        .slice(0, 60);
+}
+
+async function imageDataUrl(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Could not read the saved picture (${response.status}).`);
+    }
+    const blob = await response.blob();
+    try {
+        const bitmap = await createImageBitmap(blob);
+        const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close?.();
+        return canvas.toDataURL('image/jpeg', 0.85);
+    } catch {
+        return `data:${blob.type || 'image/jpeg'};base64,${await blobToBase64(blob)}`;
+    }
+}
+
+function visionProfileId() {
+    const s = settings();
+    return s.visionProfile || s.tagProfile;
+}
+
+async function requestDescription(url, tags) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    const profile = visionProfileId();
+    if (!service || !profile) {
+        throw new Error('No vision profile chosen in Image Search settings.');
+    }
+    const image = await imageDataUrl(url);
+    const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }];
+    const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (!text) {
+        throw new Error('The vision model gave no description.');
+    }
+    return text.slice(0, 1500);
+}
+
+function startDescription(url, postTags) {
+    const s = settings();
+    if (!s.describe) {
+        return;
+    }
+    const entry = { url, tags: summaryTags(postTags), text: '', error: '', started: Date.now(), ms: 0, done: false };
+    entry.promise = requestDescription(url, entry.tags)
+        .then(text => {
+            entry.text = text;
+        })
+        .catch(error => {
+            entry.error = String(error?.cause?.message || error?.message || error);
+            console.warn('[Image Search] picture description failed', error);
+        })
+        .finally(() => {
+            entry.done = true;
+            entry.ms = Date.now() - entry.started;
+            if (settings().debug) {
+                const seconds = (entry.ms / 1000).toFixed(1);
+                toastr.info(entry.text ? `Described in ${seconds} s: ${entry.text}` : `Description failed after ${seconds} s: ${entry.error}. The AI gets the tags instead.`, 'Image Search debug', { timeOut: 15000 });
+            }
+        });
+    descriptions.set(url, entry);
+}
+
+function pictureNote(entry) {
+    if (entry.text) {
+        return `[Picture the user shared: ${entry.text}]`;
+    }
+    if (entry.tags.length) {
+        return `[Picture the user shared, tagged: ${entry.tags.slice(0, 25).join(', ').replace(/_/g, ' ')}]`;
+    }
+    return '';
+}
+
+function setNote(media, entry) {
+    const note = pictureNote(entry);
+    if (note) {
+        media.title = note;
+        media.append_title = true;
+    }
+}
+
+async function applyDescription(message, media, entry) {
+    const timeout = Math.max(0, Number(settings().describeWaitSec) || 0) * 1000;
+    const finished = entry.done || await Promise.race([
+        entry.promise.then(() => true),
+        new Promise(resolve => setTimeout(() => resolve(false), timeout)),
+    ]);
+    setNote(media, entry);
+    if (!finished) {
+        entry.promise.then(async () => {
+            const c = ctx();
+            if (c.chat.includes(message)) {
+                setNote(media, entry);
+                await c.saveChat();
+            }
+        });
+    }
+}
+
 async function onMessageSent(messageId) {
     const s = settings();
     if (!s.enabled || !s.attachOnSend) {
@@ -1097,13 +1215,21 @@ async function onMessageSent(messageId) {
     if (!Array.isArray(message.extra.media)) {
         message.extra.media = [];
     }
+    const waits = [];
     for (const match of found) {
         const url = match[2];
-        if (!message.extra.media.some(item => item.url === url)) {
-            message.extra.media.push({ type: 'image', url, title: match[1], source: 'upload' });
+        let media = message.extra.media.find(item => item.url === url);
+        if (!media) {
+            media = { type: 'image', url, title: match[1], source: 'upload' };
+            message.extra.media.push(media);
+        }
+        const entry = descriptions.get(url);
+        if (entry && s.describe) {
+            waits.push(applyDescription(message, media, entry));
         }
     }
     message.mes = message.mes.replace(LOCAL_IMAGE_MD, '').replace(/\n{3,}/g, '\n\n').trim();
+    await Promise.all(waits);
     await c.saveChat();
 }
 
@@ -1536,6 +1662,7 @@ async function openPicker(initialTags = null) {
             const { src, lines } = await saveBest(item);
             if (src) {
                 url = src;
+                startDescription(src, item.tags);
             } else {
                 console.warn('[Image Search] save failed', lines);
                 toastr.warning(`${lines[0] || 'Saving failed.'} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
@@ -1723,6 +1850,9 @@ function buildSettings() {
                 </div>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures into SillyTavern (needs CORS proxy or the fetcher)</span></label>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures when sending, so vision models can see them</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_describe"> <span>Describe picked pictures for the AI (a vision model looks at the picture and its tags; the description is sent to the AI with the picture, hidden from the chat)</span></label>
+                <div>Vision profile (empty = use the tag profile)</div>
+                <select id="st_imagesearch_vision_profile" class="text_pole"></select>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
@@ -1731,6 +1861,11 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Messages sent to the tag model</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Characters per message</span><input type="number" min="100" max="4000" id="st_imagesearch_ctx_chars" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
+                    <div>Description prompt ({{tags}} is filled in)</div>
+                    <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
+                    <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
                     <div>Tag prompt ({{max}} and {{context}} are filled in)</div>
                     <textarea id="st_imagesearch_tag_prompt" class="text_pole"></textarea>
                     <div id="st_imagesearch_prompt_reset" class="menu_button">Reset prompt</div>
@@ -1794,6 +1929,15 @@ function buildSettings() {
     bind('st_imagesearch_savelocal', 'saveLocal', 'checked');
     bind('st_imagesearch_attach', 'attachOnSend', 'checked');
     bind('st_imagesearch_debug', 'debug', 'checked');
+    bind('st_imagesearch_describe', 'describe', 'checked');
+    bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
+    bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
+    bind('st_imagesearch_vision_prompt', 'visionPrompt');
+    document.getElementById('st_imagesearch_vision_reset').addEventListener('click', () => {
+        s.visionPrompt = DEFAULT_VISION_PROMPT;
+        document.getElementById('st_imagesearch_vision_prompt').value = DEFAULT_VISION_PROMPT;
+        save();
+    });
     bind('st_imagesearch_max', 'maxSuggested', 'number');
     bind('st_imagesearch_min_posts', 'minTagPosts', 'number');
     bind('st_imagesearch_blacklist', 'suggestBlacklist');
@@ -1830,7 +1974,11 @@ function buildSettings() {
             save();
             onChatChanged();
         });
-        note.textContent = 'Make a profile with a fast model that does not think, e.g. DeepSeek V4.1 Flash (standard).';
+        ctx().ConnectionManagerRequestService.handleDropdown('#st_imagesearch_vision_profile', s.visionProfile, profile => {
+            s.visionProfile = profile?.id || '';
+            save();
+        });
+        note.textContent = 'Make a profile with a fast model that does not think, e.g. DeepSeek V4.1 Flash (standard). It can also describe pictures, since it accepts images.';
     } catch (error) {
         note.textContent = `Tag suggestions unavailable: ${error?.message || error}. Enable the Connection Profiles extension.`;
     }

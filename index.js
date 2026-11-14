@@ -1,15 +1,17 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 4;
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
 const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena'];
 const NOT_BOARD = new Set(['web', 'web-unchecked', 'none']);
 const KNOWN_WEB = /(^|\.)(wikimedia\.org|wikipedia\.org|pexels\.com|unsplash\.com|artstation\.com|flickr\.com|deviantart\.com|pinterest\.[a-z.]+|pixabay\.com|imgur\.com|reddit\.com)$/;
-const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky']);
+const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky', 'outdoor', 'indoor', 'urban', 'city_street', 'rooftop', 'building', 'house', 'road', 'standing', 'sitting', 'walking', 'running', 'lying', 'kneeling', 'squatting', 'crouching', 'leaning', 'leaning_forward', 'jumping', 'fighting', 'holding', 'talking', 'walking_away', 'looking_at_viewer', 'looking_away', 'looking_back', 'looking_down', 'looking_up', 'arms_crossed', 'hands_on_hips', 'from_side', 'from_behind', 'from_above', 'from_below', 'full_body', 'upper_body', 'cowboy_shot', 'portrait', 'close-up']);
+const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', female: '1girl', woman: '1girl', girl: '1girl', lady: '1girl', men: 'multiple_boys', women: 'multiple_girls', two_girls: '2girls', two_boys: '2boys', blond: 'blonde_hair', blonde: 'blonde_hair', blond_hair: 'blonde_hair', redhead: 'red_hair', ginger_hair: 'orange_hair', dark_skinned: 'dark_skin', pale: 'pale_skin', elf_ears: 'pointy_ears' };
 
-const DEFAULT_TAG_PROMPT = 'Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}';
+const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
+const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}'];
 
 const DEFAULTS = {
     enabled: true,
@@ -27,6 +29,7 @@ const DEFAULTS = {
     contextChars: 500,
     tagMaxTokens: 100,
     tagPrompt: DEFAULT_TAG_PROMPT,
+    debug: false,
     lastTags: [],
     lastSite: '',
     engines: {},
@@ -43,6 +46,8 @@ const BLOCKED_TAGS = new Set([]);
 class BlockedError extends Error {}
 
 const noOrderSites = new Set();
+const tagCounts = new Map();
+const noTagLookup = new Set();
 
 const state = {
     prefetch: null,
@@ -74,6 +79,9 @@ function settings() {
     }
     if (!Array.isArray(s.lastTags)) {
         s.lastTags = [];
+    }
+    if (OLD_TAG_PROMPTS.includes(s.tagPrompt)) {
+        s.tagPrompt = DEFAULT_TAG_PROMPT;
     }
     if (String(s.sites).trim() === 'commons.wikimedia.org\npexels.com') {
         s.sites = DEFAULTS.sites;
@@ -295,6 +303,7 @@ const ENGINES = {
         full: (post, origin) => absolute(post.file_url, origin) || gelbooruPath(post, origin, 'images', '', ''),
         thumb: (post, origin) => absolute(post.preview_url, origin) || gelbooruPath(post, origin, 'thumbnails', 'thumbnail_', 'jpg'),
         postUrl: (post, origin) => `${origin}/index.php?page=post&s=view&id=${post.id}`,
+        siteUrl: (origin, tags) => `${origin}/index.php?page=post&s=list&tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ general: 'general', safe: 'general', s: 'general', sensitive: 'sensitive', questionable: 'questionable', q: 'questionable', explicit: 'explicit', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
     },
@@ -313,6 +322,7 @@ const ENGINES = {
         full: (post, origin) => absolute(post.file_url, origin),
         thumb: (post, origin) => absolute(post.preview_file_url, origin),
         postUrl: (post, origin) => `${origin}/posts/${post.id}`,
+        siteUrl: (origin, tags) => `${origin}/posts?tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ g: 'general', s: 'sensitive', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tag_string),
     },
@@ -326,6 +336,7 @@ const ENGINES = {
         full: (post, origin) => absolute(post.file?.url, origin),
         thumb: (post, origin) => absolute(post.preview?.url, origin),
         postUrl: (post, origin) => `${origin}/posts/${post.id}`,
+        siteUrl: (origin, tags) => `${origin}/posts?tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ s: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
     },
@@ -344,6 +355,7 @@ const ENGINES = {
         full: (post, origin) => absolute(post.jpeg_url, origin) || absolute(post.file_url, origin),
         thumb: (post, origin) => absolute(post.preview_url, origin),
         postUrl: (post, origin) => `${origin}/post/show/${post.id}`,
+        siteUrl: (origin, tags) => `${origin}/post?tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ s: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
     },
@@ -357,6 +369,7 @@ const ENGINES = {
         full: (post, origin) => absolute(post.representations?.full, origin) || absolute(post.view_url, origin),
         thumb: (post, origin) => absolute(post.representations?.thumb, origin) || absolute(post.representations?.thumb_small, origin),
         postUrl: (post, origin) => `${origin}/images/${post.id}`,
+        siteUrl: (origin, tags) => `${origin}/search?q=${encodeURIComponent(tags.length ? tags.join(', ') : '*')}&sf=score&sd=desc`,
         rating: post => {
             const tags = tagList(post.tags).map(tag => tag.toLowerCase());
             return tags.includes('explicit') ? 'explicit' : tags.includes('questionable') ? 'questionable' : tags.includes('suggestive') ? 'sensitive' : tags.includes('safe') ? 'general' : '';
@@ -372,34 +385,41 @@ function engineFor(name, result) {
     return name;
 }
 
-function allowedPost(engine, post, ratings, localTags) {
-    const rating = engine.rating(post) || 'explicit';
-    if (!ratings[rating]) {
-        return false;
-    }
-    const tags = engine.postTags(post).map(tag => tag.toLowerCase());
-    if (tags.some(tag => BLOCKED_TAGS.has(tag) || EXCLUDED_TAGS.has(tag) || isCleanupTag(tag))) {
-        return false;
-    }
-    if (!localTags.length) {
-        return true;
-    }
-    const have = new Set(tags);
-    return localTags.every(tag => have.has(tag));
-}
-
-function postsToItems(engineName, posts, origin, ratings, localTags) {
+function postsToItems(engineName, posts, origin, ratings, localTags, stats) {
     const engine = ENGINES[engineName];
-    return posts
-        .filter(post => post && typeof post === 'object' && allowedPost(engine, post, ratings, localTags))
-        .map(post => {
-            const img = engine.image(post, origin);
-            const full = engine.full(post, origin);
-            const thumb = engine.thumb(post, origin);
-            const alts = [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
-            return { img, thumb: thumb || img, alts, page: engine.postUrl(post, origin) };
-        })
-        .filter(item => isStillImage(item.img));
+    const items = [];
+    for (const post of posts) {
+        if (!post || typeof post !== 'object') {
+            continue;
+        }
+        const rating = engine.rating(post) || 'explicit';
+        if (!ratings[rating]) {
+            stats.rating++;
+            continue;
+        }
+        const tags = engine.postTags(post).map(tag => tag.toLowerCase());
+        if (tags.some(tag => BLOCKED_TAGS.has(tag) || EXCLUDED_TAGS.has(tag) || isCleanupTag(tag))) {
+            stats.excluded++;
+            continue;
+        }
+        if (localTags.length) {
+            const have = new Set(tags);
+            if (!localTags.every(tag => have.has(tag))) {
+                stats.local++;
+                continue;
+            }
+        }
+        const img = engine.image(post, origin);
+        if (!isStillImage(img)) {
+            stats.notImage++;
+            continue;
+        }
+        const full = engine.full(post, origin);
+        const thumb = engine.thumb(post, origin);
+        const alts = [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
+        items.push({ img, thumb: thumb || img, alts, page: engine.postUrl(post, origin) });
+    }
+    return items;
 }
 
 async function detectEngine(entry, probeTags) {
@@ -466,13 +486,24 @@ async function fetchPage(entry, engineName, tags, page) {
             }
             throw new Error(`${entry.domain} answered ${result.status}: ${String(result.text).slice(0, 150)}`);
         }
-        return { items: postsToItems(engineName, posts, origin, s.ratings, localTags), done: posts.length < engine.pageSize };
+        const stats = { rating: 0, excluded: 0, local: 0, notImage: 0 };
+        const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats);
+        const debug = {
+            page,
+            apiUrl: engine.url(origin, query, entry.extra, page),
+            siteUrl: engine.siteUrl(origin, engine.tags([...siteTags, ...localTags], s.ratings, noOrder)),
+            localTags,
+            received: posts.length,
+            kept: items.length,
+            ...stats,
+        };
+        return { items, done: posts.length < engine.pageSize, debug };
     }
-    return { items: [], done: true };
+    return { items: [], done: true, debug: null };
 }
 
 function createBrowse(domain, tags) {
-    return { domain, tags: [...tags], page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '' };
+    return { domain, tags: [...tags], page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [] };
 }
 
 function sameTags(a, b) {
@@ -500,7 +531,10 @@ async function loadMore(browse) {
         let calls = 0;
         while (!browse.done && added.length < BATCH && calls < MAX_PAGE_CALLS) {
             calls++;
-            const { items, done } = await fetchPage(entry, engineName, browse.tags, browse.page);
+            const { items, done, debug } = await fetchPage(entry, engineName, browse.tags, browse.page);
+            if (debug) {
+                browse.pages.push(debug);
+            }
             browse.page++;
             browse.done = done;
             for (const item of items) {
@@ -540,6 +574,10 @@ function cleanForPrompt(text) {
         .trim();
 }
 
+function maxSuggested() {
+    return Math.max(1, Number(settings().maxSuggested) || 8);
+}
+
 function buildTagPrompt() {
     const s = settings();
     const c = ctx();
@@ -553,33 +591,75 @@ function buildTagPrompt() {
             return `${m.name || (m.is_user ? 'User' : 'Character')}: ${text.length > chars ? '…' + text.slice(-chars) : text}`;
         });
     return String(s.tagPrompt || DEFAULT_TAG_PROMPT)
-        .replace(/\{\{max\}\}/g, String(Math.max(1, Number(s.maxSuggested) || 8)))
+        .replace(/\{\{max\}\}/g, String(maxSuggested() + 2))
+        .replace(/\{\{char\}\}/g, c.name2 || 'the main character')
         .replace(/\{\{context\}\}/g, lines.join('\n'));
 }
 
+function storyNames() {
+    const c = ctx();
+    const names = [c.name1, c.name2, ...(c.chat || []).slice(-30).map(m => m?.name)];
+    const words = new Set();
+    for (const name of names) {
+        const full = normalizeTag(name);
+        if (full.length >= 3) {
+            words.add(full);
+        }
+        const first = String(name || '').toLowerCase().split(/[^a-z0-9]+/).find(Boolean) || '';
+        if (first.length >= 3) {
+            words.add(first);
+        }
+    }
+    return words;
+}
+
+function isStoryName(tag, names) {
+    const bare = tag.replace(/_\([^)]*\)$/, '');
+    return names.has(tag) || names.has(bare);
+}
+
 function parseSuggestion(text) {
-    const s = settings();
-    const max = Math.max(1, Number(s.maxSuggested) || 8);
+    const limit = maxSuggested() + 2;
+    const names = storyNames();
     const body = String(text || '')
         .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
         .replace(/^\s*tags?\s*:/i, '');
     const seen = new Set();
     const tags = [];
+    const dropped = [];
     for (const raw of body.split(/[,\n]/)) {
-        const tag = normalizeTag(raw.replace(/^\s*(?:[-*#•]+|\d+[.)])\s*/, '').replace(/["'`[\]]/g, ''));
-        if (!tag || tag.length > 40 || !/^[a-z0-9_()'.:!?&+-]+$/.test(tag)) {
+        let tag = normalizeTag(raw.replace(/^\s*(?:[-*#•]+|\d+[.)])\s*/, '').replace(/["'`[\]]/g, ''));
+        if (!tag) {
             continue;
         }
-        if (seen.has(tag) || DROP_TAGS.has(tag) || isBlockedQueryTag(tag)) {
+        if (tag.length > 40 || !/^[a-z0-9_()'.:!?&+-]+$/.test(tag)) {
+            dropped.push(`${tag} (not a tag)`);
+            continue;
+        }
+        if (TAG_SYNONYMS[tag]) {
+            tag = TAG_SYNONYMS[tag];
+        }
+        if (seen.has(tag)) {
+            continue;
+        }
+        if (isStoryName(tag, names)) {
+            dropped.push(`${tag} (a name)`);
+            continue;
+        }
+        if (DROP_TAGS.has(tag)) {
+            dropped.push(`${tag} (pose or setting)`);
+            continue;
+        }
+        if (isBlockedQueryTag(tag)) {
+            dropped.push(`${tag} (excluded)`);
             continue;
         }
         seen.add(tag);
-        tags.push(tag);
-        if (tags.length >= max) {
-            break;
+        if (tags.length < limit) {
+            tags.push(tag);
         }
     }
-    return tags;
+    return { tags, dropped };
 }
 
 async function suggestTags(signal) {
@@ -596,12 +676,123 @@ async function suggestTags(signal) {
     const prompt = service.constructPrompt(messages, s.tagProfile);
     const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 100), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.3 });
     const text = typeof result === 'string' ? result : result?.content || '';
-    const tags = parseSuggestion(text);
+    const { tags, dropped } = parseSuggestion(text);
     if (!tags.length) {
         const usedReasoning = typeof result === 'object' && result?.reasoning;
         throw new Error(usedReasoning ? 'The tag model spent its tokens thinking and gave no tags. Use a non-thinking model or raise the token limit.' : 'The tag model gave no usable tags.');
     }
-    return tags;
+    return { tags, dropped, raw: String(text).trim().slice(0, 400) };
+}
+
+function tagKey(domain, tag) {
+    return `${domain}|${tag}`;
+}
+
+function knownCount(domain, tag) {
+    const value = tagCounts.get(tagKey(domain, tag));
+    return value === undefined ? null : value;
+}
+
+function readTagList(result) {
+    const out = [];
+    const push = (name, count) => {
+        if (typeof name === 'string' && name) {
+            out.push({ name: normalizeTag(name), count: Number(count) || 0 });
+        }
+    };
+    const data = result.data;
+    const list = Array.isArray(data) ? data
+        : Array.isArray(data?.tag) ? data.tag
+            : Array.isArray(data?.tags) ? data.tags
+                : data?.tag && typeof data.tag === 'object' ? [data.tag] : null;
+    if (list) {
+        list.forEach(item => item && typeof item === 'object' && push(item.name, item.count ?? item.post_count ?? item.images));
+        return out;
+    }
+    if (data && typeof data === 'object' && '@attributes' in data) {
+        return out;
+    }
+    const text = String(result.text || '').trim();
+    if (text.startsWith('<')) {
+        const doc = new DOMParser().parseFromString(text, 'text/xml');
+        if (doc.querySelector('parsererror')) {
+            return null;
+        }
+        doc.querySelectorAll('tag').forEach(node => push(node.getAttribute('name'), node.getAttribute('count')));
+        return out;
+    }
+    return null;
+}
+
+const TAG_LOOKUP = {
+    gelbooru: { url: (origin, tags, extra) => `${origin}/index.php?page=dapi&s=tag&q=index&json=1&limit=100&names=${encodeURIComponent(tags.join(' '))}${extra}` },
+    danbooru: { url: (origin, tags, extra) => `${origin}/tags.json?limit=100&search%5Bname_comma%5D=${encodeURIComponent(tags.join(','))}${extra}` },
+    e621: { url: (origin, tags, extra) => `${origin}/tags.json?limit=100&search%5Bname_comma%5D=${encodeURIComponent(tags.join(','))}${extra}` },
+    moebooru: { perTag: true, url: (origin, tags, extra) => `${origin}/tag.json?limit=50&name=${encodeURIComponent(tags[0])}${extra}` },
+    philomena: { url: (origin, tags, extra) => `${origin}/api/v1/json/search/tags?per_page=50&q=${encodeURIComponent(tags.map(tag => `name:${tag.replace(/_/g, ' ')}`).join(' || '))}${extra}` },
+};
+
+async function lookupTags(domain, engineName, tags) {
+    const lookup = TAG_LOOKUP[engineName];
+    const wanted = [...new Set(tags)].filter(tag => knownCount(domain, tag) === null);
+    if (!lookup || !wanted.length || noTagLookup.has(domain)) {
+        return;
+    }
+    const origin = `https://${domain}`;
+    const extra = siteEntries().find(entry => entry.domain === domain)?.extra || '';
+    try {
+        const urls = lookup.perTag ? wanted.map(tag => lookup.url(origin, [tag], extra)) : [lookup.url(origin, wanted, extra)];
+        const results = await Promise.all(urls.map(url => request(url)));
+        const found = new Map();
+        for (const result of results) {
+            if (!result.ok) {
+                throw new Error(`tag lookup answered ${result.status}`);
+            }
+            const list = readTagList(result);
+            if (list === null) {
+                throw new Error('tag lookup answer not readable');
+            }
+            list.forEach(item => found.set(item.name, item.count));
+        }
+        const asked = new Set(wanted);
+        if (!lookup.perTag && [...found.keys()].some(name => !asked.has(name))) {
+            throw new Error('tag lookup ignored the requested names');
+        }
+        if (wanted.length >= 3 && !wanted.some(tag => found.has(tag))) {
+            throw new Error('tag lookup found none of the tags');
+        }
+        wanted.forEach(tag => tagCounts.set(tagKey(domain, tag), found.get(tag) ?? 0));
+    } catch (error) {
+        console.debug(`[Image Search] tag lookup off for ${domain}`, error);
+        noTagLookup.add(domain);
+    }
+}
+
+async function checkSuggested(domain, suggestion) {
+    const tags = [...suggestion.tags];
+    const dropped = [...suggestion.dropped];
+    const entry = siteEntries().find(e => e.domain === domain);
+    if (entry) {
+        const engineName = await engineOf(entry, tags).catch(() => '');
+        if (ENGINES[engineName]) {
+            await lookupTags(domain, engineName, tags);
+        }
+    }
+    const kept = tags.filter(tag => {
+        if (knownCount(domain, tag) === 0) {
+            dropped.push(`${tag} (not on ${domain})`);
+            return false;
+        }
+        return true;
+    });
+    const result = kept.slice(0, maxSuggested());
+    kept.slice(maxSuggested()).forEach(tag => dropped.push(`${tag} (over the limit)`));
+    return { tags: result, dropped };
+}
+
+function clearTagCache() {
+    tagCounts.clear();
+    noTagLookup.clear();
 }
 
 function currentChatId() {
@@ -621,17 +812,26 @@ function startPrefetch() {
         state.prefetch = null;
         return null;
     }
-    const entry = { chatId: currentChatId(), controller: new AbortController(), tags: null, browse: null, error: '' };
+    const entry = { chatId: currentChatId(), controller: new AbortController(), tags: null, browse: null, error: '', raw: '', dropped: [] };
     entry.promise = (async () => {
         try {
-            const tags = await suggestTags(entry.controller.signal);
+            const suggestion = await suggestTags(entry.controller.signal);
             if (entry.controller.signal.aborted) {
                 return;
             }
-            entry.tags = tags;
+            entry.raw = suggestion.raw;
             const domain = activeDomain();
+            const checked = domain ? await checkSuggested(domain, suggestion) : suggestion;
+            if (entry.controller.signal.aborted) {
+                return;
+            }
+            entry.dropped = checked.dropped;
+            if (!checked.tags.length) {
+                throw new Error(`None of the suggested tags exist on ${domain}.`);
+            }
+            entry.tags = checked.tags;
             if (domain) {
-                entry.browse = createBrowse(domain, tags);
+                entry.browse = createBrowse(domain, entry.tags);
                 loadMore(entry.browse).then(warmThumbs).catch(() => {});
             }
         } catch (error) {
@@ -922,6 +1122,7 @@ async function openPicker(initialTags = null) {
         suggest: el('div', 'menu_button stis-btn'),
         search: el('div', 'menu_button stis-btn'),
         status: el('div', 'stis-status'),
+        debug: el('div', 'stis-debug'),
         grid: el('div', 'stis-grid'),
         sentinel: el('div', 'stis-sentinel'),
         preview: el('div', 'stis-preview'),
@@ -942,7 +1143,8 @@ async function openPicker(initialTags = null) {
     ui.top.append(ui.site, ui.chips, ui.suggest, ui.search);
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
-    ui.root.append(ui.top, ui.status, ui.grid, ui.preview);
+    ui.debug.hidden = !s.debug;
+    ui.root.append(ui.top, ui.status, ui.debug, ui.grid, ui.preview);
 
     let tags = [];
     let edited = false;
@@ -952,6 +1154,7 @@ async function openPicker(initialTags = null) {
     let closed = false;
     let busy = false;
     let dragFrom = -1;
+    let shown = null;
 
     const setStatus = (text, kind = '') => {
         ui.status.textContent = text;
@@ -971,6 +1174,13 @@ async function openPicker(initialTags = null) {
                 chip.title = 'Checked by the extension (the site only takes the first tags)';
             } else {
                 chip.title = 'Sent to the site. Drag to reorder, double-click to move first.';
+            }
+            const count = knownCount(ui.site.value, tag);
+            if (count === 0) {
+                chip.classList.add('stis-unknown');
+                chip.title = `Not found on ${ui.site.value}`;
+            } else if (count !== null) {
+                chip.title += ` ${count} posts.`;
             }
             chip.appendChild(el('span', '', tag));
             const remove = el('i', 'fa-solid fa-xmark stis-chip-x');
@@ -1002,7 +1212,61 @@ async function openPicker(initialTags = null) {
             });
             ui.chips.insertBefore(chip, ui.input);
         });
+        renderDebug();
     };
+
+    const refreshCounts = async () => {
+        const domain = ui.site.value;
+        const engineName = settings().engines[domain];
+        if (!ENGINES[engineName] || !tags.length) {
+            return;
+        }
+        const before = tags.map(tag => knownCount(domain, tag)).join();
+        await lookupTags(domain, engineName, tags);
+        if (!closed && domain === ui.site.value && tags.map(tag => knownCount(domain, tag)).join() !== before) {
+            renderChips();
+        }
+    };
+
+    function renderDebug() {
+        if (!s.debug) {
+            ui.debug.hidden = true;
+            return;
+        }
+        ui.debug.hidden = false;
+        ui.debug.innerHTML = '';
+        const line = (label, value) => {
+            const row = el('div', 'stis-debug-row');
+            row.appendChild(el('b', '', `${label} `));
+            row.appendChild(typeof value === 'string' ? document.createTextNode(value) : value);
+            ui.debug.appendChild(row);
+        };
+        if (shown?.raw) {
+            line('Tag model reply:', shown.raw);
+        }
+        if (shown?.dropped?.length) {
+            line('Removed:', shown.dropped.join(', '));
+        }
+        if (tags.length) {
+            line('Posts per tag:', tags.map(tag => `${tag} (${knownCount(ui.site.value, tag) ?? '?'})`).join(', '));
+        }
+        const first = browse?.pages?.[0];
+        if (first) {
+            const link = el('a', '', `Open the same search on ${browse.domain}`);
+            link.href = first.siteUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            line('Site:', link);
+            if (first.localTags.length) {
+                line('Checked here, not by the site:', first.localTags.join(', '));
+            }
+            line('API:', first.apiUrl);
+            browse.pages.forEach(p => line(`Page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing checked tags ${p.local}, not a picture ${p.notImage})`));
+        }
+        if (browse?.error) {
+            line('Error:', browse.error);
+        }
+    }
 
     const setTags = (list, fromUser) => {
         const seen = new Set();
@@ -1025,11 +1289,13 @@ async function openPicker(initialTags = null) {
             toastr.info(`Not searchable: ${removed.join(', ')}`, 'Image Search');
         }
         renderChips();
+        refreshCounts();
     };
 
     const tagsChanged = () => {
         edited = true;
         renderChips();
+        refreshCounts();
         clearTimeout(searchTimer);
         searchTimer = setTimeout(runSearch, 700);
     };
@@ -1063,6 +1329,7 @@ async function openPicker(initialTags = null) {
     };
 
     const describe = () => {
+        renderDebug();
         if (!browse) {
             return;
         }
@@ -1095,6 +1362,7 @@ async function openPicker(initialTags = null) {
         if (capFor(current.domain) !== shownCap) {
             renderChips();
         }
+        refreshCounts();
         const rect = ui.sentinel.getBoundingClientRect();
         const box = ui.grid.getBoundingClientRect();
         if (!current.done && rect.top < box.bottom + 200) {
@@ -1140,6 +1408,7 @@ async function openPicker(initialTags = null) {
         if (closed || edited || !pre?.tags) {
             return;
         }
+        shown = pre;
         setTags(pre.tags, false);
         runSearch();
     };
@@ -1151,6 +1420,8 @@ async function openPicker(initialTags = null) {
                 return;
             }
             if (pre.error) {
+                shown = pre;
+                renderDebug();
                 setStatus(pre.error, 'stis-error');
                 return;
             }
@@ -1253,6 +1524,7 @@ async function openPicker(initialTags = null) {
     ui.site.addEventListener('change', () => {
         renderChips();
         runSearch();
+        refreshCounts();
     });
 
     const observer = new IntersectionObserver(found => {
@@ -1282,6 +1554,7 @@ async function openPicker(initialTags = null) {
     }
     let pre = currentPrefetch();
     if (pre?.tags) {
+        shown = pre;
         setTags(pre.tags, false);
         runSearch();
         return;
@@ -1293,6 +1566,8 @@ async function openPicker(initialTags = null) {
     }
     if (pre) {
         if (pre.error) {
+            shown = pre;
+            renderDebug();
             setStatus(pre.error, 'stis-error');
         } else {
             waitForSuggestion(pre);
@@ -1386,6 +1661,7 @@ function buildSettings() {
                 </div>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures into SillyTavern (needs CORS proxy or the fetcher)</span></label>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures when sending, so vision models can see them</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
                     <div class="st-imagesearch-row"><span>Max suggested tags</span><input type="number" min="1" max="20" id="st_imagesearch_max" class="text_pole"></div>
@@ -1439,6 +1715,7 @@ function buildSettings() {
     });
     bind('st_imagesearch_sites', 'sites', 'value', () => {
         s.engines = {};
+        clearTagCache();
         showEngines();
     });
     bind('st_imagesearch_prefetch', 'prefetch', 'checked');
@@ -1453,6 +1730,7 @@ function buildSettings() {
     });
     bind('st_imagesearch_savelocal', 'saveLocal', 'checked');
     bind('st_imagesearch_attach', 'attachOnSend', 'checked');
+    bind('st_imagesearch_debug', 'debug', 'checked');
     bind('st_imagesearch_max', 'maxSuggested', 'number');
     bind('st_imagesearch_ctx_count', 'contextMessages', 'number');
     bind('st_imagesearch_ctx_chars', 'contextChars', 'number');
@@ -1470,6 +1748,7 @@ function buildSettings() {
     });
     document.getElementById('st_imagesearch_redetect').addEventListener('click', () => {
         s.engines = {};
+        clearTagCache();
         save();
         showEngines();
         toastr.info('Sites will be re-detected on the next search.', 'Image Search');

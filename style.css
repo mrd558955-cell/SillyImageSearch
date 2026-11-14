@@ -181,3 +181,28 @@
 .stis-use {
     font-weight: bold;
 }
+
+.stis-chip.stis-unknown {
+    border-color: var(--warning, #e57373);
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.stis-debug {
+    font-size: 0.75em;
+    font-family: monospace;
+    max-height: 9em;
+    overflow-y: auto;
+    word-break: break-all;
+    padding: 4px;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+.stis-debug[hidden] {
+    display: none;
+}
+
+.stis-debug-row {
+    margin: 2px 0;
+}

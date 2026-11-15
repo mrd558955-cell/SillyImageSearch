@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.8.0';
+const VERSION = '2.8.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -9,6 +9,7 @@ const LIBRARY_FILE = 'imagesearch-library.json';
 const PIC_TAG = /\[pic:\s*([a-z0-9]{4,12})\s*\]/gi;
 const LOREBOOK = 'Image Search Pictures';
 const WI_COMMENT = /^\[pic:([a-z0-9]+)\]/;
+const CATALOG_COMMENT = '[pic-list] Saved pictures the AI can show';
 const COUNT_TAGS = /^(\d+(girl|boy|other)s?|solo|male|female|multiple_.*|.*_focus|no_humans)$/;
 const STOP_WORDS = new Set(['the', 'and', 'with', 'her', 'his', 'their', 'she', 'him', 'them', 'they', 'you', 'your', 'are', 'was', 'were', 'has', 'have', 'had', 'this', 'that', 'there', 'then', 'than', 'from', 'into', 'onto', 'over', 'under', 'out', 'for', 'not', 'but', 'its', 'who', 'what', 'when', 'where', 'which', 'while', 'some', 'very', 'just', 'like', 'one', 'two', 'picture', 'shows', 'showing', 'shown', 'image', 'wearing', 'looks', 'look', 'seems', 'standing', 'sitting', 'background']);
 const GENERIC_KEYWORDS = new Set(['girl', 'girls', 'boy', 'boys', 'man', 'men', 'woman', 'women', 'person', 'people', 'human', 'humans', 'guy', 'lady', 'smile', 'smiling', 'grin', 'hair', 'eyes', 'face', 'body', 'clothes', 'clothing', 'outfit', 'standing', 'sitting', 'looking', 'portrait', 'picture', 'image', 'character', 'solo', 'adult', 'young', 'pose', 'posing', 'background']);
@@ -61,6 +62,7 @@ const DEFAULTS = {
     keepLibrary: true,
     aiShow: true,
     aiShowDepth: 2,
+    catalogSize: 30,
     wiDisabledByUs: [],
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
@@ -2853,6 +2855,35 @@ function entryKeywords(entry) {
     return [...new Set([...plain.filter(word => !forms.includes(word)).slice(0, 12), ...forms])];
 }
 
+const SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture.';
+
+function catalogLine(entry) {
+    const summary = shortDescription(entry) || entry.tags.slice(0, 8).join(', ').replace(/_/g, ' ');
+    if (entry.kind === 'sequence' && isMulti(entry)) {
+        const later = entry.variants.slice(1).map(variant => `[pic:${variant.id}]`).join(', then ');
+        return `[pic:${entry.variants[0].id}] ${summary} (picture 1 of a ${entry.variants.length}-picture sequence; show ${later} later, in that order)`;
+    }
+    if (isMulti(entry)) {
+        return `[pic:${entry.variants[0].id}] ${summary} (other versions: ${entry.variants.slice(1).map(variant => `[pic:${variant.id}]`).join(', ')})`;
+    }
+    return `[pic:${entry.id}] ${summary}`;
+}
+
+function pictureCatalog(size) {
+    const recent = [...library.entries]
+        .filter(entry => entry.description || entry.tags.length)
+        .sort((a, b) => Math.max(b.lastUsed, b.added) - Math.max(a.lastUsed, a.added))
+        .slice(0, size);
+    if (!recent.length) {
+        return '';
+    }
+    return [`${SHOW_RULE} Use only the tags listed here or in other saved-picture notes, never invent one, never mention the tag in your text, and show at most one picture per reply. Prefer a picture that has not been shown yet in this chat. Saved pictures:`, ...recent.map(catalogLine)].join('\n');
+}
+
+function catalogWiEntry(uid, depth) {
+    return { ...newWiEntry(uid, depth), constant: true, selective: false, group: '', useGroupScoring: false, cooldown: null, order: 0, comment: CATALOG_COMMENT };
+}
+
 function pictureOffer(entry) {
     const rule = 'never mention the tag itself, and show at most one picture per reply.';
     const body = fullDescription(entry);
@@ -2861,15 +2892,15 @@ function pictureOffer(entry) {
         const steps = entry.variants.map((variant, index) => index === 0
             ? `Picture 1 [pic:${variant.id}]: as described above.`
             : `Picture ${index + 1} [pic:${variant.id}]: ${variant.diff || 'the next picture of the sequence.'}`);
-        return [`Saved picture sequence: ${entry.variants.length} pictures that tell a story in this order. When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Show a picture by writing its tag on its own line where it belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
+        return [`Saved picture sequence: ${entry.variants.length} real pictures that tell a story in this order. ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Write the tag on its own line where the picture belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
     }
     if (entry.kind === 'set' && entry.variants.length > 1) {
         const versions = entry.variants.map((variant, index) => index === 0
             ? `Version 1 [pic:${variant.id}]: as described above.`
             : `Version ${index + 1} [pic:${variant.id}]: ${variant.diff || 'another version of the same picture.'}`);
-        return [`Saved picture set: ${entry.variants.length} versions of the same scene. If one truly fits the moment, show it by writing its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
+        return [`Saved picture set: ${entry.variants.length} real pictures, versions of the same scene. ${SHOW_RULE} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
     }
-    return [`Saved picture [pic:${entry.id}]. If it truly fits the moment, show it by writing [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
+    return [`Saved picture [pic:${entry.id}], a real picture. ${SHOW_RULE} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
 }
 
 function newWiEntry(uid, depth) {
@@ -2977,6 +3008,12 @@ async function syncLorebook({ activate = false } = {}) {
     let changed = created;
     let libraryChanged = false;
     const wanted = new Set(library.entries.map(entry => entry.id));
+    const catalogs = Object.values(data.entries).filter(wi => wi?.comment === CATALOG_COMMENT);
+    const catalogText = s.aiShow ? pictureCatalog(Math.max(0, Math.min(200, Number(s.catalogSize) || 0))) : '';
+    catalogs.slice(catalogText ? 1 : 0).forEach(wi => {
+        delete data.entries[wi.uid];
+        changed = true;
+    });
     for (const [id, wi] of byId) {
         if (!wanted.has(id)) {
             delete data.entries[wi.uid];
@@ -3020,6 +3057,20 @@ async function syncLorebook({ activate = false } = {}) {
         } else if (s.aiShow && wi.disable && disabledByUs.has(entry.id)) {
             wi.disable = false;
             disabledByUs.delete(entry.id);
+            changed = true;
+        }
+    }
+    if (catalogText) {
+        let catalog = catalogs[0];
+        if (!catalog) {
+            catalog = catalogWiEntry(nextUid++, depth);
+            data.entries[catalog.uid] = catalog;
+            changed = true;
+        }
+        if (catalog.content !== catalogText || catalog.depth !== depth || !catalog.constant) {
+            catalog.content = catalogText;
+            catalog.depth = depth;
+            catalog.constant = true;
             changed = true;
         }
     }
@@ -5029,6 +5080,7 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Pictures always listed for the AI (0 = only when keywords match)</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div>
                     <div>Description prompt ({{tags}} is filled in)</div>
                     <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
                     <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
@@ -5097,6 +5149,7 @@ function buildSettings() {
     bind('st_imagesearch_keep', 'keepLibrary', 'checked');
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_aishow_depth', 'aiShowDepth', 'number', () => scheduleLorebookSync());
+    bind('st_imagesearch_catalog_size', 'catalogSize', 'number', () => scheduleLorebookSync());
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');

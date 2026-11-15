@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.11.0';
+const VERSION = '2.12.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -29,6 +29,9 @@ const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action',
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
 const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
+
+const DEFAULT_POSES = 'standing, walking, running, jumping, sitting, kneeling, crouching, lying down, sleeping, knocked down, falling, fighting, attacking, blocking, casting magic, aiming, holding a weapon, hugging, kissing, holding hands, carrying someone, pinned down, eating, drinking, talking, shouting, laughing, crying, waving, pointing, dancing, bathing, reading, working, riding, flying, swimming, hiding, fleeing, chasing, posing';
+const DEFAULT_MOODS = 'happy, cheerful, calm, peaceful, romantic, shy, embarrassed, surprised, scared, worried, sad, angry, determined, confident, smug, playful, tired, pained, serious, tense, menacing, mysterious, triumphant, defeated';
 
 const DEFAULTS = {
     enabled: true,
@@ -65,6 +68,13 @@ const DEFAULTS = {
     catalogSize: 30,
     sendButton: true,
     confirmPicture: true,
+    cards: true,
+    poseList: DEFAULT_POSES,
+    moodList: DEFAULT_MOODS,
+    meaningSource: 'nanogpt',
+    meaningModel: '',
+    pickShortlist: 30,
+    castCache: {},
     includeVideos: true,
     gifSeconds: 6,
     gifWidth: 480,
@@ -2506,6 +2516,7 @@ function cleanEntry(entry) {
         sections: entry.sections && typeof entry.sections === 'object' ? Object.fromEntries(SECTIONS.filter(([key]) => typeof entry.sections[key] === 'string').map(([key]) => [key, entry.sections[key]])) : {},
         kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
         animated: Boolean(entry.animated),
+        card: cleanCard(entry.card),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
@@ -2539,6 +2550,7 @@ async function loadLibrary(force = false) {
         try {
             library.entries = await readLibraryFile();
             library.broken = false;
+            scheduleFiling(6000);
         } catch (error) {
             console.warn('[Image Search] library unavailable', error);
             library.broken = true;
@@ -2559,7 +2571,7 @@ function utf8ToBase64(text) {
     return btoa(binary);
 }
 
-function saveLibrary({ skipSync = false } = {}) {
+function saveLibrary({ skipSync = false, skipFiling = false } = {}) {
     library.saving = library.saving.then(async () => {
         if (library.broken) {
             await loadLibrary(true);
@@ -2584,6 +2596,9 @@ function saveLibrary({ skipSync = false } = {}) {
         }
         if (!skipSync) {
             scheduleLorebookSync();
+        }
+        if (!skipFiling) {
+            scheduleFiling();
         }
     }).catch(error => {
         console.warn('[Image Search] library save failed', error);
@@ -3606,7 +3621,730 @@ function onWorldInfoActivated(entries) {
     }
 }
 
-const SEND_SHORTLIST = 30;
+const CARD_BATCH = 10;
+const CARD_FIELDS = ['gender', 'species', 'skin', 'hair', 'build', 'outfit', 'features'];
+const VECTOR_COLLECTION = 'imagesearch_pictures';
+const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
+const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, error: '', warned: false };
+const meaning = { synced: false, syncing: null, error: '', count: 0, key: '', warned: false, hashes: new Set() };
+
+function hashText(text) {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ code, 2654435761);
+        h2 = Math.imul(h2 ^ code, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+function listSetting(text) {
+    return [...new Set(String(text || '').split(/[\n,]/).map(value => value.trim().toLowerCase()).filter(Boolean))];
+}
+
+function asList(value, separator = /[;,]/) {
+    return (Array.isArray(value) ? value : String(value || '').split(separator)).map(item => String(item || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
+function fitToList(values, allowed) {
+    const out = [];
+    for (const value of values.map(item => item.toLowerCase())) {
+        const hit = allowed.find(item => item === value) || allowed.find(item => value.includes(item) || (value.length >= 4 && item.includes(value)));
+        if (hit && !out.includes(hit)) {
+            out.push(hit);
+        }
+    }
+    return out;
+}
+
+function cleanCard(card) {
+    if (!card || typeof card !== 'object') {
+        return null;
+    }
+    const text = value => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const people = (Array.isArray(card.people) ? card.people : [])
+        .filter(person => person && typeof person === 'object')
+        .slice(0, 4)
+        .map(person => Object.fromEntries(CARD_FIELDS.map(field => {
+            let value = text(person[field]).toLowerCase();
+            if (/^(none|n\/a|unknown|unclear|-|not shown|not visible)$/.test(value)) {
+                value = '';
+            }
+            if (field === 'skin' || field === 'hair') {
+                value = value.replace(new RegExp(`\\s*${field}$`), '');
+            }
+            return [field, value];
+        })))
+        .filter(person => CARD_FIELDS.some(field => person[field]));
+    return {
+        people,
+        pose: asList(card.pose, ',').map(item => item.toLowerCase().slice(0, 40)).slice(0, 3),
+        mood: asList(card.mood, ',').map(item => item.toLowerCase().slice(0, 40)).slice(0, 3),
+        place: text(card.place).toLowerCase(),
+        framing: text(card.framing).toLowerCase(),
+        moments: asList(card.moments, ';').map(item => item.toLowerCase().slice(0, 80)).slice(0, 6),
+        basis: String(card.basis || ''),
+        edited: Boolean(card.edited),
+    };
+}
+
+function cardBasis(entry) {
+    return String(hashText(`${entry.description}\n${entry.variants.map(variant => variant.diff).join('\n')}`));
+}
+
+function needsCard(entry) {
+    return Boolean(entry.description) && (!entry.card || (!entry.card.edited && entry.card.basis !== cardBasis(entry)));
+}
+
+function personText(person) {
+    const head = [person.gender, person.species].filter(Boolean).join(' ') || 'person';
+    const rest = [person.skin && `${person.skin} skin`, person.hair && `${person.hair} hair`, person.build, person.outfit, person.features].filter(Boolean).join(', ');
+    return rest ? `${head} (${rest})` : head;
+}
+
+function cardWho(card) {
+    return card.people.length ? card.people.map(personText).join(' + ') : 'nobody';
+}
+
+function cardLine(card) {
+    return [`Who: ${cardWho(card)}`, card.pose.length ? `Pose: ${card.pose.join(', ')}` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}` : '', card.place ? `Place: ${card.place}` : ''].filter(Boolean).join(' | ');
+}
+
+function cardToText(card) {
+    const lines = card.people.map(person => `Person: ${CARD_FIELDS.filter(field => person[field]).map(field => `${field}: ${person[field]}`).join('; ')}`);
+    lines.push(`Pose: ${card.pose.join(', ')}`, `Mood: ${card.mood.join(', ')}`, `Place: ${card.place}`, `Framing: ${card.framing}`, `Moments: ${card.moments.join('; ')}`);
+    return lines.join('\n');
+}
+
+function textToCard(text) {
+    const card = { people: [], pose: [], mood: [], place: '', framing: '', moments: [] };
+    for (const line of String(text || '').split('\n')) {
+        const match = line.match(/^\s*(person|pose|mood|place|framing|moments?)\s*\d*\s*:\s*(.*)$/i);
+        if (!match) {
+            continue;
+        }
+        const key = match[1].toLowerCase();
+        const value = match[2].trim();
+        if (key === 'person') {
+            const person = {};
+            for (const part of value.split(';')) {
+                const pair = part.match(/^\s*(\w+)\s*:\s*(.*)$/);
+                if (pair && CARD_FIELDS.includes(pair[1].toLowerCase())) {
+                    person[pair[1].toLowerCase()] = pair[2].trim();
+                }
+            }
+            card.people.push(person);
+        } else if (key === 'pose' || key === 'mood') {
+            card[key] = asList(value, ',');
+        } else if (key.startsWith('moment')) {
+            card.moments = asList(value, ';');
+        } else {
+            card[key] = value;
+        }
+    }
+    return cleanCard(card);
+}
+
+function meaningText(entry) {
+    const card = entry.card;
+    const action = String(entry.sections?.action || '').replace(/\s+/g, ' ').trim();
+    return [`${cardWho(card)}.`, card.pose.length ? `Pose: ${card.pose.join(', ')}.` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}.` : '', card.place ? `Place: ${card.place}.` : '', card.moments.length ? `Story moments: ${card.moments.join('; ')}.` : '', action].filter(Boolean).join(' ').slice(0, 1200);
+}
+
+function cardSource(entry) {
+    const parts = [String(entry.description || '').replace(/\s+/g, ' ').trim().slice(0, 900)];
+    if (isMulti(entry)) {
+        entry.variants.slice(1, 4).forEach((variant, index) => variant.diff && parts.push(`${entry.kind === 'sequence' ? `Picture ${index + 2}` : `Version ${index + 2}`}: ${variant.diff.replace(/\s+/g, ' ').slice(0, 200)}`));
+    }
+    return parts.join(' ');
+}
+
+function parseCards(text, count, poses, moods) {
+    const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
+    let items = null;
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    if (start >= 0 && end > start) {
+        try {
+            items = JSON.parse(cleaned.slice(start, end + 1));
+        } catch {
+            items = null;
+        }
+    }
+    if (!Array.isArray(items)) {
+        items = [];
+        for (const match of cleaned.matchAll(/\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}/g)) {
+            try {
+                items.push(JSON.parse(match[0]));
+            } catch {
+                continue;
+            }
+        }
+    }
+    const cards = new Map();
+    items.forEach((item, index) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return;
+        }
+        const n = Number(item.n ?? item.picture ?? item.number ?? item.id) || index + 1;
+        if (n < 1 || n > count || cards.has(n)) {
+            return;
+        }
+        const pose = fitToList(asList(item.pose, ','), poses);
+        const mood = fitToList(asList(item.mood, ','), moods);
+        const card = cleanCard({ ...item, pose: pose.length ? pose : asList(item.pose, ',').slice(0, 2), mood: mood.length ? mood : asList(item.mood, ',').slice(0, 2) });
+        if (card && (card.people.length || card.pose.length || card.moments.length)) {
+            cards.set(n, card);
+        }
+    });
+    return cards;
+}
+
+async function requestCards(batch) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    if (!service || !s.tagProfile) {
+        throw new Error('no tag profile is chosen in the Image Search settings');
+    }
+    const poses = listSetting(s.poseList || DEFAULT_POSES);
+    const moods = listSetting(s.moodList || DEFAULT_MOODS);
+    const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: everyone clearly visible, at most 4. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…). skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
+}
+
+function scheduleFiling(ms = 4000) {
+    clearTimeout(filing.timer);
+    filing.timer = setTimeout(() => {
+        fileCards().catch(error => console.warn('[Image Search] filing cards failed', error));
+    }, ms);
+}
+
+async function fileCards({ only = null, loud = false } = {}) {
+    if (filing.running) {
+        await filing.running;
+        if (!only && !loud) {
+            return;
+        }
+    }
+    const s = settings();
+    filing.running = (async () => {
+        await loadLibrary();
+        if (library.broken) {
+            return;
+        }
+        if (loud) {
+            filing.failed.clear();
+        }
+        const pending = only || (s.cards ? library.entries.filter(entry => needsCard(entry) && (filing.failed.get(entry.id) || 0) < 2) : []);
+        if (pending.length && !s.tagProfile) {
+            filing.error = 'Choose a tag profile to make filing cards.';
+        } else if (pending.length) {
+            filing.total = pending.length;
+            filing.done = 0;
+            filing.error = '';
+            const big = !only && pending.length >= CARD_BATCH;
+            if (big || loud) {
+                toastr.info(`Making filing cards for ${pending.length} picture(s), so the AI can find the right one faster…`, 'Image Search');
+            }
+            let made = 0;
+            for (let i = 0; i < pending.length; i += CARD_BATCH) {
+                const batch = pending.slice(i, i + CARD_BATCH);
+                let cards = new Map();
+                try {
+                    cards = await requestCards(batch);
+                } catch (error) {
+                    filing.error = String(error?.message || error).slice(0, 160);
+                    console.warn('[Image Search] filing cards failed', error);
+                }
+                batch.forEach((entry, index) => {
+                    const card = cards.get(index + 1);
+                    if (card) {
+                        entry.card = { ...card, basis: cardBasis(entry), edited: false };
+                        filing.failed.delete(entry.id);
+                        made++;
+                    } else {
+                        filing.failed.set(entry.id, (filing.failed.get(entry.id) || 0) + 1);
+                    }
+                });
+                filing.done += batch.length;
+                paintCardStatus();
+                if (cards.size) {
+                    await saveLibrary({ skipSync: true, skipFiling: true });
+                }
+            }
+            const missed = pending.length - made;
+            if (big || loud) {
+                toastr[missed ? 'warning' : 'success'](missed ? `Filing cards made for ${made} picture(s); ${missed} could not be filed${filing.error ? ` (${filing.error})` : ''}. They are tried again later.` : `Filing cards made for ${made} picture(s).`, 'Image Search');
+            } else if (missed && !filing.warned && filing.error) {
+                filing.warned = true;
+                toastr.warning(`Filing cards could not be made: ${filing.error}`, 'Image Search');
+            }
+        }
+        await syncMeaning();
+    })().finally(() => {
+        filing.running = null;
+        paintCardStatus();
+    });
+    return filing.running;
+}
+
+function meaningSource() {
+    const source = String(settings().meaningSource || '');
+    return source && source !== 'off' ? source : '';
+}
+
+function meaningKey() {
+    const source = meaningSource();
+    return source ? `${source}|${String(settings().meaningModel || '').trim() || MEANING_MODELS[source] || ''}` : '';
+}
+
+async function vectorCall(path, body) {
+    const source = meaningSource();
+    const model = String(settings().meaningModel || '').trim() || MEANING_MODELS[source];
+    const response = await fetch(`/api/vector/${path}`, {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ collectionId: VECTOR_COLLECTION, source, ...(model ? { model } : {}), ...body }),
+    });
+    if (!response.ok) {
+        const detail = String(await response.text().catch(() => '') || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        throw new Error(`the search index answered ${response.status}${detail ? ` (${detail.slice(0, 120)})` : ''}`);
+    }
+    return String(response.headers.get('content-type') || '').includes('json') ? response.json() : null;
+}
+
+function meaningItems() {
+    const items = new Map();
+    for (const entry of library.entries) {
+        if (entry.card) {
+            const text = meaningText(entry);
+            items.set(hashText(`${entry.id}\n${text}`), { entry, text });
+        }
+    }
+    return items;
+}
+
+async function syncMeaning() {
+    if (!meaningSource()) {
+        return false;
+    }
+    if (meaning.syncing) {
+        return meaning.syncing;
+    }
+    const key = meaningKey();
+    meaning.syncing = (async () => {
+        const want = meaningItems();
+        if (!want.size || (meaning.synced && meaning.key === key && want.size === meaning.hashes.size && [...want.keys()].every(hash => meaning.hashes.has(hash)))) {
+            Object.assign(meaning, { synced: true, error: '', count: want.size, key, hashes: new Set(want.keys()) });
+            return true;
+        }
+        const have = new Set((await vectorCall('list', {}) || []).map(Number));
+        const drop = [...have].filter(hash => !want.has(hash));
+        const add = [...want].filter(([hash]) => !have.has(hash)).map(([hash, item]) => ({ hash, text: item.text, index: 0 }));
+        if (drop.length) {
+            await vectorCall('delete', { hashes: drop });
+        }
+        for (let i = 0; i < add.length; i += 20) {
+            await vectorCall('insert', { items: add.slice(i, i + 20) });
+            meaning.count = want.size - add.length + Math.min(add.length, i + 20);
+            paintCardStatus();
+        }
+        Object.assign(meaning, { synced: true, error: '', count: want.size, key, hashes: new Set(want.keys()) });
+        return true;
+    })().catch(error => {
+        meaning.error = String(error?.message || error).slice(0, 200);
+        meaning.synced = false;
+        console.warn('[Image Search] search index sync failed', error);
+        return false;
+    }).finally(() => {
+        meaning.syncing = null;
+        paintCardStatus();
+    });
+    return meaning.syncing;
+}
+
+async function meaningRank(text, limit = 80) {
+    if (!meaningSource() || !String(text || '').trim()) {
+        return null;
+    }
+    if (filing.running) {
+        await Promise.race([filing.running, new Promise(resolve => setTimeout(resolve, 8000))]);
+    }
+    if (!meaning.synced || meaning.key !== meaningKey()) {
+        await syncMeaning();
+    } else if (meaning.syncing) {
+        await meaning.syncing;
+    }
+    if (!meaning.synced) {
+        throw new Error(meaning.error || 'the search index is not ready');
+    }
+    const want = meaningItems();
+    if (!want.size) {
+        return null;
+    }
+    const result = await vectorCall('query', { searchText: String(text).slice(-1500), topK: Math.min(limit, want.size), threshold: 0 });
+    const order = new Map();
+    for (const hash of result?.hashes || []) {
+        const item = want.get(Number(hash));
+        if (item && !order.has(item.entry)) {
+            order.set(item.entry, order.size);
+        }
+    }
+    return order;
+}
+
+function paintCardStatus() {
+    const node = document.getElementById('st_imagesearch_card_status');
+    if (!node) {
+        return;
+    }
+    const described = library.entries.filter(entry => entry.description);
+    const carded = described.filter(entry => entry.card).length;
+    const parts = [`Filing cards: ${carded} of ${described.length} described picture(s)`];
+    if (filing.running && filing.total) {
+        parts.push(`making ${filing.done} / ${filing.total}…`);
+    } else if (filing.error) {
+        parts.push(filing.error);
+    }
+    if (meaningSource()) {
+        parts.push(meaning.error ? `Search index: not working (${meaning.error})` : meaning.syncing ? `Search index: updating ${meaning.count}…` : meaning.synced ? `Search index: ${meaning.count} picture(s)` : 'Search index: not built yet');
+    } else {
+        parts.push('Search by meaning is off');
+    }
+    node.textContent = parts.join(' · ');
+}
+
+function genderOf(value) {
+    const text = String(value || '').toLowerCase();
+    if (/\b(woman|women|girl|girls|female|lady|1girl|2girls|3girls|futanari)\b/.test(text)) {
+        return 'f';
+    }
+    if (/\b(man|men|boy|boys|male|guy|1boy|2boys|3boys)\b/.test(text)) {
+        return 'm';
+    }
+    return '';
+}
+
+const SPECIES = [
+    [/\b(cat ?girls?|cat ?boys?|nekomimi|neko|cat ears?|cat)\b/, 'cat'],
+    [/\b(fox|kitsune)\b/, 'fox'],
+    [/\b(wolf|werewolf|wolf ?girl|lycan)\b/, 'wolf'],
+    [/\b(robot|android|cyborg|automaton|gynoid|mecha)\b/, 'robot'],
+    [/\b(demon|succubus|incubus|devil|oni|tiefling)\b/, 'demon'],
+    [/\b(vampire)\b/, 'vampire'],
+    [/\b(angel)\b/, 'angel'],
+    [/\b(dragon|dragon ?girl)\b/, 'dragon'],
+    [/\b(dark ?elf|drow|elf|elven|elves)\b/, 'elf'],
+    [/\b(half-?orc|orc|orcs|orcish)\b/, 'orc'],
+    [/\b(goblin)\b/, 'goblin'],
+    [/\b(dwarf|dwarven)\b/, 'dwarf'],
+    [/\b(slime)\b/, 'slime'],
+    [/\b(ghost|spirit)\b/, 'ghost'],
+    [/\b(human|person|people)\b/, 'human'],
+];
+
+function speciesOf(value) {
+    const text = String(value || '').toLowerCase().replace(/_/g, ' ').trim();
+    if (!text || /^(unclear|unknown|none|""|n\/a)$/.test(text)) {
+        return '';
+    }
+    const hit = SPECIES.find(([pattern]) => pattern.test(text));
+    return hit ? hit[1] : text.split(/\s+/).pop();
+}
+
+function skinColors(value) {
+    const out = new Set();
+    for (const word of String(value || '').toLowerCase().split(/[^a-z]+/)) {
+        if (/^(pale|white|fair|light|porcelain)$/.test(word)) {
+            out.add('light');
+        } else if (/^(tan|tanned|brown|dark|black|ebony|olive)$/.test(word)) {
+            out.add('dark');
+        } else if (/^(green|blue|red|purple|grey|gray|pink|yellow|orange|golden|gold|silver|lavender)$/.test(word)) {
+            out.add(word === 'gray' ? 'grey' : word === 'gold' ? 'golden' : word);
+        }
+    }
+    return out;
+}
+
+function hairColors(value) {
+    const out = new Set();
+    for (const word of String(value || '').toLowerCase().split(/[^a-z]+/)) {
+        if (/^(blonde|blond|golden|yellow)$/.test(word)) {
+            out.add('blonde');
+        } else if (/^(white|silver|grey|gray|platinum)$/.test(word)) {
+            out.add('white');
+        } else if (/^(black|brown|red|orange|ginger|pink|blue|green|purple|auburn|brunette)$/.test(word)) {
+            out.add(word === 'ginger' || word === 'auburn' ? 'red' : word === 'brunette' ? 'brown' : word);
+        }
+    }
+    return out;
+}
+
+function traitsOf(person) {
+    return { gender: genderOf(person.gender), species: speciesOf(person.species), skin: skinColors(person.skin), hair: hairColors(person.hair) };
+}
+
+function overlaps(a, b) {
+    return [...a].some(value => b.has(value));
+}
+
+function looksScore(entry, cast) {
+    const people = entry.card?.people || [];
+    if (!cast.length || !people.length) {
+        return 0;
+    }
+    const members = cast.map(traitsOf);
+    let total = 0;
+    let foreign = 0;
+    for (const person of people) {
+        const p = traitsOf(person);
+        let best = null;
+        for (const m of members) {
+            let score = 0;
+            let wrong = false;
+            if (p.gender && m.gender) {
+                wrong = wrong || p.gender !== m.gender;
+                score += 3;
+            }
+            if (p.species && m.species) {
+                wrong = wrong || p.species !== m.species;
+                score += 4;
+            }
+            if (p.skin.size && m.skin.size) {
+                score += overlaps(p.skin, m.skin) ? 2 : -4;
+            }
+            if (p.hair.size && m.hair.size) {
+                score += overlaps(p.hair, m.hair) ? 2 : -2;
+            }
+            if (!wrong && (best === null || score > best)) {
+                best = score;
+            }
+        }
+        if (best === null) {
+            foreign++;
+        } else {
+            total += best;
+        }
+    }
+    total -= foreign * 12;
+    if (foreign === people.length) {
+        total -= 12;
+    }
+    return total;
+}
+
+function castFromNotes(notes) {
+    const byName = new Map();
+    for (const line of notes) {
+        const match = line.match(/^(.+?) \((?:character card|persona|saved look)\): (.*)$/);
+        if (!match) {
+            continue;
+        }
+        const text = match[2].toLowerCase().replace(/_/g, ' ');
+        const person = byName.get(match[1]) || { name: match[1], gender: '', species: '', skin: '', hair: '' };
+        person.gender ||= genderOf(text.replace(/\b(she|her|he|his)\b/g, '')) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : '';
+        const species = SPECIES.find(([pattern, name]) => name !== 'human' && pattern.test(text));
+        person.species ||= species ? species[1] : '';
+        person.skin ||= (text.match(/\b([a-z]+) skin(?:ned)?\b/) || [])[1] || '';
+        person.hair ||= (text.match(/\b([a-z]+) hair\b/) || [])[1] || '';
+        byName.set(match[1], person);
+    }
+    return [...byName.values()];
+}
+
+async function sceneCast() {
+    const notes = appearanceNotes();
+    if (!notes.length) {
+        return [];
+    }
+    const s = settings();
+    const key = String(hashText(notes.join('\n')));
+    if (!s.castCache || typeof s.castCache !== 'object') {
+        s.castCache = {};
+    }
+    if (Array.isArray(s.castCache[key])) {
+        return s.castCache[key];
+    }
+    const fallback = castFromNotes(notes);
+    const service = ctx().ConnectionManagerRequestService;
+    if (!service || !s.tagProfile) {
+        return fallback;
+    }
+    try {
+        const prompt = `Below is how the characters of a roleplay look. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black"}]\ngender is woman, man, girl, boy or unclear. Use "" for anything that is not said.\n\n${notes.join('\n')}`;
+        const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 300, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
+        const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
+        const start = text.indexOf('[');
+        const end = text.lastIndexOf(']');
+        const list = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : [];
+        const cast = (Array.isArray(list) ? list : [])
+            .filter(item => item && typeof item === 'object' && item.name)
+            .slice(0, 8)
+            .map(item => ({ name: String(item.name).slice(0, 60), ...Object.fromEntries(['gender', 'species', 'skin', 'hair'].map(field => [field, String(item[field] ?? '').toLowerCase().slice(0, 60)])) }));
+        if (cast.length) {
+            const keys = Object.keys(s.castCache);
+            keys.slice(0, Math.max(0, keys.length - 19)).forEach(old => delete s.castCache[old]);
+            s.castCache[key] = cast;
+            save();
+            return cast;
+        }
+    } catch (error) {
+        console.warn('[Image Search] could not read how the characters look', error);
+    }
+    return fallback;
+}
+
+function meaningQuery(message) {
+    const last = (ctx().chat || []).filter(m => m && !m.is_system && typeof m.mes === 'string').slice(-1)[0];
+    const before = last ? cleanForPrompt(last.mes).slice(-400) : '';
+    return `${before}\n${message}`.trim();
+}
+
+async function rankedCandidates(message) {
+    const choices = pictureCandidates(`${recentText(2)} ${message} ${appearanceNotes().join(' ')}`);
+    if (!choices.length) {
+        return choices;
+    }
+    let order = null;
+    const [rank, cast] = await Promise.all([
+        meaningRank(meaningQuery(message || recentText(1)), 80).catch(error => {
+            if (!meaning.warned) {
+                meaning.warned = true;
+                toastr.warning(`Search by meaning did not work (${String(error?.message || error).slice(0, 140)}). Using keywords only.`, 'Image Search');
+            }
+            return null;
+        }),
+        sceneCast().catch(() => []),
+    ]);
+    order = rank;
+    for (const choice of choices) {
+        const position = order?.get(choice.entry);
+        const keywords = Math.min(choice.score || 0, 24);
+        const meaningPoints = position === undefined ? 0 : 36 * (1 - position / Math.max(order.size, 1));
+        const looks = looksScore(choice.entry, cast);
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, cast: cast.length > 0 };
+        choice.total = keywords + meaningPoints + looks;
+    }
+    const sorted = [...choices].sort((a, b) => b.total - a.total);
+    return [...sorted.filter(choice => choice.fresh), ...sorted.filter(choice => !choice.fresh)];
+}
+
+function scoreLine(choice) {
+    const parts = choice.parts;
+    if (!parts) {
+        return '';
+    }
+    const items = [];
+    if (parts.meaning) {
+        items.push(`meaning #${parts.meaning} of ${parts.of}`);
+    } else if (parts.of) {
+        items.push('no meaning match');
+    }
+    if (parts.cast && choice.entry.card?.people?.length) {
+        items.push(`looks ${parts.looks > 0 ? '+' : ''}${parts.looks}`);
+    } else if (!choice.entry.card) {
+        items.push('no filing card');
+    }
+    items.push(`keywords ${parts.keywords}`);
+    return `Search: ${items.join(' · ')}`;
+}
+
+function shortlistSize() {
+    return Math.min(60, Math.max(5, Number(settings().pickShortlist) || 30));
+}
+
+function cardBox(entry, onChange) {
+    const box = el('div', 'stis-card');
+    let editing = false;
+    let busy = false;
+    const draw = () => {
+        box.innerHTML = '';
+        const card = entry.card;
+        box.appendChild(el('small', 'stis-card-head', card ? `Filing card${card.edited ? ' (edited by you)' : ''}${!card.edited && needsCard(entry) ? ' (out of date)' : ''}` : entry.description ? 'No filing card yet.' : 'A filing card is made once the picture is described.'));
+        if (editing) {
+            const area = el('textarea', 'text_pole stis-card-edit');
+            area.value = card ? cardToText(card) : 'Person: gender: ; species: ; skin: ; hair: ; build: ; outfit: ; features: \nPose: \nMood: \nPlace: \nFraming: \nMoments: ';
+            const hint = el('small', 'stis-card-hint', `One Person line per person, fields: ${CARD_FIELDS.join(', ')} (separated by ;). Moments are separated by ;. Poses: ${listSetting(settings().poseList || DEFAULT_POSES).slice(0, 12).join(', ')}…`);
+            const save = el('div', 'menu_button', 'Save card');
+            const cancel = el('div', 'menu_button', 'Cancel');
+            save.addEventListener('click', async () => {
+                const next = textToCard(area.value);
+                if (!next) {
+                    return;
+                }
+                entry.card = { ...next, basis: cardBasis(entry), edited: true };
+                editing = false;
+                draw();
+                await saveLibrary({ skipSync: true, skipFiling: true });
+                syncMeaning();
+                onChange?.();
+            });
+            cancel.addEventListener('click', () => {
+                editing = false;
+                draw();
+            });
+            const row = el('div', 'stis-card-bar');
+            row.append(save, cancel);
+            box.append(area, hint, row);
+            return;
+        }
+        if (card) {
+            box.appendChild(el('div', 'stis-card-text', cardToText(card)));
+        }
+        const row = el('div', 'stis-card-bar');
+        const edit = el('div', 'menu_button', card ? 'Edit card' : 'Write card');
+        edit.addEventListener('click', () => {
+            editing = true;
+            draw();
+        });
+        row.appendChild(edit);
+        if (entry.description) {
+            const again = el('div', 'menu_button', busy ? 'Making…' : card ? 'Make again' : 'Make card');
+            again.title = 'Ask the tag model to fill the card from the description';
+            again.addEventListener('click', async () => {
+                if (busy) {
+                    return;
+                }
+                busy = true;
+                draw();
+                const before = entry.card;
+                await fileCards({ only: [entry] });
+                busy = false;
+                if (entry.card === before) {
+                    toastr.warning(`The filing card could not be made${filing.error ? `: ${filing.error}` : '.'}`, 'Image Search');
+                }
+                draw();
+                onChange?.();
+            });
+            row.appendChild(again);
+        }
+        box.appendChild(row);
+    };
+    draw();
+    return box;
+}
+
+function cardFacets(entry) {
+    if (!entry.card) {
+        return entry.description ? ['card:none'] : [];
+    }
+    const keys = [];
+    entry.card.people.forEach(person => {
+        const who = [person.gender, person.species].filter(Boolean).join(' ');
+        if (who) {
+            keys.push(`who:${who}`);
+        }
+    });
+    entry.card.pose.forEach(value => keys.push(`pose:${value}`));
+    entry.card.mood.forEach(value => keys.push(`mood:${value}`));
+    return [...new Set(keys)];
+}
+
 const PICK_COUNT = 5;
 const sendState = { pending: null, busy: false };
 
@@ -3673,8 +4411,8 @@ function choiceLine(choice) {
     const index = variant ? Math.max(0, entry.variants.indexOf(variant)) : 0;
     const what = index > 0 && variant.diff ? variant.diff : entry.sections?.action || '';
     const kind = entry.kind === 'sequence' && isMulti(entry) ? ` (picture ${index + 1} of a ${entry.variants.length}-picture story sequence)` : '';
-    const looks = String(entry.sections?.visual || shortDescription(entry)).replace(/\s+/g, ' ').trim().slice(0, 320);
-    return `Looks: ${looks} | Happening: ${what.replace(/\s+/g, ' ').trim().slice(0, 200) || 'not described'}${kind}${entry.animated ? ' (animated)' : ''}`;
+    const looks = entry.card ? cardLine(entry.card) : `Looks: ${String(entry.sections?.visual || shortDescription(entry)).replace(/\s+/g, ' ').trim().slice(0, 320)}`;
+    return `${looks} | Happening: ${what.replace(/\s+/g, ' ').trim().slice(0, 200) || 'not described'}${kind}${entry.animated ? ' (animated)' : ''}`;
 }
 
 function appearanceNotes() {
@@ -3711,11 +4449,11 @@ async function askWhyNot(session, best, choice) {
     const seen = session.shortlist.has(choice);
     const rank = session.ranks.get(choice) || '?';
     const reason = session.reasons.get(best);
-    const unseen = seen ? '' : `\nYou were not shown picture B before: by keywords it was only number ${rank}, and you saw the first ${session.shortlist.size}.`;
+    const unseen = seen ? '' : `\nYou were not shown picture B before: in the search it was only number ${rank}, and you saw the first ${session.shortlist.size}.`;
     const prompt = `${pickContext(session.message)}\n\nFor the reply to the newest message you chose this picture:\nA. ${choiceLine(best)}${reason ? `\nYour reason: ${reason}` : ''}\n\nThe user is looking at this one instead:\nB. ${choiceLine(choice)}${unseen}\n\nIn at most 3 short sentences, say why B is a worse fit than A, judging looks first and then what happens. If B fits better than A, say so plainly.`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 250, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\s+/g, ' ').trim();
-    const prefix = seen ? '' : `The AI never saw this one: it was number ${rank} by keywords and only the first ${session.shortlist.size} are sent. `;
+    const prefix = seen ? '' : `The AI never saw this one: it was number ${rank} in the search and only the first ${session.shortlist.size} are sent. ${scoreLine(choice) ? `${scoreLine(choice)}. ` : ''}`;
     return `${prefix}${text || 'The AI gave no answer.'}`;
 }
 
@@ -3726,7 +4464,7 @@ async function askPicturePick(message, candidates) {
     if (!service || !s.tagProfile || candidates.length < 2) {
         return null;
     }
-    const shortlist = candidates.slice(0, SEND_SHORTLIST);
+    const shortlist = candidates.slice(0, shortlistSize());
     const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with your ${Math.min(PICK_COUNT, shortlist.length)} best pictures, all different, best first, one per line, like this:\n#7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: #0 - why`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 450, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
@@ -3809,6 +4547,7 @@ function showPictureCard(session) {
     img.alt = '';
     const text = el('div', 'stis-sendcard-text');
     const why = el('div', 'stis-sendcard-why');
+    const score = el('small', 'stis-sendcard-score');
     const answer = el('div', 'stis-sendcard-answer');
     const grid = el('div', 'stis-sendcard-grid');
     grid.hidden = true;
@@ -3822,12 +4561,13 @@ function showPictureCard(session) {
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, ask, browse, search, cancel);
-    root.append(note, img, why, answer, text, grid, bar);
+    root.append(note, img, why, answer, text, score, grid, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
+        score.textContent = scoreLine(choice);
         const reason = reasons.get(choice);
         why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
         const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';
@@ -3909,7 +4649,7 @@ async function sendWithPicture() {
     let ranks = new Map();
     try {
         await loadLibrary();
-        const candidates = pictureCandidates(`${recentText(2)} ${message} ${appearanceNotes().join(' ')}`);
+        const candidates = await rankedCandidates(message);
         if (!candidates.length) {
             toastr.info('The library has no described pictures yet. Save some from the picker first.', 'Image Search');
             return;
@@ -3927,7 +4667,7 @@ async function sendWithPicture() {
         noneWhy = picked?.none || '';
         const first = picked?.choices || [];
         options = [...first, ...candidates.filter(choice => !first.includes(choice))];
-        shortlist = new Set(candidates.slice(0, SEND_SHORTLIST));
+        shortlist = new Set(candidates.slice(0, shortlistSize()));
         ranks = new Map(candidates.map((choice, position) => [choice, position + 1]));
     } finally {
         toastr.clear?.(notice);
@@ -4283,6 +5023,7 @@ async function openPicker(initialTags = null) {
         libraryView: el('div', 'stis-library'),
         libSearch: el('input', 'text_pole stis-lib-search'),
         libGrid: el('div', 'stis-grid'),
+        libFilters: el('div', 'stis-lib-filters'),
         selectToggle: el('div', 'menu_button stis-tab stis-select-btn'),
         sites: el('div', 'stis-sites'),
         favs: el('div', 'stis-favs'),
@@ -4302,7 +5043,7 @@ async function openPicker(initialTags = null) {
     ui.selectBar.hidden = true;
     ui.sites.hidden = true;
     ui.favs.hidden = true;
-    ui.libraryView.append(ui.libSearch, ui.libGrid);
+    ui.libraryView.append(ui.libSearch, ui.libFilters, ui.libGrid);
     ui.libraryView.hidden = true;
     ui.input.type = 'text';
     ui.input.placeholder = 'add tag, Enter';
@@ -4350,6 +5091,7 @@ async function openPicker(initialTags = null) {
     let selectedWho = '';
     let previewState = null;
     let libraryOrder = [];
+    const libFilter = new Set();
     let reps = [];
     let gridFamilies = new Map();
     let selecting = false;
@@ -5482,6 +6224,11 @@ async function openPicker(initialTags = null) {
         const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
         const meta = [kindLine, entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
+        info.appendChild(cardBox(entry, () => {
+            if (!closed) {
+                renderLibFilters();
+            }
+        }));
         bar.before(info);
         const redo = el('div', 'menu_button', 'Redo');
         redo.title = sequence ? 'Describe the sequence again' : 'Describe this picture again';
@@ -5533,20 +6280,69 @@ async function openPicker(initialTags = null) {
         tagSection(current?.tags?.length ? current.tags : entry.tags, below);
     }
 
+    function renderLibFilters() {
+        ui.libFilters.innerHTML = '';
+        const counts = new Map();
+        library.entries.forEach(entry => cardFacets(entry).forEach(key => counts.set(key, (counts.get(key) || 0) + 1)));
+        [...libFilter].filter(key => !counts.has(key)).forEach(key => libFilter.delete(key));
+        const groups = [['who', 'Who'], ['pose', 'Pose'], ['mood', 'Mood']];
+        for (const [group, label] of groups) {
+            const keys = [...counts.keys()].filter(key => key.startsWith(`${group}:`)).sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
+            if (!keys.length) {
+                continue;
+            }
+            const row = el('div', 'stis-lib-filter-row');
+            row.appendChild(el('small', 'stis-lib-filter-label', label));
+            for (const key of keys) {
+                const chip = el('span', 'stis-fchip', `${key.slice(group.length + 1)} ${counts.get(key)}`);
+                chip.classList.toggle('stis-fchip-on', libFilter.has(key));
+                chip.addEventListener('click', () => {
+                    if (libFilter.has(key)) {
+                        libFilter.delete(key);
+                    } else {
+                        libFilter.add(key);
+                    }
+                    renderLibrary();
+                });
+                row.appendChild(chip);
+            }
+            ui.libFilters.appendChild(row);
+        }
+        if (counts.has('card:none')) {
+            const row = el('div', 'stis-lib-filter-row');
+            const chip = el('span', 'stis-fchip', `no filing card ${counts.get('card:none')}`);
+            chip.classList.toggle('stis-fchip-on', libFilter.has('card:none'));
+            chip.addEventListener('click', () => {
+                libFilter[libFilter.has('card:none') ? 'delete' : 'add']('card:none');
+                renderLibrary();
+            });
+            row.appendChild(chip);
+            ui.libFilters.appendChild(row);
+        }
+        ui.libFilters.hidden = !ui.libFilters.childElementCount;
+    }
+
     async function renderLibrary() {
         await loadLibrary();
         if (closed) {
             return;
         }
         updateLibraryTab();
+        renderLibFilters();
         const scroll = ui.libGrid.scrollTop;
         ui.libGrid.innerHTML = '';
         const query = [...wordsOf(ui.libSearch.value)];
         let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: selectedLookName() || ctx().name2 || '' });
         if (query.length) {
             ranked = ranked.filter(({ entry }) => {
-                const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.variants.map(variant => variant.diff).join(' ')} ${entry.characters.join(' ')}`.toLowerCase().replace(/_/g, ' ');
+                const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.variants.map(variant => variant.diff).join(' ')} ${entry.characters.join(' ')} ${entry.card ? cardToText(entry.card) : ''}`.toLowerCase().replace(/_/g, ' ');
                 return query.every(word => hay.includes(word));
+            });
+        }
+        if (libFilter.size) {
+            ranked = ranked.filter(({ entry }) => {
+                const facets = cardFacets(entry);
+                return [...libFilter].every(key => facets.includes(key));
             });
         }
         libraryOrder = ranked.map(({ entry }) => entry);
@@ -5714,7 +6510,7 @@ async function openPicker(initialTags = null) {
     let touchY = 0;
     ui.preview.addEventListener('touchstart', event => {
         const touch = event.changedTouches[0];
-        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox, .stis-clip, video') ? null : touch.clientX;
+        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox, .stis-clip, .stis-card, video') ? null : touch.clientX;
         touchY = touch.clientY;
     }, { passive: true });
     ui.preview.addEventListener('touchend', event => {
@@ -6074,6 +6870,26 @@ function buildSettings() {
                         <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
                     </div>
                     <small id="st_imagesearch_lib_status"></small>
+                    <hr>
+                    <div>Finding pictures</div>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_filing"> <span>Make a filing card for each picture (who, pose, mood, place, story moments), so the AI can find the right one</span></label>
+                    <div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div>
+                    <div class="st-imagesearch-row"><span>Embedding model (empty = default)</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div>
+                    <div class="st-imagesearch-row"><span>Pictures the AI compares when choosing</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div>
+                    <div class="st-imagesearch-row">
+                        <div id="st_imagesearch_cards_run" class="menu_button" title="Make the filing cards that are missing or out of date now">Make missing cards</div>
+                        <div id="st_imagesearch_cards_redo" class="menu_button" title="Make every filing card again, except the ones you edited">Redo all cards</div>
+                        <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
+                    </div>
+                    <small id="st_imagesearch_card_status"></small>
+                    <details>
+                        <summary>Pose and mood lists</summary>
+                        <div>Poses the filing cards use</div>
+                        <textarea id="st_imagesearch_poses" class="text_pole"></textarea>
+                        <div>Moods the filing cards use</div>
+                        <textarea id="st_imagesearch_moods" class="text_pole"></textarea>
+                        <div id="st_imagesearch_lists_reset" class="menu_button">Reset both lists</div>
+                    </details>
                 </div>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
@@ -6187,6 +7003,69 @@ function buildSettings() {
     bind('st_imagesearch_fetcher_key', 'fetcherKey');
     bind('st_imagesearch_exclude', 'excludeTags');
     bind('st_imagesearch_videos', 'includeVideos', 'checked');
+    const meaningChanged = () => {
+        meaning.synced = false;
+        meaning.error = '';
+        meaning.warned = false;
+        paintCardStatus();
+        scheduleFiling(800);
+    };
+    bind('st_imagesearch_filing', 'cards', 'checked', () => scheduleFiling(800));
+    bind('st_imagesearch_meaning', 'meaningSource', 'value', meaningChanged);
+    bind('st_imagesearch_meaning_model', 'meaningModel', 'value', meaningChanged);
+    bind('st_imagesearch_pick_shortlist', 'pickShortlist', 'number');
+    bind('st_imagesearch_poses', 'poseList');
+    bind('st_imagesearch_moods', 'moodList');
+    document.getElementById('st_imagesearch_lists_reset').addEventListener('click', () => {
+        s.poseList = DEFAULT_POSES;
+        s.moodList = DEFAULT_MOODS;
+        document.getElementById('st_imagesearch_poses').value = DEFAULT_POSES;
+        document.getElementById('st_imagesearch_moods').value = DEFAULT_MOODS;
+        save();
+    });
+    document.getElementById('st_imagesearch_cards_run').addEventListener('click', async () => {
+        await loadLibrary();
+        if (!s.tagProfile) {
+            toastr.warning('Choose a tag profile first: it makes the filing cards.', 'Image Search');
+            return;
+        }
+        if (!library.entries.some(needsCard)) {
+            toastr.info('Every described picture already has a filing card.', 'Image Search');
+            await syncMeaning();
+            return;
+        }
+        await fileCards({ loud: true });
+    });
+    const cardsRedo = document.getElementById('st_imagesearch_cards_redo');
+    confirmClicks(cardsRedo, 'Redo all cards', () => `Tap again to make ${library.entries.filter(entry => entry.description && !entry.card?.edited).length} card(s) again`, async () => {
+        cardsRedo.textContent = 'Making…';
+        await fileCards({ only: library.entries.filter(entry => entry.description && !entry.card?.edited), loud: true });
+        cardsRedo.textContent = 'Redo all cards';
+    }, async () => {
+        await loadLibrary();
+        if (!s.tagProfile) {
+            toastr.warning('Choose a tag profile first: it makes the filing cards.', 'Image Search');
+            return false;
+        }
+        return !filing.running && library.entries.some(entry => entry.description);
+    });
+    document.getElementById('st_imagesearch_meaning_rebuild').addEventListener('click', async () => {
+        if (!meaningSource()) {
+            toastr.info('Search by meaning is off.', 'Image Search');
+            return;
+        }
+        await loadLibrary();
+        try {
+            await fetch('/api/vector/purge', { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify({ collectionId: VECTOR_COLLECTION }) });
+        } catch (error) {
+            console.warn('[Image Search] could not clear the search index', error);
+        }
+        meaning.synced = false;
+        meaning.error = '';
+        meaning.warned = false;
+        const ok = await syncMeaning();
+        toastr[ok ? 'success' : 'warning'](ok ? `Search index rebuilt: ${meaning.count} picture(s).` : `The search index could not be built: ${meaning.error}`, 'Image Search');
+    });
     bind('st_imagesearch_gif_seconds', 'gifSeconds', 'number');
     bind('st_imagesearch_gif_width', 'gifWidth', 'number');
     bind('st_imagesearch_gif_fps', 'gifFps', 'number');
@@ -6219,6 +7098,7 @@ function buildSettings() {
     const pictureCount = () => library.entries.reduce((sum, entry) => sum + entryUrls(entry).length, 0);
     const showLibrary = async () => {
         await loadLibrary();
+        paintCardStatus();
         const sets = library.entries.filter(entry => entry.kind === 'set' && isMulti(entry)).length;
         const sequences = library.entries.filter(entry => entry.kind === 'sequence' && isMulti(entry)).length;
         const groups = [sets ? `${sets} set${sets === 1 ? '' : 's'}` : '', sequences ? `${sequences} sequence${sequences === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');

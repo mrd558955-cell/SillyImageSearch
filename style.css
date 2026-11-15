@@ -771,3 +771,82 @@ video.stis-preview-img {
 .stis-sendcard [hidden] {
     display: none !important;
 }
+
+.stis-sendcard-score {
+    opacity: 0.7;
+    text-align: left;
+}
+
+.stis-sendcard-score:empty {
+    display: none;
+}
+
+.stis-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+.stis-card-text {
+    white-space: pre-wrap;
+    font-size: 0.85em;
+}
+
+.stis-card-edit {
+    min-height: 9em;
+    font-size: 0.85em;
+}
+
+.stis-card-hint {
+    opacity: 0.7;
+}
+
+.stis-card-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.stis-lib-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 4px 0;
+}
+
+.stis-lib-filter-row {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    white-space: nowrap;
+    align-items: center;
+    scrollbar-width: thin;
+}
+
+.stis-lib-filter-label {
+    flex: none;
+    min-width: 3em;
+    opacity: 0.7;
+}
+
+.stis-fchip {
+    flex: none;
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.8em;
+    cursor: pointer;
+}
+
+.stis-fchip-on {
+    background: var(--SmartThemeQuoteColor);
+    color: #fff;
+}
+
+.stis-lib-filters[hidden] {
+    display: none;
+}

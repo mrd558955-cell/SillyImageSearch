@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -19,10 +19,12 @@ const KNOWN_WEB = /(^|\.)(wikimedia\.org|wikipedia\.org|pexels\.com|unsplash\.co
 const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky', 'outdoor', 'indoor', 'urban', 'city_street', 'rooftop', 'building', 'house', 'road', 'standing', 'sitting', 'walking', 'running', 'lying', 'kneeling', 'squatting', 'crouching', 'leaning', 'leaning_forward', 'jumping', 'fighting', 'holding', 'talking', 'walking_away', 'looking_at_viewer', 'looking_away', 'looking_back', 'looking_down', 'looking_up', 'arms_crossed', 'hands_on_hips', 'from_side', 'from_behind', 'from_above', 'from_below', 'full_body', 'upper_body', 'cowboy_shot', 'portrait', 'close-up']);
 const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', female: '1girl', woman: '1girl', girl: '1girl', lady: '1girl', men: 'multiple_boys', women: 'multiple_girls', two_girls: '2girls', two_boys: '2boys', blond: 'blonde_hair', blonde: 'blonde_hair', blond_hair: 'blonde_hair', redhead: 'red_hair', ginger_hair: 'orange_hair', dark_skinned: 'dark_skin', pale: 'pale_skin', elf_ears: 'pointy_ears' };
 
-const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}';
-const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
-const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}';
-const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}'];
+const DEFAULT_TAG_PROMPT = 'You pick image-board (booru) tags to find a picture of one person from a roleplay. First decide who the picture should show: {{char}} if they are in the latest messages, otherwise the person the latest message is about. Then give tags for that person only, based only on what the text below says or clearly implies. Never guess: if the text does not say it, leave it out. Three correct tags are better than many guesses. Give at most {{max}} tags.\nUseful kinds of tags, most important first: how many and gender (1girl, 1boy), species if not human, body type and age look, skin color, hair color or baldness, lasting features of the body, and the kind of outfit.\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, place, background, time, weather or lighting. Never use names from the story. Use common booru tags: lowercase, with underscores inside a tag.\nFor every tag, quote the few words of the text below that support it.\n\nReply in exactly this format:\nSubject: the person\'s name, or none\nTags:\ntag = "exact words from the text"\ntag = "exact words from the text"\n\n{{context}}';
+const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}'];
+const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|inch(es)?|met(er|re)s?|build|muscular|muscles?|slim|slender|thin|skinny|fat|chubby|plump|curvy|stocky|broad|shoulders|beard|mustache|moustache|scars?|tattoos?|horns?|tails?|wings?|ears?|fur|scales|freckles|wears?|wearing|dressed|clothes|clothing|outfit|armou?r|robes?|dress|uniform|coat|cloak|appearance|looks? like|face|body|figure|years? old|elderly|petite|breasts?|hips|thighs|legs|arms|complexion|pale|tanned|dark-skinned)\b/i;
+const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}';
+const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}'];
+const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
 const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
@@ -43,13 +45,15 @@ const DEFAULTS = {
     characterLooks: '',
     minTagPosts: 50,
     suggestBlacklist: 'human',
-    contextMessages: 3,
+    contextMessages: 6,
     contextChars: 500,
-    tagMaxTokens: 100,
+    tagMaxTokens: 250,
+    useCards: true,
+    requireEvidence: true,
     describe: true,
     visionProfile: '',
     visionPrompt: DEFAULT_VISION_PROMPT,
-    visionMaxTokens: 300,
+    visionMaxTokens: 700,
     describeWaitSec: 15,
     keepLibrary: true,
     aiShow: true,
@@ -117,6 +121,18 @@ function settings() {
             s.maxSuggested = 6;
         }
         s.schema = 2;
+    }
+    if (s.schema < 3) {
+        if (Number(s.contextMessages) === 3) {
+            s.contextMessages = 6;
+        }
+        if (Number(s.tagMaxTokens) === 100) {
+            s.tagMaxTokens = 250;
+        }
+        if (Number(s.visionMaxTokens) === 300) {
+            s.visionMaxTokens = 700;
+        }
+        s.schema = 3;
     }
     if (OLD_VISION_PROMPTS.includes(s.visionPrompt)) {
         s.visionPrompt = DEFAULT_VISION_PROMPT;
@@ -227,13 +243,30 @@ function siteEntries() {
         .filter(entry => entry.domain);
 }
 
+const ALL_SITES = '*';
+
 function activeDomain() {
     const s = settings();
     const domains = siteEntries().map(entry => entry.domain);
+    if (domains.length > 1 && (s.lastSite === ALL_SITES || !s.lastSite || !domains.includes(s.lastSite))) {
+        return ALL_SITES;
+    }
     if (s.lastSite && domains.includes(s.lastSite)) {
         return s.lastSite;
     }
     return domains[0] || '';
+}
+
+function domainsFor(domain) {
+    return domain === ALL_SITES ? siteEntries().map(entry => entry.domain) : (domain ? [domain] : []);
+}
+
+function siteLabel(domain) {
+    return domain === ALL_SITES ? 'all sites' : domain;
+}
+
+function anySiteLabel(domain) {
+    return domain === ALL_SITES ? 'any site' : domain;
 }
 
 function hostOf(url) {
@@ -369,6 +402,10 @@ const ENGINES = {
         full: (post, origin) => absolute(post.file_url, origin) || gelbooruPath(post, origin, 'images', '', ''),
         thumb: (post, origin) => absolute(post.preview_url, origin) || gelbooruPath(post, origin, 'thumbnails', 'thumbnail_', 'jpg'),
         postUrl: (post, origin) => `${origin}/index.php?page=post&s=view&id=${post.id}`,
+        parentId: post => (Number(post.parent_id) > 0 ? String(post.parent_id) : ''),
+        hasChildren: post => post.has_children === true || post.has_children === 'true',
+        md5: post => String(post.md5 || post.hash || ''),
+        family: root => [[`parent:${root}`], [`id:${root}`]],
         siteUrl: (origin, tags) => `${origin}/index.php?page=post&s=list&tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ general: 'general', safe: 'general', s: 'general', sensitive: 'sensitive', questionable: 'questionable', q: 'questionable', explicit: 'explicit', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
@@ -389,6 +426,10 @@ const ENGINES = {
         thumb: (post, origin) => absolute(post.preview_file_url, origin),
         postUrl: (post, origin) => `${origin}/posts/${post.id}`,
         siteUrl: (origin, tags) => `${origin}/posts?tags=${encodeURIComponent(tags.join(' '))}`,
+        parentId: post => (Number(post.parent_id) > 0 ? String(post.parent_id) : ''),
+        hasChildren: post => Boolean(post.has_active_children ?? post.has_children),
+        md5: post => String(post.md5 || ''),
+        family: root => [[`parent:${root}`]],
         rating: post => ({ g: 'general', s: 'sensitive', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tag_string),
     },
@@ -403,6 +444,10 @@ const ENGINES = {
         thumb: (post, origin) => absolute(post.preview?.url, origin),
         postUrl: (post, origin) => `${origin}/posts/${post.id}`,
         siteUrl: (origin, tags) => `${origin}/posts?tags=${encodeURIComponent(tags.join(' '))}`,
+        parentId: post => (Number(post.relationships?.parent_id) > 0 ? String(post.relationships.parent_id) : ''),
+        hasChildren: post => Boolean(post.relationships?.has_active_children || post.relationships?.has_children || post.relationships?.children?.length),
+        md5: post => String(post.file?.md5 || ''),
+        family: root => [[`parent:${root}`], [`id:${root}`]],
         rating: post => ({ s: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
     },
@@ -421,6 +466,10 @@ const ENGINES = {
         full: (post, origin) => absolute(post.jpeg_url, origin) || absolute(post.file_url, origin),
         thumb: (post, origin) => absolute(post.preview_url, origin),
         postUrl: (post, origin) => `${origin}/post/show/${post.id}`,
+        parentId: post => (Number(post.parent_id) > 0 ? String(post.parent_id) : ''),
+        hasChildren: post => Boolean(post.has_children),
+        md5: post => String(post.md5 || ''),
+        family: root => [[`parent:${root}`], [`id:${root}`]],
         siteUrl: (origin, tags) => `${origin}/post?tags=${encodeURIComponent(tags.join(' '))}`,
         rating: post => ({ s: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
@@ -435,6 +484,10 @@ const ENGINES = {
         full: (post, origin) => absolute(post.representations?.full, origin) || absolute(post.view_url, origin),
         thumb: (post, origin) => absolute(post.representations?.thumb, origin) || absolute(post.representations?.thumb_small, origin),
         postUrl: (post, origin) => `${origin}/images/${post.id}`,
+        parentId: () => '',
+        hasChildren: () => false,
+        md5: post => String(post.orig_sha512_hash || post.sha512_hash || ''),
+        family: () => [],
         siteUrl: (origin, tags) => `${origin}/search?q=${encodeURIComponent(tags.length ? tags.join(', ') : '*')}&sf=score&sd=desc`,
         rating: post => {
             const tags = tagList(post.tags).map(tag => tag.toLowerCase());
@@ -483,7 +536,21 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats) {
         const full = engine.full(post, origin);
         const thumb = engine.thumb(post, origin);
         const alts = [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
-        items.push({ img, thumb: thumb || img, alts, page: engine.postUrl(post, origin), tags });
+        const postId = String(post.id ?? '');
+        const parentId = engine.parentId(post);
+        items.push({
+            img,
+            thumb: thumb || img,
+            alts,
+            page: engine.postUrl(post, origin),
+            tags,
+            domain: origin.replace(/^https?:\/\//, ''),
+            postId,
+            parentId,
+            hasChildren: engine.hasChildren(post),
+            md5: engine.md5(post),
+            root: parentId || postId,
+        });
     }
     return items;
 }
@@ -529,8 +596,8 @@ async function engineOf(entry, tags) {
 }
 
 function capFor(domain) {
-    const engine = ENGINES[settings().engines[domain]];
-    return engine ? engine.cap : 0;
+    const caps = domainsFor(domain).map(d => ENGINES[settings().engines[d]]?.cap).filter(Boolean);
+    return caps.length ? Math.min(...caps) : 0;
 }
 
 function defaultRequired(tags) {
@@ -561,6 +628,7 @@ async function fetchPage(entry, engineName, required, page) {
         const stats = { rating: 0, excluded: 0, local: 0, notImage: 0 };
         const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats);
         const debug = {
+            domain: entry.domain,
             page,
             apiUrl: engine.url(origin, query, entry.extra, page),
             siteUrl: engine.siteUrl(origin, engine.tags([...siteTags, ...localTags], s.ratings, noOrder)),
@@ -574,9 +642,68 @@ async function fetchPage(entry, engineName, required, page) {
     return { items: [], done: true, debug: null };
 }
 
+const families = new Map();
+
+function familyKey(item) {
+    return `${item.domain}:${item.root || item.postId || item.img}`;
+}
+
+function mayHaveFamily(item) {
+    return Boolean(item.parentId || item.hasChildren);
+}
+
+function supportsFamily(item) {
+    const engine = ENGINES[settings().engines[item.domain]];
+    return Boolean(engine && (item.root || item.postId) && engine.family(item.root || item.postId).length);
+}
+
+async function fetchFamily(item) {
+    const key = familyKey(item);
+    if (families.has(key)) {
+        return families.get(key);
+    }
+    const promise = (async () => {
+        const s = settings();
+        const entry = siteEntries().find(e => e.domain === item.domain);
+        const engineName = s.engines[item.domain];
+        const engine = ENGINES[engineName];
+        if (!entry || !engine || !item.root) {
+            return [item];
+        }
+        const origin = `https://${entry.domain}`;
+        const noOrder = noOrderSites.has(entry.domain);
+        const found = [];
+        const isRoot = !item.parentId && item.postId === item.root;
+        const queries = engine.family(item.root).filter(tags => !(isRoot && tags.some(tag => tag.startsWith('id:'))));
+        const results = await Promise.allSettled(queries.map(async tags => {
+            const result = await request(engine.url(origin, engine.tags(tags, s.ratings, noOrder), entry.extra, 0));
+            const posts = engine.parse(result);
+            return posts ? postsToItems(engineName, posts, origin, s.ratings, [], { rating: 0, excluded: 0, local: 0, notImage: 0 }) : [];
+        }));
+        results.forEach(result => result.status === 'fulfilled' && found.push(...result.value));
+        const seen = new Set();
+        const members = [item, ...found].filter(member => {
+            if (seen.has(member.img)) {
+                return false;
+            }
+            seen.add(member.img);
+            return true;
+        });
+        members.sort((a, b) => (a.postId === item.root ? -1 : b.postId === item.root ? 1 : Number(a.postId) - Number(b.postId)));
+        return members;
+    })();
+    families.set(key, promise);
+    promise.catch(() => families.delete(key));
+    return promise;
+}
+
 function createBrowse(domain, tags, required) {
     const req = tags.filter(tag => required.includes(tag));
-    return { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [] };
+    const browse = { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [], subs: null, siteErrors: [] };
+    if (domain === ALL_SITES) {
+        browse.subs = siteEntries().map(entry => createBrowse(entry.domain, tags, required));
+    }
+    return browse;
 }
 
 function sameTags(a, b) {
@@ -617,9 +744,41 @@ function rankItems(items, preferred) {
 
 function rerankBrowse(old, tags, required) {
     const next = createBrowse(old.domain, tags, required);
-    Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages });
+    Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages, siteErrors: old.siteErrors });
+    if (old.subs) {
+        next.subs = old.subs.map(sub => rerankBrowse(sub, tags, required));
+    }
     next.items = rankItems(old.items.slice(), next.preferred);
     return next;
+}
+
+async function loadMoreAll(browse) {
+    const active = browse.subs.filter(sub => !sub.done);
+    const results = await Promise.allSettled(active.map(sub => loadMore(sub)));
+    const merged = [];
+    results.forEach((result, site) => {
+        if (result.status === 'fulfilled') {
+            result.value.forEach((item, rank) => merged.push({ item, rank, site }));
+        }
+    });
+    merged.sort((a, b) => (b.item.score || 0) - (a.item.score || 0) || a.rank - b.rank || a.site - b.site);
+    const added = [];
+    for (const { item } of merged) {
+        const key = item.md5 || item.img;
+        if (browse.seen.has(key)) {
+            continue;
+        }
+        browse.seen.add(key);
+        browse.items.push(item);
+        added.push(item);
+    }
+    browse.pages = browse.subs.flatMap(sub => sub.pages);
+    browse.done = browse.subs.every(sub => sub.done);
+    browse.siteErrors = browse.subs.filter(sub => sub.error).map(sub => `${sub.domain}: ${sub.error}`);
+    if (browse.subs.length && browse.siteErrors.length === browse.subs.length) {
+        throw new Error(browse.siteErrors.join(' | '));
+    }
+    return added;
 }
 
 async function loadMore(browse) {
@@ -630,6 +789,9 @@ async function loadMore(browse) {
         return [];
     }
     browse.loading = (async () => {
+        if (browse.subs) {
+            return loadMoreAll(browse);
+        }
         const entry = siteEntries().find(e => e.domain === browse.domain);
         if (!entry) {
             throw new Error(`${browse.domain} is not in the approved sites.`);
@@ -693,10 +855,62 @@ function maxSuggested() {
     return Math.max(1, Number(settings().maxSuggested) || 8);
 }
 
-function buildTagPrompt() {
+function fillNames(text, charName) {
+    const c = ctx();
+    return String(text || '')
+        .replace(/\{\{char\}\}/gi, charName || c.name2 || 'the character')
+        .replace(/\{\{user\}\}/gi, c.name1 || 'the user');
+}
+
+function appearanceExcerpt(text, limit) {
+    const sentences = String(text || '')
+        .replace(/<[^>]+>/g, ' ')
+        .split(/(?<=[.!?])\s+|\n+/);
+    const picked = [];
+    let size = 0;
+    for (const sentence of sentences) {
+        const clean = sentence.replace(/\s+/g, ' ').trim();
+        if (clean.length < 8 || !APPEARANCE_WORDS.test(clean)) {
+            continue;
+        }
+        const piece = clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
+        if (picked.length && size + piece.length > limit) {
+            break;
+        }
+        picked.push(piece);
+        size += piece.length + 1;
+    }
+    return picked.join(' ');
+}
+
+function cardAppearances() {
+    const c = ctx();
+    const characters = Array.isArray(c.characters) ? c.characters : [];
+    let members = [];
+    if (c.groupId) {
+        const group = (c.groups || []).find(g => String(g?.id) === String(c.groupId));
+        members = (group?.members || []).map(avatar => characters.find(ch => ch?.avatar === avatar)).filter(Boolean);
+    } else if (c.characterId !== undefined && c.characterId !== null && characters[c.characterId]) {
+        members = [characters[c.characterId]];
+    }
+    const lines = [];
+    for (const character of members.slice(0, 4)) {
+        const text = appearanceExcerpt(fillNames(character.description || character.data?.description || '', character.name), 500);
+        if (text) {
+            lines.push(`${character.name} (character card): ${text}`);
+        }
+    }
+    const persona = appearanceExcerpt(fillNames(c.powerUserSettings?.persona_description || '', c.name2), 400);
+    if (persona) {
+        lines.push(`${c.name1 || 'User'} (persona): ${persona}`);
+    }
+    return lines;
+}
+
+function buildTagRequest() {
     const s = settings();
     const c = ctx();
-    const count = Math.max(1, Number(s.contextMessages) || 3);
+    const count = Math.max(1, Number(s.contextMessages) || 6);
     const chars = Math.max(100, Number(s.contextChars) || 500);
     const lines = (c.chat || [])
         .filter(m => m && !m.is_system && typeof m.mes === 'string' && m.mes.trim())
@@ -705,16 +919,63 @@ function buildTagPrompt() {
             const text = cleanForPrompt(m.mes);
             return `${m.name || (m.is_user ? 'User' : 'Character')}: ${text.length > chars ? '…' + text.slice(-chars) : text}`;
         });
+    const cards = s.useCards ? cardAppearances() : [];
     const avoid = [...suggestBlacklist()].slice(0, 40);
     const known = parseLooks().map(look => look.name).slice(0, 30);
-    const context = (known.length ? `If the person is one of these characters, write the name exactly like this: ${known.join(', ')}.\n` : '')
-        + (avoid.length ? `Never use these tags: ${avoid.join(', ')}.\n` : '')
-        + (known.length || avoid.length ? '\n' : '')
-        + lines.join('\n');
-    return String(s.tagPrompt || DEFAULT_TAG_PROMPT)
-        .replace(/\{\{max\}\}/g, String(maxSuggested() + 2))
+    const notes = [
+        known.length ? `If the person is one of these characters, write the name exactly like this: ${known.join(', ')}.` : '',
+        avoid.length ? `Never use these tags: ${avoid.join(', ')}.` : '',
+    ].filter(Boolean);
+    const context = [
+        notes.join('\n'),
+        cards.length ? `What the cards say about appearance:\n${cards.join('\n')}` : '',
+        `Latest messages:\n${lines.join('\n')}`,
+    ].filter(Boolean).join('\n\n');
+    const prompt = String(s.tagPrompt || DEFAULT_TAG_PROMPT)
+        .replace(/\{\{max\}\}/g, String(maxSuggested()))
         .replace(/\{\{char\}\}/g, c.name2 || 'the main character')
         .replace(/\{\{context\}\}/g, () => context);
+    return { prompt, evidence: [...cards, ...lines].join('\n') };
+}
+
+function normalizeEvidence(text) {
+    return String(text || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/[^\p{L}\p{N}' ]+/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function quoteSupported(quote, haystack, words) {
+    const needle = normalizeEvidence(quote);
+    if (!needle) {
+        return false;
+    }
+    if (` ${haystack} `.includes(` ${needle} `) || (needle.length >= 8 && haystack.includes(needle))) {
+        return true;
+    }
+    const parts = needle.split(' ').filter(Boolean);
+    const content = parts.filter(part => part.length >= 3 && !STOP_WORDS.has(part));
+    const counted = content.length ? content : parts;
+    const known = part => words.has(part) || (part.length >= 4 && [...words].some(word => word.length >= 4 && (part.startsWith(word) || word.startsWith(part))));
+    const hits = counted.filter(known).length;
+    return hits > 0 && hits / counted.length >= 0.7;
+}
+
+function readSuggestionLines(body) {
+    const found = [];
+    for (const line of String(body || '').split('\n')) {
+        if (!line.trim()) {
+            continue;
+        }
+        const quoted = line.match(/^\s*(?:[-*•]+|\d+[.)])?\s*([^,"“”«]+?)\s*(?:=|:|—|–|-)?\s*["“”«]([^"“”»]+)["“”»]/);
+        if (quoted) {
+            found.push({ raw: quoted[1].replace(/[=:—–-]+$/, '').trim(), quote: quoted[2].trim() });
+            continue;
+        }
+        for (const part of line.split(',')) {
+            if (part.trim()) {
+                found.push({ raw: part, quote: '' });
+            }
+        }
+    }
+    return found;
 }
 
 function parseLooks(text = settings().characterLooks) {
@@ -825,16 +1086,22 @@ function splitSuggestion(text) {
     return { subject: subject.slice(0, 60), body: tagsMatch ? tagsMatch[1] : rest };
 }
 
-function parseSuggestion(text) {
+function parseSuggestion(text, evidenceText = null) {
     const limit = maxSuggested() + 2;
     const names = storyNames();
     const banned = suggestBlacklist();
     const { subject, body } = splitSuggestion(text);
+    const entries = readSuggestionLines(body);
+    const anyQuote = entries.some(entry => entry.quote);
+    const checkEvidence = evidenceText !== null && settings().requireEvidence && anyQuote;
+    const haystack = normalizeEvidence(evidenceText || '');
+    const words = new Set(haystack.split(' ').filter(Boolean));
     const seen = new Set();
     const tags = [];
     const dropped = [];
-    for (const raw of body.split(/[,\n]/)) {
-        let tag = normalizeTag(raw.replace(/^\s*(?:[-*#•]+|\d+[.)])\s*/, '').replace(/["'`[\]]/g, ''));
+    const evidence = {};
+    for (const entry of entries) {
+        let tag = normalizeTag(entry.raw.replace(/^\s*(?:[-*#•]+|\d+[.)])\s*/, '').replace(/["'`[\]*]/g, ''));
         if (!tag) {
             continue;
         }
@@ -868,12 +1135,23 @@ function parseSuggestion(text) {
             dropped.push(`${tag} (excluded)`);
             continue;
         }
+        if (checkEvidence && !entry.quote) {
+            dropped.push(`${tag} (no quote)`);
+            continue;
+        }
+        if (checkEvidence && !quoteSupported(entry.quote, haystack, words)) {
+            dropped.push(`${tag} (quote not in the story: "${entry.quote.slice(0, 60)}")`);
+            continue;
+        }
         seen.add(tag);
+        if (entry.quote) {
+            evidence[tag] = entry.quote;
+        }
         if (tags.length < limit) {
             tags.push(tag);
         }
     }
-    return { tags, dropped, subject };
+    return { tags, dropped, subject, evidence, noQuotes: evidenceText !== null && settings().requireEvidence && !anyQuote && entries.length > 0 };
 }
 
 async function suggestTags(signal) {
@@ -886,16 +1164,20 @@ async function suggestTags(signal) {
     if (!s.tagProfile) {
         throw new Error('No tag profile chosen in Image Search settings.');
     }
-    const messages = [{ role: 'user', content: buildTagPrompt() }];
+    const request = buildTagRequest();
+    const messages = [{ role: 'user', content: request.prompt }];
     const prompt = service.constructPrompt(messages, s.tagProfile);
-    const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 100), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.3 });
+    const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 250), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.2 });
     const text = typeof result === 'string' ? result : result?.content || '';
-    const { tags, dropped, subject } = parseSuggestion(text);
+    const { tags, dropped, subject, evidence, noQuotes } = parseSuggestion(text, request.evidence);
+    if (noQuotes) {
+        dropped.push('(the model gave no quotes, so nothing could be checked)');
+    }
     if (!tags.length && !findLook(subject)) {
         const usedReasoning = typeof result === 'object' && result?.reasoning;
         throw new Error(usedReasoning ? 'The tag model spent its tokens thinking and gave no tags. Use a non-thinking model or raise the token limit.' : 'The tag model gave no usable tags.');
     }
-    return { tags, dropped, subject, raw: String(text).trim().slice(0, 400) };
+    return { tags, dropped, subject, evidence, raw: String(text).trim().slice(0, 600) };
 }
 
 function tagKey(domain, tag) {
@@ -903,8 +1185,31 @@ function tagKey(domain, tag) {
 }
 
 function knownCount(domain, tag) {
+    if (domain === ALL_SITES) {
+        let best = null;
+        for (const d of domainsFor(ALL_SITES)) {
+            const value = knownCount(d, tag);
+            if (value !== null) {
+                best = best === null ? value : Math.max(best, value);
+            }
+        }
+        return best;
+    }
     const value = tagCounts.get(tagKey(domain, tag));
     return value === undefined ? null : value;
+}
+
+async function lookupTagsFor(domain, tags) {
+    await Promise.all(domainsFor(domain).map(async d => {
+        const entry = siteEntries().find(e => e.domain === d);
+        if (!entry) {
+            return;
+        }
+        const engineName = await engineOf(entry, tags).catch(() => '');
+        if (ENGINES[engineName]) {
+            await lookupTags(d, engineName, tags);
+        }
+    }));
 }
 
 function readTagList(result) {
@@ -982,21 +1287,181 @@ async function lookupTags(domain, engineName, tags) {
     }
 }
 
+const TAG_SEARCH = {
+    gelbooru: [
+        (origin, prefix, extra) => [`${prefix}%`, `%${prefix}%`].map(pattern => `${origin}/index.php?page=dapi&s=tag&q=index&json=1&limit=40&orderby=count&order=DESC&name_pattern=${encodeURIComponent(pattern)}${extra}`),
+        (origin, prefix) => `${origin}/autocomplete.php?q=${encodeURIComponent(prefix)}`,
+        (origin, prefix) => `${origin}/index.php?page=autocomplete2&type=tag_query&limit=20&term=${encodeURIComponent(prefix)}`,
+    ],
+    danbooru: [
+        (origin, prefix, extra) => `${origin}/tags.json?limit=40&search%5Border%5D=count&search%5Bhide_empty%5D=yes&search%5Bname_matches%5D=${encodeURIComponent(`*${prefix}*`)}${extra}`,
+    ],
+    e621: [
+        (origin, prefix, extra) => `${origin}/tags.json?limit=40&search%5Border%5D=count&search%5Bhide_empty%5D=yes&search%5Bname_matches%5D=${encodeURIComponent(`*${prefix}*`)}${extra}`,
+    ],
+    moebooru: [
+        (origin, prefix, extra) => `${origin}/tag.json?limit=40&order=count&name_pattern=${encodeURIComponent(prefix)}${extra}`,
+    ],
+    philomena: [
+        (origin, prefix, extra) => `${origin}/api/v1/json/search/tags?per_page=40&sf=images&sd=desc&q=${encodeURIComponent(`name:*${prefix.replace(/_/g, ' ')}*`)}${extra}`,
+        (origin, prefix, extra) => `${origin}/api/v1/json/search/tags?per_page=40&q=${encodeURIComponent(`name:${prefix.replace(/_/g, ' ')}*`)}${extra}`,
+    ],
+};
+
+const completions = new Map();
+const completeMode = new Map();
+
+function readCompletions(result) {
+    if (!result?.ok) {
+        return null;
+    }
+    const data = result.data;
+    const list = Array.isArray(data) ? data : Array.isArray(data?.tag) ? data.tag : Array.isArray(data?.tags) ? data.tags : null;
+    if (!list) {
+        return readTagList(result);
+    }
+    const out = [];
+    for (const item of list) {
+        if (typeof item === 'string') {
+            out.push({ name: normalizeTag(item), count: 0 });
+            continue;
+        }
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+        const label = String(item.label ?? '');
+        const counted = label.match(/\((\d+)\)\s*$/);
+        const name = item.name ?? item.value ?? label.replace(/\s*\(\d+\)\s*$/, '');
+        const count = Number(item.count ?? item.post_count ?? item.images ?? (counted ? counted[1] : 0)) || 0;
+        if (typeof name === 'string' && name) {
+            out.push({ name: normalizeTag(name), count });
+        }
+    }
+    return out;
+}
+
+async function completeFrom(domain, prefix) {
+    const entry = siteEntries().find(e => e.domain === domain);
+    if (!entry) {
+        return [];
+    }
+    const engineName = settings().engines[domain] || await engineOf(entry, [prefix]).catch(() => '');
+    const builders = TAG_SEARCH[engineName];
+    const start = completeMode.get(domain) ?? 0;
+    if (!builders || start >= builders.length) {
+        return [];
+    }
+    const origin = `https://${domain}`;
+    let empty = false;
+    let answered = false;
+    for (let index = start; index < builders.length; index++) {
+        const urls = [builders[index](origin, prefix, entry.extra)].flat();
+        const results = await Promise.allSettled(urls.map(url => request(url)));
+        let list = null;
+        for (const result of results) {
+            if (result.status !== 'fulfilled') {
+                continue;
+            }
+            answered = true;
+            const part = readCompletions(result.value);
+            if (part) {
+                list = [...(list || []), ...part];
+            }
+        }
+        if (!list) {
+            continue;
+        }
+        if (!list.length) {
+            empty = true;
+            continue;
+        }
+        const matching = list.filter(item => item.name.includes(prefix));
+        if (matching.length) {
+            completeMode.set(domain, index);
+            matching.forEach(item => {
+                if (item.count && knownCount(domain, item.name) === null) {
+                    tagCounts.set(tagKey(domain, item.name), item.count);
+                }
+            });
+            return matching;
+        }
+    }
+    if (answered && !empty) {
+        completeMode.set(domain, builders.length);
+    }
+    return [];
+}
+
+function localCompletions(prefix) {
+    const counts = new Map();
+    const add = tag => {
+        if (tag && tag.includes(prefix)) {
+            counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+    };
+    library.entries.forEach(entry => entry.tags.forEach(add));
+    (settings().lastTags || []).forEach(add);
+    for (const key of tagCounts.keys()) {
+        add(key.slice(key.indexOf('|') + 1));
+    }
+    return [...counts.keys()].map(name => ({ name, count: 0, local: counts.get(name) }));
+}
+
+function rankCompletions(list, prefix) {
+    const place = name => name.startsWith(prefix) ? 0 : name.includes(`_${prefix}`) ? 1 : 2;
+    return list.sort((a, b) => place(a.name) - place(b.name) || b.count - a.count || (b.local || 0) - (a.local || 0) || a.name.length - b.name.length || a.name.localeCompare(b.name));
+}
+
+function usableCompletion(name) {
+    return name && !BLOCKED_TAGS.has(name) && !EXCLUDED_TAGS.has(name) && !isCleanupTag(name);
+}
+
+async function completeTag(domain, typed) {
+    const prefix = normalizeTag(typed);
+    if (prefix.length < 2) {
+        return [];
+    }
+    const key = `${domain}|${prefix}`;
+    if (!completions.has(key)) {
+        const work = Promise.all(domainsFor(domain).map(d => completeFrom(d, prefix).catch(() => []))).then(lists => {
+            const merged = new Map();
+            lists.flat().forEach(item => {
+                const known = merged.get(item.name);
+                if (!known || item.count > known.count) {
+                    merged.set(item.name, item);
+                }
+            });
+            let list = [...merged.values()].filter(item => usableCompletion(item.name));
+            if (!list.length) {
+                list = localCompletions(prefix).filter(item => usableCompletion(item.name));
+                completions.delete(key);
+            }
+            return rankCompletions(list, prefix).slice(0, 8);
+        });
+        completions.set(key, work);
+    }
+    return completions.get(key);
+}
+
+function formatCount(count) {
+    if (count >= 1e6) {
+        return `${Number((count / 1e6).toFixed(count >= 1e7 ? 0 : 1))}M`;
+    }
+    if (count >= 1e3) {
+        return `${Number((count / 1e3).toFixed(count >= 1e4 ? 0 : 1))}k`;
+    }
+    return String(count);
+}
+
 async function checkSuggested(domain, suggestion) {
     const tags = [...suggestion.tags];
     const dropped = [...suggestion.dropped];
-    const entry = siteEntries().find(e => e.domain === domain);
-    if (entry) {
-        const engineName = await engineOf(entry, tags).catch(() => '');
-        if (ENGINES[engineName]) {
-            await lookupTags(domain, engineName, tags);
-        }
-    }
+    await lookupTagsFor(domain, tags);
     const minimum = Math.max(0, Number(settings().minTagPosts) || 0);
     const kept = tags.filter(tag => {
         const count = knownCount(domain, tag);
         if (count === 0) {
-            dropped.push(`${tag} (not on ${domain})`);
+            dropped.push(`${tag} (not on ${anySiteLabel(domain)})`);
             return false;
         }
         if (count !== null && count < minimum) {
@@ -1013,6 +1478,8 @@ async function checkSuggested(domain, suggestion) {
 function clearTagCache() {
     tagCounts.clear();
     noTagLookup.clear();
+    completions.clear();
+    completeMode.clear();
 }
 
 function currentChatId() {
@@ -1041,6 +1508,7 @@ function startPrefetch() {
             }
             entry.raw = suggestion.raw;
             entry.subject = suggestion.subject;
+            entry.evidence = suggestion.evidence || {};
             const domain = activeDomain();
             const checked = domain && suggestion.tags.length ? await checkSuggested(domain, suggestion) : suggestion;
             if (entry.controller.signal.aborted) {
@@ -1056,7 +1524,7 @@ function startPrefetch() {
                 entry.required = look.required;
             } else {
                 if (!checked.tags.length) {
-                    throw new Error(`None of the suggested tags exist on ${domain}.`);
+                    throw new Error(`None of the suggested tags exist on ${anySiteLabel(domain)}.`);
                 }
                 entry.tags = checked.tags;
                 entry.required = entry.aiRequired;
@@ -1317,7 +1785,7 @@ function summaryTags(tags) {
         .slice(0, 60);
 }
 
-async function imageDataUrl(url, source = null) {
+async function imageDataUrl(url, source = null, maxSide = 1024) {
     let blob = source;
     if (!blob) {
         const response = await fetch(url);
@@ -1328,7 +1796,7 @@ async function imageDataUrl(url, source = null) {
     }
     try {
         const bitmap = await createImageBitmap(blob);
-        const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+        const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(bitmap.width * scale));
         canvas.height = Math.max(1, Math.round(bitmap.height * scale));
@@ -1354,12 +1822,34 @@ function parseKeywords(text) {
         .slice(0, 8);
 }
 
+function renderSections(sections) {
+    return SECTIONS.filter(([key]) => sections?.[key]).map(([key, label]) => `${label}: ${sections[key]}`).join('\n');
+}
+
 function parseDescription(raw) {
-    const keywordMatch = raw.match(/^\s*\**keywords?\**\s*:\s*(.+)$/im);
-    const keywords = keywordMatch ? parseKeywords(keywordMatch[1]) : [];
-    const body = keywordMatch ? raw.slice(0, keywordMatch.index) + raw.slice(keywordMatch.index + keywordMatch[0].length) : raw;
-    const text = body.replace(/^\s*\**description\**\s*:\s*/im, '').replace(/\s+/g, ' ').trim().slice(0, 1500);
-    return { text, keywords };
+    const labels = 'visual|expression|action|atmosphere|framing|keywords?|description|variant\\s*\\d+|version\\s*\\d+';
+    const marks = [...String(raw || '').matchAll(new RegExp(`^[\\s*#>-]*\\**(${labels})\\**\\s*:\\s*(?:\\*\\*\\s*)?`, 'gim'))];
+    const sections = {};
+    const variants = {};
+    let keywords = [];
+    const source = String(raw || '');
+    let plain = marks.length ? source.slice(0, marks[0].index) : source;
+    marks.forEach((mark, index) => {
+        const label = mark[1].toLowerCase().replace(/\s+/g, ' ');
+        const end = index + 1 < marks.length ? marks[index + 1].index : source.length;
+        const content = source.slice(mark.index + mark[0].length, end).replace(/\s+/g, ' ').trim();
+        if (label.startsWith('keyword')) {
+            keywords = parseKeywords(content);
+        } else if (label === 'description') {
+            plain += ` ${content}`;
+        } else if (/^(variant|version) \d+$/.test(label)) {
+            variants[Number(label.split(' ')[1])] = content.slice(0, 500);
+        } else if (content) {
+            sections[label] = content.slice(0, 700);
+        }
+    });
+    const text = renderSections(sections) || String(plain).replace(/\s+/g, ' ').trim().slice(0, 1500);
+    return { text, sections, keywords, variants };
 }
 
 async function requestDescription(url, tags, blob = null) {
@@ -1390,12 +1880,13 @@ function startDescription(url, postTags, onDone, blob = null) {
     if (!s.describe) {
         return;
     }
-    const entry = { url, tags: summaryTags(postTags), text: '', keywords: [], error: '', started: Date.now(), ms: 0, done: false };
+    const entry = { url, tags: summaryTags(postTags), text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
     entry.promise = requestDescription(url, entry.tags, blob)
-        .then(({ text, keywords }) => {
+        .then(({ text, keywords, sections }) => {
             entry.text = text;
             entry.keywords = keywords;
-            onDone?.(text, keywords);
+            entry.sections = sections || {};
+            onDone?.(text, keywords, entry.sections);
         })
         .catch(error => {
             entry.error = String(error?.cause?.message || error?.message || error);
@@ -1412,12 +1903,17 @@ function startDescription(url, postTags, onDone, blob = null) {
     descriptions.set(url, entry);
 }
 
+function tagsLine(tags) {
+    return tags?.length ? `Tags: ${tags.join(', ').replace(/_/g, ' ')}` : '';
+}
+
 function pictureNote(entry, who = 'the user shared') {
+    const tags = tagsLine(entry.tags);
     if (entry.text) {
-        return `[Picture ${who}: ${entry.text}]`;
+        return `[Picture ${who}:\n${entry.text}${tags ? `\n${tags}` : ''}]`;
     }
-    if (entry.tags.length) {
-        return `[Picture ${who}, tagged: ${entry.tags.slice(0, 25).join(', ').replace(/_/g, ' ')}]`;
+    if (tags) {
+        return `[Picture ${who}. ${tags}]`;
     }
     return '';
 }
@@ -1437,6 +1933,9 @@ function cleanEntry(entry) {
         tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
         searchTags: Array.isArray(entry.searchTags) ? entry.searchTags.map(String) : [],
         description: String(entry.description || ''),
+        sections: entry.sections && typeof entry.sections === 'object' ? Object.fromEntries(SECTIONS.filter(([key]) => typeof entry.sections[key] === 'string').map(([key]) => [key, entry.sections[key]])) : {},
+        kind: entry.kind === 'set' ? 'set' : 'single',
+        variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
         characters: Array.isArray(entry.characters) ? entry.characters.map(String) : [],
@@ -1523,19 +2022,308 @@ function saveLibrary({ skipSync = false } = {}) {
 }
 
 function newEntryId() {
+    const ids = allIds();
     let id = '';
     do {
         id = Math.random().toString(36).slice(2, 8);
-    } while (id.length < 6 || library.entries.some(entry => entry.id === id));
+    } while (id.length < 6 || ids.has(id));
     return id;
 }
 
+function findPicture(test) {
+    for (const entry of library.entries) {
+        if (entry.kind === 'set' && entry.variants.length) {
+            const variant = entry.variants.find(test);
+            if (variant) {
+                return { entry, variant };
+            }
+        } else if (test(entry)) {
+            return { entry, variant: null };
+        }
+    }
+    return null;
+}
+
+function findBySource(source) {
+    return source ? findPicture(item => item.source === source) : null;
+}
+
+function resolvePic(id) {
+    return findPicture(item => item.id === id);
+}
+
 function entryForSource(source) {
-    return source ? library.entries.find(entry => entry.source === source) : null;
+    return findBySource(source)?.entry || null;
 }
 
 function entryForUrl(url) {
-    return library.entries.find(entry => entry.url === url) || null;
+    return findPicture(item => item.url === url)?.entry || null;
+}
+
+function allIds() {
+    const ids = new Set();
+    for (const entry of library.entries) {
+        ids.add(entry.id);
+        entry.variants.forEach(variant => ids.add(variant.id));
+    }
+    return ids;
+}
+
+function entryUrls(entry) {
+    return entry.kind === 'set' && entry.variants.length ? entry.variants.map(variant => variant.url) : [entry.url];
+}
+
+function describedVariant(entry, variant) {
+    const isOther = variant && entry.kind === 'set' && variant.id !== entry.variants[0]?.id;
+    const text = isOther && variant.diff ? `${entry.description}\nThis version: ${variant.diff}` : entry.description;
+    return readyDescription(variant?.url || entry.url, entry.tags, text);
+}
+
+async function deleteImageFile(url) {
+    const path = String(url || '').replace(/^\/+/, '');
+    if (!path.startsWith('user/images/')) {
+        return false;
+    }
+    try {
+        const response = await fetch('/api/images/delete', { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify({ path }) });
+        return response.ok || response.status === 404;
+    } catch (error) {
+        console.warn('[Image Search] could not delete file', url, error);
+        return false;
+    }
+}
+
+async function deleteEntry(entry) {
+    await loadLibrary();
+    const urls = entryUrls(entry);
+    await removeFromLibrary(entry);
+    for (const url of urls) {
+        descriptions.delete(url);
+        await deleteImageFile(url);
+    }
+}
+
+async function deleteAllPictures() {
+    await loadLibrary();
+    const all = [...library.entries];
+    all.forEach(entry => library.deleted.add(entry.id));
+    library.entries = [];
+    await saveLibrary();
+    for (const entry of all) {
+        for (const url of entryUrls(entry)) {
+            descriptions.delete(url);
+            await deleteImageFile(url);
+        }
+    }
+    return all.length;
+}
+
+async function removeVariant(entry, variant) {
+    if (entry.kind !== 'set' || entry.variants.length < 2) {
+        return deleteEntry(entry);
+    }
+    entry.variants = entry.variants.filter(item => item.id !== variant.id);
+    const main = entry.variants[0];
+    if (entry.id !== main.id) {
+        library.deleted.add(entry.id);
+        library.deleted.delete(main.id);
+    }
+    entry.id = main.id;
+    entry.url = main.url;
+    entry.source = main.source;
+    if (entry.variants.length === 1) {
+        entry.kind = 'single';
+        entry.variants = [];
+    }
+    descriptions.delete(variant.url);
+    await saveLibrary();
+    await deleteImageFile(variant.url);
+}
+
+function setPrompt(tags, count) {
+    const base = String(settings().visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const versions = Array.from({ length: count - 1 }, (_, i) => `Version ${i + 2}: 1 sentence on what is different in picture ${i + 2} compared to picture 1 (expression, pose, outfit, framing or what is happening)`).join('\n');
+    return `You will see ${count} pictures. They are versions of the same scene; picture 1 is the main one. Describe picture 1 as asked below, then add the version lines.\n\n${base}\n\nAfter the Keywords line, add one line per other picture:\n${versions}`;
+}
+
+async function describeDifference(entry, index, blob) {
+    const service = ctx().ConnectionManagerRequestService;
+    const image = await imageDataUrl(entry.variants[index].url, blob || null);
+    const scene = [entry.sections?.visual, entry.sections?.action].filter(Boolean).join(' ') || entry.description;
+    const prompt = `This picture is one version of a scene described below. In 1 sentence, say only what this version shows that is different: expression, pose, outfit, framing or what is happening. Ignore writing in the picture, except onomatopoeia.\n\nThe scene: ${scene}`;
+    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 120, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*\**(version\s*\d+|difference)\**\s*:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 400);
+}
+
+async function describeSet(entry, blobs = []) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    const profile = visionProfileId();
+    if (!service || !profile) {
+        throw new Error('No vision profile chosen in Image Search settings.');
+    }
+    const count = Math.min(entry.variants.length, 8);
+    let parsed = null;
+    try {
+        const images = [];
+        for (let i = 0; i < count; i++) {
+            images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
+        }
+        const content = [{ type: 'text', text: setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
+        const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+        parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
+    } catch (error) {
+        console.warn('[Image Search] set description failed, describing one picture at a time', error);
+    }
+    if (!parsed?.text) {
+        parsed = await requestDescription(entry.variants[0].url, entry.tags, blobs[0] || null);
+        parsed.variants = {};
+    }
+    entry.description = parsed.text;
+    entry.sections = parsed.sections || {};
+    entry.keywords = parsed.keywords || [];
+    for (let i = 1; i < entry.variants.length; i++) {
+        let diff = parsed.variants?.[i + 1] || '';
+        if (!diff) {
+            try {
+                diff = await describeDifference(entry, i, blobs[i]);
+            } catch (error) {
+                console.warn('[Image Search] variant description failed', error);
+            }
+        }
+        entry.variants[i].diff = diff;
+    }
+    entry.variants.forEach(variant => descriptions.set(variant.url, describedVariant(entry, variant)));
+    return entry;
+}
+
+async function redoEntry(entry, { save: saveNow = true } = {}) {
+    if (entry.kind === 'set' && entry.variants.length > 1) {
+        await describeSet(entry);
+    } else {
+        const result = await requestDescription(entry.url, entry.tags);
+        entry.description = result.text;
+        entry.sections = result.sections || {};
+        entry.keywords = result.keywords || [];
+        descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
+    }
+    if (saveNow) {
+        await saveLibrary();
+    }
+    return entry;
+}
+
+const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0 };
+
+async function redoAll(onProgress) {
+    if (redoState.running) {
+        return;
+    }
+    await loadLibrary();
+    const queue = [...library.entries];
+    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0 });
+    onProgress?.();
+    const worker = async () => {
+        while (queue.length && !redoState.cancel) {
+            const entry = queue.shift();
+            try {
+                await redoEntry(entry, { save: false });
+            } catch (error) {
+                redoState.failed++;
+                console.warn('[Image Search] redo failed', entry.id, error);
+            }
+            redoState.done++;
+            if (redoState.done % 5 === 0) {
+                await saveLibrary();
+            }
+            onProgress?.();
+        }
+    };
+    try {
+        await Promise.all([worker(), worker()]);
+    } finally {
+        redoState.running = false;
+        await saveLibrary();
+        onProgress?.();
+    }
+}
+
+async function saveSet(items, searchTags) {
+    await loadLibrary();
+    const members = items.slice(0, 8);
+    const variants = [];
+    const blobs = [];
+    const absorbed = [];
+    let existingSet = null;
+    for (const item of members) {
+        const found = findBySource(item.page);
+        if (found?.entry.kind === 'set') {
+            existingSet = existingSet || found.entry;
+        }
+    }
+    for (const item of members) {
+        const found = findBySource(item.page);
+        if (found?.entry.kind === 'set') {
+            const variant = found.variant;
+            variants.push({ ...variant });
+            blobs.push(null);
+            continue;
+        }
+        if (found) {
+            absorbed.push(found.entry);
+            variants.push({ id: found.entry.id, url: found.entry.url, source: item.page, tags: summaryTags(item.tags), diff: '' });
+            blobs.push(null);
+            continue;
+        }
+        const { src, blob } = await saveBest(item);
+        if (src) {
+            const ids = allIds();
+            variants.forEach(variant => ids.add(variant.id));
+            let id = '';
+            do {
+                id = Math.random().toString(36).slice(2, 8);
+            } while (id.length < 6 || ids.has(id));
+            variants.push({ id, url: src, source: item.page, tags: summaryTags(item.tags), diff: '' });
+            blobs.push(blob);
+        }
+    }
+    if (!variants.length) {
+        throw new Error('None of the pictures could be saved.');
+    }
+    const tags = summaryTags(members.flatMap(item => item.tags || []));
+    absorbed.forEach(entry => {
+        library.entries = library.entries.filter(e => e.id !== entry.id);
+        library.deleted.add(entry.id);
+    });
+    const carried = { used: absorbed.reduce((sum, e) => sum + (e.used || 0), 0), lastUsed: Math.max(0, ...absorbed.map(e => e.lastUsed || 0)), characters: [...new Set(absorbed.flatMap(e => e.characters || []))] };
+    let entry = existingSet;
+    if (entry) {
+        const known = new Set(entry.variants.map(variant => variant.source));
+        variants.filter(variant => !known.has(variant.source)).forEach(variant => entry.variants.push(variant));
+        entry.tags = summaryTags([...entry.tags, ...tags]);
+        entry.used += carried.used;
+        entry.lastUsed = Math.max(entry.lastUsed, carried.lastUsed);
+        entry.characters = [...new Set([...entry.characters, ...carried.characters])];
+    } else {
+        entry = cleanEntry({ id: variants[0].id, url: variants[0].url, source: variants[0].source, site: hostOf(variants[0].source), tags, searchTags, kind: 'set', variants, ...carried });
+        library.deleted.delete(entry.id);
+        library.entries.unshift(entry);
+    }
+    if (entry.variants.length < 2) {
+        entry.kind = 'single';
+        entry.variants = [];
+    }
+    await saveLibrary();
+    const ordered = entry.kind === 'set' ? entry.variants.map(variant => blobs[variants.findIndex(v => v.id === variant.id)] || null) : [blobs[0] || null];
+    const work = (entry.kind === 'set' ? describeSet(entry, ordered) : redoEntry(entry, { save: false }))
+        .then(() => saveLibrary())
+        .then(() => true)
+        .catch(error => {
+            console.warn('[Image Search] set description failed', error);
+            toastr.warning(`The set was saved, but describing it failed: ${error?.message || error}`, 'Image Search');
+            return false;
+        });
+    return { entry, work };
 }
 
 function noteUse(entry, character) {
@@ -1570,9 +2358,13 @@ function removeFromLibrary(entry) {
 }
 
 function shortDescription(entry) {
-    const text = entry.description || entry.tags.slice(0, 12).join(', ').replace(/_/g, ' ');
+    const text = entry.sections?.visual || String(entry.description || '').replace(/^\w+:\s*/, '') || entry.tags.slice(0, 12).join(', ').replace(/_/g, ' ');
     const first = text.split(/(?<=[.!?])\s/)[0] || text;
     return first.length > 160 ? `${first.slice(0, 157)}…` : first;
+}
+
+function fullDescription(entry) {
+    return renderSections(entry.sections) || (entry.description ? `Description: ${entry.description}` : '');
 }
 
 function wordsOf(text) {
@@ -1631,7 +2423,16 @@ function entryKeywords(entry) {
 }
 
 function pictureOffer(entry) {
-    return `Saved picture you can show: ${shortDescription(entry)} If it truly fits this moment, write [pic:${entry.id}] on its own line where it belongs. At most one picture per reply; never mention the tag itself.`;
+    const rule = 'never mention the tag itself, and show at most one picture per reply.';
+    const body = fullDescription(entry);
+    const tags = tagsLine(entry.tags);
+    if (entry.kind === 'set' && entry.variants.length > 1) {
+        const versions = entry.variants.map((variant, index) => index === 0
+            ? `Version 1 [pic:${variant.id}]: as described above.`
+            : `Version ${index + 1} [pic:${variant.id}]: ${variant.diff || 'another version of the same picture.'}`);
+        return [`Saved picture set: ${entry.variants.length} versions of the same scene. If one truly fits the moment, show it by writing its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
+    }
+    return [`Saved picture [pic:${entry.id}]. If it truly fits the moment, show it by writing [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
 }
 
 function newWiEntry(uid, depth) {
@@ -1812,6 +2613,13 @@ function onWorldInfoActivated(entries) {
     }
 }
 
+function syncCurrentSwipe(message) {
+    const info = Array.isArray(message.swipe_info) && Number.isInteger(message.swipe_id) ? message.swipe_info[message.swipe_id] : null;
+    if (info && typeof info === 'object') {
+        info.extra = structuredClone(message.extra || {});
+    }
+}
+
 function setMessageText(message, text) {
     message.mes = text;
     if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipe_id < message.swipes.length) {
@@ -1830,23 +2638,25 @@ async function onAiPictures(messageId) {
     await loadLibrary();
     const ids = [...message.mes.matchAll(PIC_TAG)].map(match => match[1].toLowerCase());
     setMessageText(message, message.mes.replace(PIC_TAG, '').replace(/\n{3,}/g, '\n\n').trim());
-    const entries = [...new Set(ids)].map(pid => library.entries.find(entry => entry.id === pid)).filter(Boolean).slice(0, 2);
-    if (entries.length) {
+    const pictures = [...new Set(ids)].map(pid => resolvePic(pid)).filter(Boolean).slice(0, 2);
+    if (pictures.length) {
         if (!message.extra || typeof message.extra !== 'object') {
             message.extra = {};
         }
         if (!Array.isArray(message.extra.media)) {
             message.extra.media = [];
         }
-        for (const entry of entries) {
-            if (!message.extra.media.some(item => item.url === entry.url)) {
-                const note = pictureNote(readyDescription(entry.url, entry.tags, entry.description), 'shown in the story');
-                message.extra.media.push({ type: 'image', url: entry.url, title: note, append_title: true, source: 'upload' });
+        for (const { entry, variant } of pictures) {
+            const url = variant?.url || entry.url;
+            if (!message.extra.media.some(item => item.url === url)) {
+                const note = pictureNote(describedVariant(entry, variant), 'shown in the story');
+                message.extra.media.push({ type: 'image', url, title: note, append_title: true, source: 'upload' });
             }
             noteUse(entry, message.name || c.name2 || '');
         }
         saveLibrary();
     }
+    syncCurrentSwipe(message);
     if (document.querySelector(`#chat .mes[mesid="${id}"]`)) {
         c.updateMessageBlock(id, message);
     }
@@ -1911,7 +2721,14 @@ async function onMessageSent(messageId) {
             media = { type: 'image', url, title: match[1], source: 'upload' };
             message.extra.media.push(media);
         }
-        const entry = descriptions.get(url);
+        let entry = descriptions.get(url);
+        if (!entry && s.describe && s.keepLibrary) {
+            await loadLibrary();
+            const known = findPicture(item => item.url === url);
+            if (known?.entry.description) {
+                entry = describedVariant(known.entry, known.variant);
+            }
+        }
         if (entry && s.describe) {
             waits.push(applyDescription(message, media, entry));
         }
@@ -1919,6 +2736,34 @@ async function onMessageSent(messageId) {
     message.mes = message.mes.replace(LOCAL_IMAGE_MD, '').replace(/\n{3,}/g, '\n\n').trim();
     await Promise.all(waits);
     await c.saveChat();
+}
+
+function confirmClicks(button, label, armedLabel, action, before = null) {
+    let armed = false;
+    let timer = null;
+    const disarm = () => {
+        clearTimeout(timer);
+        armed = false;
+        button.textContent = label;
+        button.classList.remove('stis-armed');
+    };
+    button.addEventListener('click', async () => {
+        if (before && await before(button) === false) {
+            return;
+        }
+        if (!armed) {
+            armed = true;
+            button.textContent = typeof armedLabel === 'function' ? armedLabel() : armedLabel;
+            button.classList.add('stis-armed');
+            timer = setTimeout(disarm, 4000);
+            return;
+        }
+        clearTimeout(timer);
+        armed = false;
+        button.classList.remove('stis-armed');
+        await action(button);
+    });
+    return button;
 }
 
 function el(tag, className, text) {
@@ -2025,6 +2870,7 @@ async function openPicker(initialTags = null) {
         suggest: el('div', 'menu_button stis-btn'),
         search: el('div', 'menu_button stis-btn'),
         chipMenu: el('div', 'stis-chip-menu'),
+        complete: el('div', 'stis-complete'),
         lookBar: el('div', 'stis-look-bar'),
         lookButton: el('div', 'menu_button stis-look-btn', 'Save as character look'),
         lookForm: el('div', 'stis-look-form'),
@@ -2051,6 +2897,11 @@ async function openPicker(initialTags = null) {
     ui.suggest.title = 'Ask the tag model again';
     ui.search.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i>';
     ui.search.title = 'Search';
+    if (entries.length > 1) {
+        const all = el('option', '', 'All sites');
+        all.value = ALL_SITES;
+        ui.site.appendChild(all);
+    }
     for (const entry of entries) {
         const option = el('option', '', entry.domain);
         option.value = entry.domain;
@@ -2060,6 +2911,7 @@ async function openPicker(initialTags = null) {
     ui.chips.appendChild(ui.input);
     ui.top.append(ui.site, ui.chips, ui.suggest, ui.search);
     ui.chipMenu.hidden = true;
+    ui.complete.hidden = true;
     ui.lookName.type = 'text';
     ui.lookName.placeholder = 'Character name';
     ui.lookForm.append(ui.lookName, ui.lookSave, ui.lookCancel);
@@ -2069,7 +2921,7 @@ async function openPicker(initialTags = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
 
     let tags = [];
     let required = new Set();
@@ -2085,6 +2937,8 @@ async function openPicker(initialTags = null) {
     let selectedWho = '';
     let previewState = null;
     let libraryOrder = [];
+    let reps = [];
+    let gridFamilies = new Map();
 
     const setStatus = (text, kind = '') => {
         ui.status.textContent = text;
@@ -2160,12 +3014,12 @@ async function openPicker(initialTags = null) {
             chip.classList.add(isRequired ? 'stis-req' : 'stis-pref');
             const position = req.indexOf(tag);
             let title = isRequired
-                ? (cap && position >= cap ? `Required, checked by the extension (${domain} takes ${cap} tags)` : 'Required: only pictures with this tag')
+                ? (cap && position >= cap ? `Required, checked by the extension (${domain === ALL_SITES ? 'a site' : domain} takes ${cap} tags)` : 'Required: only pictures with this tag')
                 : 'Preferred: pictures with this tag come first';
             const count = knownCount(domain, tag);
             if (count === 0) {
                 chip.classList.add('stis-unknown');
-                title = `Not found on ${domain}`;
+                title = `Not found on ${anySiteLabel(domain)}`;
             } else if (count !== null) {
                 title += `, ${count} posts`;
             }
@@ -2249,12 +3103,11 @@ async function openPicker(initialTags = null) {
 
     const refreshCounts = async () => {
         const domain = ui.site.value;
-        const engineName = settings().engines[domain];
-        if (!ENGINES[engineName] || !tags.length) {
+        if (!tags.length) {
             return;
         }
         const before = tags.map(tag => knownCount(domain, tag)).join();
-        await lookupTags(domain, engineName, tags);
+        await lookupTagsFor(domain, tags);
         if (!closed && domain === ui.site.value && tags.map(tag => knownCount(domain, tag)).join() !== before) {
             renderChips();
         }
@@ -2279,27 +3132,36 @@ async function openPicker(initialTags = null) {
         if (shown) {
             line('Subject:', `${shown.subject || 'none'}${shown.lookName ? ` (using ${shown.lookName}'s saved look)` : ''}`);
         }
+        if (shown?.evidence && Object.keys(shown.evidence).length) {
+            line('Evidence:', Object.entries(shown.evidence).map(([tag, quote]) => `${tag} ← "${quote}"`).join(', '));
+        }
         if (shown?.dropped?.length) {
             line('Removed:', shown.dropped.join(', '));
         }
         if (tags.length) {
             line('Posts per tag:', tags.map(tag => `${tag} (${knownCount(ui.site.value, tag) ?? '?'})`).join(', '));
         }
-        const first = browse?.pages?.[0];
-        if (first) {
-            const link = el('a', '', `Open the same search on ${browse.domain}`);
-            link.href = first.siteUrl;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            line('Site (required tags):', link);
-            if (first.localTags.length) {
-                line('Required, checked here:', first.localTags.join(', '));
+        if (browse) {
+            const firstPages = browse.subs ? browse.subs.map(sub => sub.pages[0]).filter(Boolean) : [browse.pages[0]].filter(Boolean);
+            for (const first of firstPages) {
+                const link = el('a', '', `Open the same search on ${first.domain}`);
+                link.href = first.siteUrl;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                line('Site (required tags):', link);
+                if (first.localTags.length) {
+                    line(`Required, checked here for ${first.domain}:`, first.localTags.join(', '));
+                }
             }
             if (browse.preferred.length) {
                 line('Preferred, used for sorting:', browse.preferred.join(', '));
             }
-            line('API:', first.apiUrl);
-            browse.pages.forEach(p => line(`Page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing required tags ${p.local}, not a picture ${p.notImage})`));
+            const apiPage = browse.pages[0];
+            if (apiPage) {
+                line('API:', apiPage.apiUrl);
+            }
+            browse.pages.forEach(p => line(`${p.domain} page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing required tags ${p.local}, not a picture ${p.notImage})`));
+            browse.siteErrors?.forEach(error => line('Site error:', error));
         }
         if (browse?.error) {
             line('Error:', browse.error);
@@ -2361,12 +3223,30 @@ async function openPicker(initialTags = null) {
         return true;
     };
 
+    const familyBadge = family => {
+        const count = family.members.length;
+        const more = family.members.some(mayHaveFamily) && !family.loaded;
+        family.badge.innerHTML = '';
+        family.badge.hidden = count < 2 && !more;
+        if (!family.badge.hidden) {
+            family.badge.appendChild(el('i', 'fa-solid fa-clone'));
+            family.badge.appendChild(document.createTextNode(` ${count}${more ? '+' : ''}`));
+        }
+    };
+
     const renderNew = () => {
         if (!browse) {
             return;
         }
         const total = browse.preferred.length;
         for (const item of browse.items.slice(rendered)) {
+            const key = familyKey(item);
+            const known = gridFamilies.get(key);
+            if (known) {
+                known.members.push(item);
+                familyBadge(known);
+                continue;
+            }
             const cell = el('div', 'stis-cell');
             const img = el('img');
             img.loading = 'lazy';
@@ -2377,6 +3257,12 @@ async function openPicker(initialTags = null) {
             if (total) {
                 cell.appendChild(el('span', 'stis-badge', `${item.matched || 0}/${total}`));
             }
+            const badge = el('span', 'stis-set-badge');
+            cell.appendChild(badge);
+            const family = { rep: item, members: [item], badge, loaded: false };
+            gridFamilies.set(key, family);
+            familyBadge(family);
+            reps.push(item);
             bindPress(cell, () => showPreview(item), () => {
                 cell.classList.add('stis-picking');
                 pick(item, null);
@@ -2397,7 +3283,8 @@ async function openPicker(initialTags = null) {
             setStatus(browse.required.length ? 'No pictures with the required tags. Make one preferred or remove it.' : 'No pictures found.');
         } else {
             const sorted = browse.preferred.length ? ', best matches first' : '';
-            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${browse.domain}${sorted}`);
+            const failed = browse.siteErrors?.length ? ` (${browse.siteErrors.length} site(s) failed, see debug)` : '';
+            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${siteLabel(browse.domain)}${sorted}${failed}`);
         }
     };
 
@@ -2430,6 +3317,8 @@ async function openPicker(initialTags = null) {
     const useBrowse = next => {
         browse = next;
         rendered = 0;
+        reps = [];
+        gridFamilies = new Map();
         ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
         ui.grid.scrollTop = 0;
         renderNew();
@@ -2531,7 +3420,7 @@ async function openPicker(initialTags = null) {
     };
 
     function previewList() {
-        return previewState?.kind === 'entry' ? libraryOrder : (browse?.items || []);
+        return previewState?.kind === 'entry' ? libraryOrder : reps;
     }
 
     function navigate(delta) {
@@ -2547,7 +3436,7 @@ async function openPicker(initialTags = null) {
             if (previewState.kind === 'item' && browse && !browse.done) {
                 const before = list.length;
                 pump().then(() => {
-                    if ((browse?.items.length || 0) > before) {
+                    if (reps.length > before) {
                         navigate(delta);
                     }
                 });
@@ -2596,19 +3485,93 @@ async function openPicker(initialTags = null) {
         bar.append(back, prev, position, next, link);
         ui.preview.append(img, bar);
         ui.preview.hidden = false;
-        return bar;
+        return { bar, img, link };
     }
 
-    function showPreview(item) {
-        const bar = previewShell(item, item.page, item, 'item');
+    function variantStrip(members, current, onChoose) {
+        const strip = el('div', 'stis-variants');
+        members.forEach((member, index) => {
+            const thumb = el('img', 'stis-variant');
+            thumb.alt = `Version ${index + 1}`;
+            thumb.draggable = false;
+            if (member.thumb) {
+                setThumbSource(thumb, member);
+            } else {
+                thumb.src = member.url;
+            }
+            thumb.classList.toggle('stis-variant-on', member === current);
+            thumb.addEventListener('click', () => onChoose(member));
+            strip.appendChild(thumb);
+        });
+        return strip;
+    }
+
+    function showPreview(item, chosen = null) {
+        const family = gridFamilies.get(familyKey(item));
+        const current = chosen || item;
+        const { bar, img, link } = previewShell(current, current.page, item, 'item');
+        previewState.variant = current;
         if (s.saveLocal) {
-            prepareDownload(item).catch(() => {});
+            prepareDownload(current).catch(() => {});
+        }
+        const stripHolder = el('div', 'stis-variant-holder');
+        ui.preview.insertBefore(stripHolder, bar);
+        const drawStrip = () => {
+            stripHolder.innerHTML = '';
+            if (family && family.members.length > 1) {
+                stripHolder.appendChild(variantStrip(family.members, current, member => showPreview(item, member)));
+            }
+            setButton.hidden = !family || family.members.length < 2 || !s.saveLocal || !s.keepLibrary;
+        };
+        const setButton = el('div', 'menu_button', 'Save set');
+        setButton.title = 'Save all versions of this picture as one library entry';
+        setButton.addEventListener('click', async () => {
+            if (busy || setButton.textContent !== 'Save set') {
+                return;
+            }
+            busy = true;
+            setButton.textContent = 'Saving set…';
+            try {
+                const { entry, work } = await saveSet(family.members, [...tags]);
+                setButton.textContent = `Set saved (${entry.kind === 'set' ? entry.variants.length : 1})`;
+                work.then(ok => ok && toastr.success('The set is described and in the lorebook.', 'Image Search'));
+            } catch (error) {
+                setButton.textContent = 'Save set';
+                toastr.warning(String(error?.message || error), 'Image Search');
+            }
+            busy = false;
+        });
+        drawStrip();
+        if (family && !family.loaded && supportsFamily(item)) {
+            const loadFamily = () => fetchFamily(item).then(members => {
+                family.loaded = true;
+                const seen = new Set(family.members.map(member => member.img));
+                members.forEach(member => {
+                    if (!seen.has(member.img)) {
+                        seen.add(member.img);
+                        family.members.push(member);
+                    }
+                });
+                familyBadge(family);
+                if (!closed && previewState?.target === item && previewState.variant === current) {
+                    drawStrip();
+                }
+            }).catch(() => {
+                family.loaded = true;
+                familyBadge(family);
+            });
+            setTimeout(() => {
+                if (!closed && previewState?.target === item) {
+                    loadFamily();
+                }
+            }, families.has(familyKey(item)) ? 0 : 350);
         }
         if (s.keepLibrary && s.saveLocal) {
             const keep = el('div', 'menu_button', 'Save to library');
             loadLibrary().then(() => {
-                if (entryForSource(item.page)) {
-                    keep.textContent = 'In library';
+                const found = findBySource(current.page);
+                if (found) {
+                    keep.textContent = found.entry.kind === 'set' ? 'In a saved set' : 'In library';
                 }
             });
             keep.addEventListener('click', async () => {
@@ -2617,36 +3580,56 @@ async function openPicker(initialTags = null) {
                 }
                 busy = true;
                 keep.textContent = 'Saving…';
-                const { entry } = await storeItem(item, [...tags]);
+                const { entry } = await storeItem(current, [...tags]);
                 busy = false;
                 keep.textContent = entry ? 'In library' : 'Save to library';
             });
-            bar.append(keep);
+            bar.append(keep, setButton);
         }
         const use = el('div', 'menu_button stis-use', 'Use this');
-        use.addEventListener('click', () => pick(item, use));
+        use.addEventListener('click', () => pick(current, use));
         bar.append(use);
+        link.href = current.page || '#';
+        img.alt = '';
     }
 
-    function prepareEntryDescription(entry) {
+    function prepareEntryDescription(entry, variant = null) {
+        const url = variant?.url || entry.url;
         if (entry.description) {
-            descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
-        } else if (!descriptions.has(entry.url)) {
-            startDescription(entry.url, entry.tags, (text, keywords) => {
-                entry.description = text;
-                entry.keywords = keywords;
-                saveLibrary();
-            });
+            descriptions.set(url, describedVariant(entry, variant));
+        } else if (!descriptions.has(url)) {
+            if (entry.kind === 'set' && entry.variants.length > 1) {
+                const pending = { url, tags: entry.tags, text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
+                pending.promise = describeSet(entry)
+                    .then(() => {
+                        pending.text = describedVariant(entry, variant).text;
+                        return saveLibrary();
+                    })
+                    .catch(error => {
+                        pending.error = String(error?.message || error);
+                    })
+                    .finally(() => {
+                        pending.done = true;
+                    });
+                descriptions.set(url, pending);
+            } else {
+                startDescription(entry.url, entry.tags, (text, keywords, sections) => {
+                    entry.description = text;
+                    entry.keywords = keywords;
+                    entry.sections = sections || {};
+                    saveLibrary();
+                });
+            }
         }
     }
 
     async function storeItem(item, searchTags) {
         if (s.keepLibrary) {
             await loadLibrary();
-            const existing = entryForSource(item.page);
-            if (existing) {
-                prepareEntryDescription(existing);
-                return { url: existing.url, entry: existing };
+            const found = findBySource(item.page);
+            if (found) {
+                prepareEntryDescription(found.entry, found.variant);
+                return { url: found.variant?.url || found.entry.url, entry: found.entry };
             }
         }
         if (!s.saveLocal) {
@@ -2659,10 +3642,11 @@ async function openPicker(initialTags = null) {
             return { url: item.img, entry: null };
         }
         const entry = s.keepLibrary ? await addToLibrary(item, src, searchTags) : null;
-        startDescription(src, item.tags, (text, keywords) => {
+        startDescription(src, item.tags, (text, keywords, sections) => {
             if (entry) {
                 entry.description = text;
                 entry.keywords = keywords;
+                entry.sections = sections || {};
                 saveLibrary();
             }
         }, blob);
@@ -2702,7 +3686,7 @@ async function openPicker(initialTags = null) {
         }
     }
 
-    async function pickEntry(entry, button) {
+    async function pickEntry(entry, button, variant = null) {
         if (busy) {
             return;
         }
@@ -2710,31 +3694,79 @@ async function openPicker(initialTags = null) {
         if (button) {
             button.textContent = 'Adding…';
         }
+        const chosen = variant || (entry.kind === 'set' ? entry.variants[0] : null);
         noteUse(entry, selectedLookName() || ctx().name2 || '');
-        prepareEntryDescription(entry);
+        prepareEntryDescription(entry, chosen);
         saveLibrary();
         await popup.completeCancelled();
-        insertIntoChatBox(markdownFor(entry.url, entry.searchTags.length ? entry.searchTags : entry.tags.slice(0, 6)));
+        insertIntoChatBox(markdownFor(chosen?.url || entry.url, entry.searchTags.length ? entry.searchTags : entry.tags.slice(0, 6)));
     }
 
-    function showEntry(entry) {
-        const bar = previewShell(entry.url, entry.source, entry, 'entry');
+    function confirmButton(label, armedLabel, action) {
+        return confirmClicks(el('div', 'menu_button', label), label, armedLabel, action);
+    }
+
+    function showEntry(entry, chosen = null) {
+        const isSet = entry.kind === 'set' && entry.variants.length > 1;
+        const current = chosen || (isSet ? entry.variants[0] : null);
+        const { bar } = previewShell(current?.url || entry.url, current?.source || entry.source, entry, 'entry');
+        previewState.variant = current;
+        if (isSet) {
+            const strip = variantStrip(entry.variants, current, variant => showEntry(entry, variant));
+            ui.preview.insertBefore(strip, bar);
+        }
         const info = el('div', 'stis-entry-info');
-        info.appendChild(el('div', '', entry.description || 'No description yet. One is made the next time you use it.'));
-        const meta = [entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        const isOther = isSet && current && current.id !== entry.variants[0].id;
+        info.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
+        if (isOther) {
+            info.appendChild(el('div', 'stis-entry-text', `This version: ${current.diff || 'no difference noted yet.'}`));
+        }
+        const meta = [isSet ? `Set of ${entry.variants.length} versions` : '', entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
         ui.preview.insertBefore(info, bar);
-        const remove = el('div', 'menu_button', 'Remove');
-        remove.title = 'Remove from the library. The file stays, so chats that show it keep working.';
-        remove.addEventListener('click', async () => {
-            await removeFromLibrary(entry);
+        const redo = el('div', 'menu_button', 'Redo');
+        redo.title = 'Describe this picture again';
+        redo.addEventListener('click', async () => {
+            if (redo.textContent !== 'Redo') {
+                return;
+            }
+            redo.textContent = 'Describing…';
+            try {
+                await redoEntry(entry);
+                if (!closed && previewState?.target === entry) {
+                    showEntry(entry, current);
+                }
+            } catch (error) {
+                redo.textContent = 'Redo';
+                toastr.warning(`Could not describe the picture: ${error?.message || error}`, 'Image Search');
+            }
+        });
+        const remove = confirmButton(isSet ? 'Delete set' : 'Delete', isSet ? `Tap again to delete ${entry.variants.length} pictures` : 'Tap again to delete', async button => {
+            button.textContent = 'Deleting…';
+            await deleteEntry(entry);
             ui.preview.hidden = true;
             previewState = null;
             renderLibrary();
         });
+        remove.title = 'Delete from the library, the lorebook and the disk';
+        bar.append(redo, remove);
+        if (isSet && current) {
+            const removeOne = confirmButton('Delete version', 'Tap again to delete this version', async () => {
+                await removeVariant(entry, current);
+                if (!closed) {
+                    if (library.entries.includes(entry)) {
+                        showEntry(entry);
+                    } else {
+                        ui.preview.hidden = true;
+                    }
+                    renderLibrary();
+                }
+            });
+            bar.append(removeOne);
+        }
         const use = el('div', 'menu_button stis-use', 'Use this');
-        use.addEventListener('click', () => pickEntry(entry, use));
-        bar.append(remove, use);
+        use.addEventListener('click', () => pickEntry(entry, use, current));
+        bar.append(use);
     }
 
     async function renderLibrary() {
@@ -2748,7 +3780,7 @@ async function openPicker(initialTags = null) {
         let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: selectedLookName() || ctx().name2 || '' });
         if (query.length) {
             ranked = ranked.filter(({ entry }) => {
-                const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.characters.join(' ')}`.toLowerCase().replace(/_/g, ' ');
+                const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.variants.map(variant => variant.diff).join(' ')} ${entry.characters.join(' ')}`.toLowerCase().replace(/_/g, ' ');
                 return query.every(word => hay.includes(word));
             });
         }
@@ -2768,6 +3800,12 @@ async function openPicker(initialTags = null) {
             img.onerror = () => cell.classList.add('stis-broken');
             cell.title = shortDescription(entry);
             cell.appendChild(img);
+            if (entry.kind === 'set' && entry.variants.length > 1) {
+                const badge = el('span', 'stis-set-badge');
+                badge.appendChild(el('i', 'fa-solid fa-clone'));
+                badge.appendChild(document.createTextNode(` ${entry.variants.length}`));
+                cell.appendChild(badge);
+            }
             bindPress(cell, () => showEntry(entry), () => {
                 cell.classList.add('stis-picking');
                 pickEntry(entry, null);
@@ -2779,6 +3817,7 @@ async function openPicker(initialTags = null) {
     function setView(next) {
         const lib = next === 'library';
         ui.top.hidden = lib;
+        ui.complete.hidden = true;
         ui.status.hidden = lib;
         ui.grid.hidden = lib;
         ui.lookBar.hidden = lib;
@@ -2849,14 +3888,17 @@ async function openPicker(initialTags = null) {
         }
     });
 
-    let touchX = 0;
+    let touchX = null;
     let touchY = 0;
     ui.preview.addEventListener('touchstart', event => {
         const touch = event.changedTouches[0];
-        touchX = touch.clientX;
+        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info') ? null : touch.clientX;
         touchY = touch.clientY;
     }, { passive: true });
     ui.preview.addEventListener('touchend', event => {
+        if (touchX === null) {
+            return;
+        }
         const touch = event.changedTouches[0];
         const dx = touch.clientX - touchX;
         const dy = touch.clientY - touchY;
@@ -2876,15 +3918,93 @@ async function openPicker(initialTags = null) {
     };
     document.addEventListener('keydown', onKey);
 
+    let completeTimer = null;
+    let completeItems = [];
+    let completeIndex = -1;
+    let choosing = false;
+    const hideComplete = () => {
+        completeItems = [];
+        completeIndex = -1;
+        ui.complete.innerHTML = '';
+        ui.complete.hidden = true;
+    };
+    const chooseCompletion = name => {
+        const parts = ui.input.value.split(',');
+        parts[parts.length - 1] = name;
+        ui.input.value = parts.join(',');
+        hideComplete();
+        commitInput();
+        choosing = false;
+        ui.input.focus();
+    };
+    const renderComplete = () => {
+        ui.complete.innerHTML = '';
+        ui.complete.hidden = !completeItems.length;
+        completeItems.forEach((item, index) => {
+            const option = el('div', 'stis-complete-item');
+            option.classList.toggle('stis-complete-on', index === completeIndex);
+            option.appendChild(el('span', '', item.name));
+            if (item.count) {
+                option.appendChild(el('small', '', formatCount(item.count)));
+            }
+            option.addEventListener('pointerdown', () => {
+                choosing = true;
+                setTimeout(() => {
+                    choosing = false;
+                }, 600);
+            });
+            option.addEventListener('mousedown', event => event.preventDefault());
+            option.addEventListener('click', () => chooseCompletion(item.name));
+            ui.complete.appendChild(option);
+        });
+    };
+    const updateComplete = () => {
+        clearTimeout(completeTimer);
+        const prefix = normalizeTag(ui.input.value.split(',').pop());
+        if (prefix.length < 2) {
+            hideComplete();
+            return;
+        }
+        completeTimer = setTimeout(async () => {
+            const list = await completeTag(ui.site.value, prefix).catch(() => []);
+            if (closed || normalizeTag(ui.input.value.split(',').pop()) !== prefix) {
+                return;
+            }
+            completeItems = list.filter(item => !tags.includes(item.name));
+            completeIndex = -1;
+            renderComplete();
+        }, 250);
+    };
+    ui.input.addEventListener('input', updateComplete);
+
     ui.input.addEventListener('keydown', event => {
+        if (!ui.complete.hidden && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault();
+            const step = event.key === 'ArrowDown' ? 1 : -1;
+            completeIndex = (completeIndex + step + completeItems.length) % completeItems.length;
+            renderComplete();
+            return;
+        }
+        if (event.key === 'Escape' && !ui.complete.hidden) {
+            event.preventDefault();
+            event.stopPropagation();
+            hideComplete();
+            return;
+        }
         if (event.key === 'Enter') {
             event.preventDefault();
             event.stopPropagation();
+            if (!ui.complete.hidden && completeIndex >= 0) {
+                chooseCompletion(completeItems[completeIndex].name);
+                return;
+            }
+            hideComplete();
             if (!commitInput()) {
                 runSearch();
             }
         } else if (event.key === ',') {
             event.preventDefault();
+            hideComplete();
             commitInput();
         } else if (event.key === 'Backspace' && !ui.input.value && tags.length) {
             removeTag(tags[tags.length - 1]);
@@ -2896,9 +4016,15 @@ async function openPicker(initialTags = null) {
         }
     }, 0));
     ui.input.addEventListener('blur', () => {
-        if (ui.input.value.trim()) {
-            commitInput();
-        }
+        setTimeout(() => {
+            if (choosing || closed) {
+                return;
+            }
+            hideComplete();
+            if (ui.input.value.trim()) {
+                commitInput();
+            }
+        }, 150);
     });
     ui.chips.addEventListener('click', event => {
         if (event.target === ui.chips) {
@@ -2931,6 +4057,7 @@ async function openPicker(initialTags = null) {
             state.pickerOpen = false;
             observer.disconnect();
             clearTimeout(searchTimer);
+            clearTimeout(completeTimer);
             document.removeEventListener('keydown', onKey);
         },
     });
@@ -3076,6 +4203,14 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep picked pictures in the library</span></label>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies</span></label>
                 <small>Saved pictures are offered through the lorebook "${LOREBOOK}" (World Info): one entry per picture, triggered by its keywords, at most one picture per reply. Keep that lorebook turned on. You can edit keywords there; your edits are kept.</small>
+                <div class="st-imagesearch-library">
+                    <div id="st_imagesearch_lib_count">Library</div>
+                    <div class="st-imagesearch-row">
+                        <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
+                        <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
+                    </div>
+                    <small id="st_imagesearch_lib_status"></small>
+                </div>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
@@ -3084,6 +4219,8 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Minimum posts for a suggested tag</span><input type="number" min="0" max="100000" id="st_imagesearch_min_posts" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Messages sent to the tag model</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Characters per message</span><input type="number" min="100" max="4000" id="st_imagesearch_ctx_chars" class="text_pole"></div>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cards"> <span>Give the tag model what character cards and your persona say about appearance</span></label>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_evidence"> <span>Only keep suggested tags the AI can quote from the story</span></label>
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
@@ -3174,6 +4311,8 @@ function buildSettings() {
     bind('st_imagesearch_ctx_count', 'contextMessages', 'number');
     bind('st_imagesearch_ctx_chars', 'contextChars', 'number');
     bind('st_imagesearch_tokens', 'tagMaxTokens', 'number');
+    bind('st_imagesearch_cards', 'useCards', 'checked');
+    bind('st_imagesearch_evidence', 'requireEvidence', 'checked');
     bind('st_imagesearch_tag_prompt', 'tagPrompt');
     bind('st_imagesearch_proxy', 'useProxy', 'checked');
     bind('st_imagesearch_fetcher_url', 'fetcherUrl');
@@ -3195,6 +4334,64 @@ function buildSettings() {
     document.getElementById('st_imagesearch_open').addEventListener('click', async () => {
         await openPicker();
         showEngines();
+    });
+
+    const libCount = document.getElementById('st_imagesearch_lib_count');
+    const libStatus = document.getElementById('st_imagesearch_lib_status');
+    const pictureCount = () => library.entries.reduce((sum, entry) => sum + entryUrls(entry).length, 0);
+    const showLibrary = async () => {
+        await loadLibrary();
+        const sets = library.entries.filter(entry => entry.kind === 'set' && entry.variants.length > 1).length;
+        libCount.textContent = library.broken ? 'The picture library could not be read.' : `Library: ${pictureCount()} picture(s)${sets ? ` (${sets} set${sets === 1 ? '' : 's'})` : ''}`;
+    };
+    document.querySelector('#st_imagesearch_settings .inline-drawer-toggle')?.addEventListener('click', () => showLibrary());
+    const redoButton = document.getElementById('st_imagesearch_redo_all');
+    const redoLabel = 'Redo all descriptions';
+    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again`, async () => {
+        redoButton.textContent = 'Cancel';
+        const progress = () => {
+            libStatus.textContent = `Describing ${redoState.done} / ${redoState.total}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
+        };
+        await redoAll(progress);
+        const described = redoState.done - redoState.failed;
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
+        redoButton.textContent = redoLabel;
+        showLibrary();
+    }, async () => {
+        if (redoState.running) {
+            redoState.cancel = true;
+            redoButton.textContent = 'Stopping…';
+            return false;
+        }
+        await loadLibrary();
+        if (library.broken || !library.entries.length) {
+            libStatus.textContent = library.broken ? 'The picture library could not be read.' : 'The library is empty.';
+            return false;
+        }
+        if (!visionProfileId()) {
+            libStatus.textContent = 'Choose a vision profile (or a tag profile) first.';
+            return false;
+        }
+        return true;
+    });
+    const deleteButton = document.getElementById('st_imagesearch_delete_all');
+    const deleteLabel = 'Delete everything';
+    confirmClicks(deleteButton, deleteLabel, () => `Tap again to delete ${pictureCount()} picture(s) and their files`, async () => {
+        deleteButton.textContent = 'Deleting…';
+        const count = await deleteAllPictures();
+        deleteButton.textContent = deleteLabel;
+        libStatus.textContent = `Deleted ${count} entr${count === 1 ? 'y' : 'ies'}.`;
+        showLibrary();
+    }, async () => {
+        if (redoState.running || deleteButton.textContent === 'Deleting…') {
+            return false;
+        }
+        await loadLibrary();
+        if (library.broken || !library.entries.length) {
+            libStatus.textContent = library.broken ? 'The picture library could not be read.' : 'The library is empty.';
+            return false;
+        }
+        return true;
     });
 
     const note = document.getElementById('st_imagesearch_profile_note');

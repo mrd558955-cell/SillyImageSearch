@@ -646,3 +646,29 @@
 .stis-variant {
     display: block;
 }
+
+.stis-sendcard {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+}
+
+.stis-sendcard-img {
+    max-width: 100%;
+    max-height: 55vh;
+    object-fit: contain;
+    border-radius: 6px;
+}
+
+.stis-sendcard-text {
+    font-size: 0.9em;
+    text-align: left;
+}
+
+.stis-sendcard-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+}

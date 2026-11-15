@@ -19,6 +19,8 @@ Scroll down in a picture's preview to see all its tags: select some to add them 
 
 Pictures you pick are kept in the library (Library tab in the picker) and offered to the AI through the lorebook "Image Search Pictures". In the library you can redo a picture's description or delete it (the file is deleted too). The settings have "Redo all descriptions" and "Delete everything".
 
+The picture button next to Send sends your message and makes the reply come with a picture from the library: the AI picks the one that best fits what happens next, you can check it first (Send / Another / Cancel), and the reply is written to match it. Swiping keeps the same picture. The lorebook also lists the pictures that fit the current chat best (re-checked every 10 messages), so the AI can bring one in by itself.
+
 The bookmark button on a picture saves it to the library in the background without adding it to the chat, so you can keep browsing.
 
 "Select" lets you tap pictures in story order (from different searches and from the library) and "Save as sequence". The lorebook entry tells the AI to show them one at a time, in order, as the story moves on.

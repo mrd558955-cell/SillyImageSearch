@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.10.1';
+const VERSION = '2.11.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3695,6 +3695,30 @@ function storyLines(count = 4) {
         .join('\n');
 }
 
+function pickContext(message) {
+    const c = ctx();
+    const user = c.name1 || 'The user';
+    const looks = appearanceNotes();
+    return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
+}
+
+async function askWhyNot(session, best, choice) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    if (!service || !s.tagProfile) {
+        throw new Error('no tag profile is chosen in the Image Search settings');
+    }
+    const seen = session.shortlist.has(choice);
+    const rank = session.ranks.get(choice) || '?';
+    const reason = session.reasons.get(best);
+    const unseen = seen ? '' : `\nYou were not shown picture B before: by keywords it was only number ${rank}, and you saw the first ${session.shortlist.size}.`;
+    const prompt = `${pickContext(session.message)}\n\nFor the reply to the newest message you chose this picture:\nA. ${choiceLine(best)}${reason ? `\nYour reason: ${reason}` : ''}\n\nThe user is looking at this one instead:\nB. ${choiceLine(choice)}${unseen}\n\nIn at most 3 short sentences, say why B is a worse fit than A, judging looks first and then what happens. If B fits better than A, say so plainly.`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 250, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\s+/g, ' ').trim();
+    const prefix = seen ? '' : `The AI never saw this one: it was number ${rank} by keywords and only the first ${session.shortlist.size} are sent. `;
+    return `${prefix}${text || 'The AI gave no answer.'}`;
+}
+
 async function askPicturePick(message, candidates) {
     const s = settings();
     const c = ctx();
@@ -3703,9 +3727,7 @@ async function askPicturePick(message, candidates) {
         return null;
     }
     const shortlist = candidates.slice(0, SEND_SHORTLIST);
-    const user = c.name1 || 'The user';
-    const looks = appearanceNotes();
-    const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with your ${Math.min(PICK_COUNT, shortlist.length)} best pictures, all different, best first, one per line, like this:\n#7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: #0 - why`;
+    const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with your ${Math.min(PICK_COUNT, shortlist.length)} best pictures, all different, best first, one per line, like this:\n#7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: #0 - why`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 450, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const picks = [];
@@ -3775,30 +3797,43 @@ function forcePicture(choice) {
     }
 }
 
-function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '', picked = new Set()) {
+function showPictureCard(session) {
     const c = ctx();
+    const { options, reasons, picked, noneFits, noneWhy } = session;
+    const best = options.find(choice => picked.has(choice)) || null;
     let index = 0;
+    let asking = null;
     const root = el('div', 'stis-sendcard');
     const note = el('small', 'stis-sendcard-note');
     const img = el('img', 'stis-sendcard-img');
     img.alt = '';
     const text = el('div', 'stis-sendcard-text');
     const why = el('div', 'stis-sendcard-why');
+    const answer = el('div', 'stis-sendcard-answer');
+    const grid = el('div', 'stis-sendcard-grid');
+    grid.hidden = true;
     const bar = el('div', 'stis-sendcard-bar');
     const send = el('div', 'menu_button stis-use', 'Send');
     const another = el('div', 'menu_button', 'Another');
+    const ask = el('div', 'menu_button stis-why-not', '?');
+    ask.title = 'Ask the AI why it did not pick this one';
+    const browse = el('div', 'menu_button', 'Library');
+    browse.title = 'Choose any picture from the library';
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
-    bar.append(send, another, search, cancel);
-    root.append(note, img, why, text, bar);
+    bar.append(send, another, ask, browse, search, cancel);
+    root.append(note, img, why, answer, text, grid, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
         const reason = reasons.get(choice);
-        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI, closest by keywords.' : '';
-        note.textContent = noneFits ? 'Nothing in the library really fits this message. Closest pictures:' : `Choice ${index + 1} of ${options.length}`;
+        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
+        const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';
+        note.textContent = noneFits ? 'Nothing in the library really fits this message. Closest pictures:' : `Choice ${index + 1} of ${options.length}${seen}`;
+        answer.textContent = asking === choice ? 'Asking the AI…' : session.answers.get(choice) || '';
+        ask.hidden = !best || choice === best;
         another.classList.toggle('stis-disabled', index >= options.length - 1);
     };
     send.addEventListener('click', async () => {
@@ -3811,6 +3846,42 @@ function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '', p
             index++;
             draw();
         }
+    });
+    ask.addEventListener('click', async () => {
+        const choice = options[index];
+        if (asking || !best || choice === best) {
+            return;
+        }
+        asking = choice;
+        draw();
+        try {
+            session.answers.set(choice, await askWhyNot(session, best, choice));
+        } catch (error) {
+            session.answers.set(choice, `Could not ask the AI: ${error?.message || error}`);
+        }
+        asking = null;
+        draw();
+    });
+    browse.addEventListener('click', () => {
+        grid.hidden = !grid.hidden;
+        if (grid.hidden || grid.childElementCount) {
+            return;
+        }
+        options.forEach((choice, position) => {
+            const cell = el('div', 'stis-sendcard-cell');
+            const thumb = el('img');
+            thumb.loading = 'lazy';
+            thumb.alt = '';
+            thumb.src = (choice.variant || choice.entry).url;
+            cell.title = shortDescription(choice.entry);
+            cell.append(thumb, el('span', 'stis-sendcard-num', String(position + 1)));
+            cell.addEventListener('click', () => {
+                index = position;
+                grid.hidden = true;
+                draw();
+            });
+            grid.appendChild(cell);
+        });
     });
     search.addEventListener('click', async () => {
         await popup.completeCancelled();
@@ -3834,6 +3905,8 @@ async function sendWithPicture() {
     let reasons = new Map();
     let aiPicked = new Set();
     let noneWhy = '';
+    let shortlist = new Set();
+    let ranks = new Map();
     try {
         await loadLibrary();
         const candidates = pictureCandidates(`${recentText(2)} ${message} ${appearanceNotes().join(' ')}`);
@@ -3853,7 +3926,9 @@ async function sendWithPicture() {
         aiPicked = picked?.picked || new Set(picked?.choices || []);
         noneWhy = picked?.none || '';
         const first = picked?.choices || [];
-        options = [...first, ...candidates.filter(choice => !first.includes(choice))].slice(0, SEND_SHORTLIST);
+        options = [...first, ...candidates.filter(choice => !first.includes(choice))];
+        shortlist = new Set(candidates.slice(0, SEND_SHORTLIST));
+        ranks = new Map(candidates.map((choice, position) => [choice, position + 1]));
     } finally {
         toastr.clear?.(notice);
         sendState.busy = false;
@@ -3862,7 +3937,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard(options, noneFits, reasons, noneWhy, aiPicked);
+        showPictureCard({ message, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks, answers: new Map() });
     } else {
         forcePicture(options[0]);
     }

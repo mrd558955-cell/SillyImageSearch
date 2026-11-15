@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.9.1';
+const VERSION = '2.10.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -65,6 +65,10 @@ const DEFAULTS = {
     catalogSize: 30,
     sendButton: true,
     confirmPicture: true,
+    includeVideos: true,
+    gifSeconds: 6,
+    gifWidth: 480,
+    gifFps: 10,
     wiDisabledByUs: [],
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
@@ -606,16 +610,21 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
                 continue;
             }
         }
-        const img = engine.image(post, origin);
-        if (!isStillImage(img)) {
-            stats.notImage++;
-            continue;
-        }
+        let img = engine.image(post, origin);
         const full = engine.full(post, origin);
         const thumb = engine.thumb(post, origin);
-        const alts = [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
         const original = absolute(post.file_url, origin) || absolute(post.file?.url, origin) || absolute(post.representations?.full, origin) || full;
-        const anim = [original, full, img].find(url => url && isGifUrl(url)) || '';
+        const video = [original, full, img].find(url => url && isVideoUrl(url)) || '';
+        if (!isStillImage(img)) {
+            const still = [thumb, absolute(post.sample_url, origin), absolute(post.large_file_url, origin), absolute(post.preview?.url, origin)].find(url => url && isStillImage(url));
+            if (!video || !still || !settings().includeVideos) {
+                stats.notImage++;
+                continue;
+            }
+            img = still;
+        }
+        const alts = video ? [] : [full, thumb].filter(alt => alt && alt !== img && isStillImage(alt));
+        const anim = video ? '' : [original, full, img].find(url => url && isGifUrl(url)) || '';
         const postId = String(post.id ?? '');
         const parentId = engine.parentId(post);
         items.push({
@@ -623,6 +632,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
             thumb: thumb || img,
             alts,
             anim,
+            video,
             page: engine.postUrl(post, origin),
             tags,
             domain: origin.replace(/^https?:\/\//, ''),
@@ -1770,6 +1780,413 @@ async function downloadImage(url) {
     throw new Error(errors.join(' | '));
 }
 
+const VIDEO_URL = /\.(webm|mp4|m4v|mov)$/i;
+
+function isVideoUrl(url) {
+    try {
+        return VIDEO_URL.test(new URL(url).pathname);
+    } catch {
+        return false;
+    }
+}
+
+function colorKey(data, i) {
+    return ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
+}
+
+function buildPalette(samples, maxColors = 256) {
+    const hist = new Uint32Array(32768);
+    for (const data of samples) {
+        for (let i = 0; i < data.length; i += 4) {
+            hist[colorKey(data, i)]++;
+        }
+    }
+    const keys = [];
+    for (let key = 0; key < 32768; key++) {
+        if (hist[key]) {
+            keys.push(key);
+        }
+    }
+    const channel = (key, c) => (c === 0 ? key >> 10 : c === 1 ? (key >> 5) & 31 : key & 31);
+    const describe = list => {
+        const min = [31, 31, 31];
+        const max = [0, 0, 0];
+        let count = 0;
+        for (const key of list) {
+            for (let c = 0; c < 3; c++) {
+                const v = channel(key, c);
+                if (v < min[c]) {
+                    min[c] = v;
+                }
+                if (v > max[c]) {
+                    max[c] = v;
+                }
+            }
+            count += hist[key];
+        }
+        const ranges = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+        const wide = ranges.indexOf(Math.max(...ranges));
+        return { list, count, wide, range: ranges[wide] };
+    };
+    const boxes = keys.length ? [describe(keys)] : [];
+    while (boxes.length < maxColors) {
+        let best = -1;
+        let bestScore = 0;
+        boxes.forEach((box, index) => {
+            const score = box.list.length > 1 ? box.range * Math.sqrt(box.count) : 0;
+            if (score > bestScore) {
+                bestScore = score;
+                best = index;
+            }
+        });
+        if (best < 0) {
+            break;
+        }
+        const box = boxes[best];
+        box.list.sort((a, b) => channel(a, box.wide) - channel(b, box.wide));
+        let seen = 0;
+        let cut = 1;
+        for (let i = 0; i < box.list.length - 1; i++) {
+            seen += hist[box.list[i]];
+            if (seen >= box.count / 2) {
+                cut = i + 1;
+                break;
+            }
+            cut = i + 1;
+        }
+        boxes.splice(best, 1, describe(box.list.slice(0, cut)), describe(box.list.slice(cut)));
+    }
+    const palette = new Uint8Array(maxColors * 3);
+    const lookup = new Int16Array(32768).fill(-1);
+    boxes.forEach((box, index) => {
+        const sum = [0, 0, 0];
+        for (const key of box.list) {
+            for (let c = 0; c < 3; c++) {
+                sum[c] += channel(key, c) * hist[key];
+            }
+            lookup[key] = index;
+        }
+        for (let c = 0; c < 3; c++) {
+            palette[index * 3 + c] = Math.min(255, Math.round((sum[c] / Math.max(1, box.count)) * 8 + 4));
+        }
+    });
+    return { palette, lookup, size: Math.max(1, boxes.length) };
+}
+
+function paletteIndex(table, key) {
+    const known = table.lookup[key];
+    if (known >= 0) {
+        return known;
+    }
+    const r = (key >> 10) * 8 + 4;
+    const g = ((key >> 5) & 31) * 8 + 4;
+    const b = (key & 31) * 8 + 4;
+    let best = 0;
+    let bestDistance = Infinity;
+    for (let i = 0; i < table.size; i++) {
+        const dr = table.palette[i * 3] - r;
+        const dg = table.palette[i * 3 + 1] - g;
+        const db = table.palette[i * 3 + 2] - b;
+        const distance = dr * dr + dg * dg + db * db;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = i;
+        }
+    }
+    table.lookup[key] = best;
+    return best;
+}
+
+class ByteSink {
+    constructor(size = 65536) {
+        this.buf = new Uint8Array(size);
+        this.length = 0;
+    }
+
+    push(value) {
+        if (this.length === this.buf.length) {
+            const next = new Uint8Array(this.buf.length * 2);
+            next.set(this.buf);
+            this.buf = next;
+        }
+        this.buf[this.length++] = value;
+    }
+
+    bytes(list) {
+        for (const value of list) {
+            this.push(value);
+        }
+    }
+
+    word(value) {
+        this.push(value & 255);
+        this.push((value >> 8) & 255);
+    }
+
+    result() {
+        return this.buf.slice(0, this.length);
+    }
+}
+
+const lzwTables = { stamps: null, codes: null, stamp: 0 };
+
+function lzwFrame(sink, indices) {
+    const minCodeSize = 8;
+    const clear = 1 << minCodeSize;
+    const eoi = clear + 1;
+    let next = eoi + 1;
+    let codeSize = minCodeSize + 1;
+    if (!lzwTables.stamps) {
+        lzwTables.stamps = new Uint32Array(1 << 20);
+        lzwTables.codes = new Uint16Array(1 << 20);
+    }
+    const { stamps, codes } = lzwTables;
+    let stamp = ++lzwTables.stamp;
+    let block = [];
+    let bits = 0;
+    let shift = 0;
+    const flushBlock = () => {
+        if (block.length) {
+            sink.push(block.length);
+            sink.bytes(block);
+            block = [];
+        }
+    };
+    const emit = code => {
+        bits |= code << shift;
+        shift += codeSize;
+        while (shift >= 8) {
+            block.push(bits & 255);
+            bits >>= 8;
+            shift -= 8;
+            if (block.length === 255) {
+                flushBlock();
+            }
+        }
+    };
+    sink.push(minCodeSize);
+    emit(clear);
+    let prefix = indices[0];
+    for (let i = 1; i < indices.length; i++) {
+        const k = indices[i];
+        const key = (prefix << 8) | k;
+        if (stamps[key] === stamp) {
+            prefix = codes[key];
+            continue;
+        }
+        emit(prefix);
+        if (next === 4096) {
+            emit(clear);
+            next = eoi + 1;
+            codeSize = minCodeSize + 1;
+            stamp = ++lzwTables.stamp;
+        } else {
+            if (next >= (1 << codeSize)) {
+                codeSize++;
+            }
+            stamps[key] = stamp;
+            codes[key] = next++;
+        }
+        prefix = k;
+    }
+    emit(prefix);
+    emit(eoi);
+    if (shift > 0) {
+        block.push(bits & 255);
+    }
+    flushBlock();
+    sink.push(0);
+}
+
+function gifEncoder(width, height, table) {
+    const sink = new ByteSink(Math.max(65536, width * height));
+    sink.bytes([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+    sink.word(width);
+    sink.word(height);
+    sink.bytes([0xF7, 0, 0]);
+    sink.bytes(table.palette);
+    sink.bytes([0x21, 0xFF, 0x0B, ...[...'NETSCAPE2.0'].map(ch => ch.charCodeAt(0)), 0x03, 0x01, 0, 0, 0]);
+    let frames = 0;
+    return {
+        addFrame(data, delayMs) {
+            const indices = new Uint8Array(width * height);
+            for (let p = 0, i = 0; p < indices.length; p++, i += 4) {
+                indices[p] = paletteIndex(table, colorKey(data, i));
+            }
+            sink.bytes([0x21, 0xF9, 0x04, 0x04]);
+            sink.word(Math.max(2, Math.round(delayMs / 10)));
+            sink.bytes([0, 0]);
+            sink.push(0x2C);
+            sink.word(0);
+            sink.word(0);
+            sink.word(width);
+            sink.word(height);
+            sink.push(0);
+            lzwFrame(sink, indices);
+            frames++;
+        },
+        finish() {
+            sink.push(0x3B);
+            return { bytes: sink.result(), frames };
+        },
+    };
+}
+
+async function downloadVideo(url) {
+    const errors = [];
+    const routes = [fetcherLink(url), proxyUrl(url)].filter(Boolean);
+    for (const route of routes) {
+        try {
+            const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: ctx().getRequestHeaders() });
+            if (!response.ok) {
+                throw new Error(`the server answered ${response.status}`);
+            }
+            const blob = await response.blob();
+            const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+            const isWebm = head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3;
+            const isMp4 = String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
+            if (!isWebm && !isMp4 && !/^video\//.test(blob.type)) {
+                throw new Error('the download is not a video');
+            }
+            return blob;
+        } catch (error) {
+            errors.push(String(error?.message || error));
+        }
+    }
+    throw new Error(`Could not download the video: ${errors.join(' | ')}`);
+}
+
+function waitFor(target, event, ms = 8000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`the video did not answer (${event})`));
+        }, ms);
+        const done = () => {
+            cleanup();
+            resolve();
+        };
+        const failed = () => {
+            cleanup();
+            reject(new Error('the video could not be read on this device'));
+        };
+        const cleanup = () => {
+            clearTimeout(timer);
+            target.removeEventListener(event, done);
+            target.removeEventListener('error', failed);
+        };
+        target.addEventListener(event, done, { once: true });
+        target.addEventListener('error', failed, { once: true });
+    });
+}
+
+async function videoToGif(url, { start = 0, seconds = 6, fps = 10, width = 480 } = {}, onProgress = null) {
+    const blob = await downloadVideo(url);
+    const objectUrl = URL.createObjectURL(blob);
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    try {
+        video.src = objectUrl;
+        await waitFor(video, 'loadeddata');
+        const duration = Number.isFinite(video.duration) ? video.duration : start + seconds;
+        const from = Math.max(0, Math.min(start, Math.max(0, duration - 0.1)));
+        const to = Math.min(duration, from + seconds);
+        const count = Math.max(1, Math.min(600, Math.round((to - from) * fps)));
+        const scale = Math.min(1, width / Math.max(1, video.videoWidth));
+        const w = Math.max(1, Math.round(video.videoWidth * scale));
+        const h = Math.max(1, Math.round(video.videoHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        const grab = async time => {
+            video.currentTime = Math.min(Math.max(0, time), Math.max(0, duration - 0.05));
+            await waitFor(video, 'seeked');
+            context.drawImage(video, 0, 0, w, h);
+            return context.getImageData(0, 0, w, h).data;
+        };
+        const samples = [await grab(from), await grab(from + (to - from) / 2), await grab(Math.max(from, to - 1 / fps))];
+        const encoder = gifEncoder(w, h, buildPalette(samples));
+        for (let i = 0; i < count; i++) {
+            encoder.addFrame(await grab(from + i / fps), 1000 / fps);
+            onProgress?.((i + 1) / count);
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        const { bytes, frames } = encoder.finish();
+        return { blob: new Blob([bytes], { type: 'image/gif' }), frames, width: w, height: h };
+    } finally {
+        video.removeAttribute('src');
+        video.load?.();
+        URL.revokeObjectURL(objectUrl);
+    }
+}
+
+async function convertVideoItem(item, onProgress = null) {
+    const s = settings();
+    const clamp = (value, min, max, fallback) => Math.min(max, Math.max(min, Number(value) || fallback));
+    const made = await videoToGif(item.video, {
+        start: Number(item.clipStart) || 0,
+        seconds: clamp(item.clipSeconds || s.gifSeconds, 1, 30, 6),
+        fps: clamp(s.gifFps, 2, 30, 10),
+        width: clamp(s.gifWidth, 120, 1280, 480),
+    }, onProgress);
+    return { blob: made.blob, format: 'gif', frames: made.frames };
+}
+
+async function frameDataUrl(source, width, height) {
+    const scale = Math.min(1, 768 / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+async function animationFrames(url, blob = null) {
+    if (typeof ImageDecoder !== 'function') {
+        return null;
+    }
+    let data = blob;
+    if (!data) {
+        const response = await fetch(url);
+        if (!response.ok) {
+            return null;
+        }
+        data = await response.blob();
+    }
+    const format = await sniffFormat(data);
+    if (!format || !await isAnimated({ blob: data, format })) {
+        return null;
+    }
+    const type = format === 'gif' ? 'image/gif' : format === 'webp' ? 'image/webp' : 'image/png';
+    if (ImageDecoder.isTypeSupported && !await ImageDecoder.isTypeSupported(type)) {
+        return null;
+    }
+    const decoder = new ImageDecoder({ data: new Uint8Array(await data.arrayBuffer()), type });
+    try {
+        await decoder.tracks.ready;
+        await decoder.completed?.catch(() => {});
+        const count = decoder.tracks.selectedTrack?.frameCount || 1;
+        if (count < 2) {
+            return null;
+        }
+        const frames = [];
+        for (const frameIndex of [...new Set([0, Math.floor(count / 2), count - 1])]) {
+            const { image } = await decoder.decode({ frameIndex });
+            frames.push(await frameDataUrl(image, image.displayWidth || image.codedWidth, image.displayHeight || image.codedHeight));
+            image.close?.();
+        }
+        return frames;
+    } finally {
+        decoder.close?.();
+    }
+}
+
 async function isAnimated(picture) {
     if (picture.format === 'gif') {
         return true;
@@ -1834,6 +2251,20 @@ function prepareDownload(item) {
     }
     const promise = (async () => {
         const errors = [];
+        if (item.video) {
+            let notice = null;
+            const slow = setTimeout(() => {
+                notice = toastr.info('Making a GIF from the video…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
+            }, 600);
+            try {
+                return await convertVideoItem(item);
+            } finally {
+                clearTimeout(slow);
+                if (notice) {
+                    toastr.clear?.(notice);
+                }
+            }
+        }
         if (item.anim) {
             try {
                 const picture = await downloadImage(item.anim);
@@ -1979,12 +2410,31 @@ async function requestDescription(url, tags, blob = null) {
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const image = await imageDataUrl(url, blob);
     const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
-    const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }];
-    const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
-    const raw = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const ask = async (text, images) => {
+        const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
+        const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+        return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    };
+    let frames = null;
+    try {
+        frames = await animationFrames(url, blob);
+    } catch (error) {
+        console.warn('[Image Search] could not read the animation frames', error);
+    }
+    let raw = '';
+    if (frames?.length > 1) {
+        try {
+            raw = await ask(`This picture is a short animation (a GIF). You get ${frames.length} moments from it, in order: the start, the middle and the end. Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, frames);
+        } catch (error) {
+            console.warn('[Image Search] the vision model refused several frames, using the first one', error);
+        }
+    }
+    if (!raw) {
+        raw = await ask(prompt, [await imageDataUrl(url, blob)]);
+    }
     const parsed = parseDescription(raw);
+    parsed.animated = Boolean(frames?.length > 1);
     if (!parsed.text) {
         throw new Error('The vision model gave no description.');
     }
@@ -2055,6 +2505,7 @@ function cleanEntry(entry) {
         description: String(entry.description || ''),
         sections: entry.sections && typeof entry.sections === 'object' ? Object.fromEntries(SECTIONS.filter(([key]) => typeof entry.sections[key] === 'string').map(([key]) => [key, entry.sections[key]])) : {},
         kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
+        animated: Boolean(entry.animated),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
@@ -2227,7 +2678,7 @@ function describedVariant(entry, variant) {
     }
     const isOther = variant && entry.kind === 'set' && variant.id !== entry.variants[0]?.id;
     const text = isOther && variant.diff ? `${entry.description}\nThis version: ${variant.diff}` : entry.description;
-    return readyDescription(variant?.url || entry.url, entry.tags, text);
+    return readyDescription(variant?.url || entry.url, entry.tags, entry.animated && text ? `An animated picture (GIF).\n${text}` : text);
 }
 
 function urlInUse(url) {
@@ -2619,6 +3070,9 @@ async function storePicture(item, searchTags, keep = settings().keepLibrary) {
         return { url: item.img, entry: null, failed: true, error: lines[0] || 'Saving failed.', lines };
     }
     const entry = keep ? await addToLibrary(item, src, searchTags) : null;
+    if (entry && blob) {
+        entry.animated = await isAnimated({ blob, format: await sniffFormat(blob) }).catch(() => false);
+    }
     startDescription(src, item.tags, (text, keywords, sections) => {
         if (entry) {
             entry.description = text;
@@ -2919,7 +3373,7 @@ function catalogLine(entry) {
     if (isMulti(entry)) {
         return `[pic:${entry.variants[0].id}] ${summary} (other versions: ${entry.variants.slice(1).map(variant => `[pic:${variant.id}]`).join(', ')})`;
     }
-    return `[pic:${entry.id}] ${summary}`;
+    return `[pic:${entry.id}] ${summary}${entry.animated ? ' (animated)' : ''}`;
 }
 
 function pictureCatalog(size) {
@@ -2951,7 +3405,7 @@ function pictureOffer(entry) {
             : `Version ${index + 1} [pic:${variant.id}]: ${variant.diff || 'another version of the same picture.'}`);
         return [`Saved picture set: ${entry.variants.length} real pictures, versions of the same scene. ${SHOW_RULE} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
     }
-    return [`Saved picture [pic:${entry.id}], a real picture. ${SHOW_RULE} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
+    return [`Saved picture [pic:${entry.id}], a real ${entry.animated ? 'animated picture (GIF)' : 'picture'}. ${SHOW_RULE} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
 }
 
 function newWiEntry(uid, depth) {
@@ -3218,7 +3672,18 @@ function choiceLine(choice) {
     const index = variant ? Math.max(0, entry.variants.indexOf(variant)) : 0;
     const what = index > 0 && variant.diff ? variant.diff : entry.sections?.action || '';
     const kind = entry.kind === 'sequence' && isMulti(entry) ? ` (picture ${index + 1} of a ${entry.variants.length}-picture story sequence)` : '';
-    return `${shortDescription(entry)} ${what}${kind}`.replace(/\s+/g, ' ').trim().slice(0, 300);
+    const looks = String(entry.sections?.visual || shortDescription(entry)).replace(/\s+/g, ' ').trim().slice(0, 320);
+    return `Looks: ${looks} | Happening: ${what.replace(/\s+/g, ' ').trim().slice(0, 200) || 'not described'}${kind}${entry.animated ? ' (animated)' : ''}`;
+}
+
+function appearanceNotes() {
+    const c = ctx();
+    const lines = cardAppearances();
+    const looks = parseLooks();
+    const names = new Set([c.name2, c.name1].filter(Boolean).map(name => name.toLowerCase()));
+    mentionedLooks(looks).forEach(look => names.add(look.name.toLowerCase()));
+    looks.filter(look => names.has(look.name.toLowerCase())).forEach(look => lines.push(`${look.name} (saved look): ${look.tags.join(', ').replace(/_/g, ' ')}`));
+    return lines;
 }
 
 function storyLines(count = 4) {
@@ -3238,17 +3703,34 @@ async function askPicturePick(message, candidates) {
     }
     const shortlist = candidates.slice(0, SEND_SHORTLIST);
     const user = c.name1 || 'The user';
-    const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Pick the pictures that best show what happens next in that reply: the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing). Prefer pictures whose people look like the characters in the story.\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with up to 3 picture numbers, best first, separated by commas, or 0 if none of them fits at all. Numbers only.`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 80, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const looks = appearanceNotes();
+    const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with up to 3 lines, best first, each like this:\n7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: 0 - why`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 220, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
-    const numbers = [...text.matchAll(/\d+/g)].map(match => Number(match[0]));
-    if (!numbers.length) {
-        return null;
+    const picks = [];
+    for (const line of text.split('\n')) {
+        const match = line.match(/^\s*(?:[-*#]+\s*)?(?:picture\s*)?#?(\d+)(?:\s*[.):\-–—*]+\s*|\s+|$)(.*)$/i);
+        if (!match) {
+            continue;
+        }
+        const number = Number(match[1]);
+        const why = match[2].replace(/^(why it fits|because)\s*[:\-–—]?\s*/i, '').trim().slice(0, 200);
+        if (number === 0 && !picks.length) {
+            return { choices: [], none: why };
+        }
+        const choice = shortlist[number - 1];
+        if (choice && !picks.some(pick => pick.choice === choice)) {
+            picks.push({ choice, why });
+        }
+        if (picks.length >= 3) {
+            break;
+        }
     }
-    if (numbers[0] === 0) {
-        return [];
+    if (!picks.length) {
+        const numbers = [...text.matchAll(/\d+/g)].map(match => Number(match[0])).filter(number => number >= 1 && number <= shortlist.length);
+        return numbers.length ? { choices: [...new Set(numbers)].slice(0, 3).map(number => shortlist[number - 1]), reasons: new Map() } : null;
     }
-    return [...new Set(numbers.filter(number => number >= 1 && number <= shortlist.length))].slice(0, 3).map(number => shortlist[number - 1]);
+    return { choices: picks.map(pick => pick.choice), reasons: new Map(picks.map(pick => [pick.choice, pick.why])) };
 }
 
 function forceInstruction(choice) {
@@ -3277,7 +3759,7 @@ function forcePicture(choice) {
     }
 }
 
-function showPictureCard(options, noneFits) {
+function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '') {
     const c = ctx();
     let index = 0;
     const root = el('div', 'stis-sendcard');
@@ -3285,18 +3767,21 @@ function showPictureCard(options, noneFits) {
     const img = el('img', 'stis-sendcard-img');
     img.alt = '';
     const text = el('div', 'stis-sendcard-text');
+    const why = el('div', 'stis-sendcard-why');
     const bar = el('div', 'stis-sendcard-bar');
     const send = el('div', 'menu_button stis-use', 'Send');
     const another = el('div', 'menu_button', 'Another');
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, search, cancel);
-    root.append(note, img, text, bar);
+    root.append(note, img, why, text, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
+        const reason = reasons.get(choice);
+        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : reasons.size ? 'Not picked by the AI, closest by keywords.' : '';
         note.textContent = noneFits ? 'Nothing in the library really fits this message. Closest pictures:' : `Choice ${index + 1} of ${options.length}`;
         another.classList.toggle('stis-disabled', index >= options.length - 1);
     };
@@ -3330,9 +3815,11 @@ async function sendWithPicture() {
     const notice = toastr.info('Choosing a picture…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
     let options = [];
     let noneFits = false;
+    let reasons = new Map();
+    let noneWhy = '';
     try {
         await loadLibrary();
-        const candidates = pictureCandidates(`${recentText(2)} ${message}`);
+        const candidates = pictureCandidates(`${recentText(2)} ${message} ${appearanceNotes().join(' ')}`);
         if (!candidates.length) {
             toastr.info('The library has no described pictures yet. Save some from the picker first.', 'Image Search');
             return;
@@ -3342,9 +3829,12 @@ async function sendWithPicture() {
             picked = await askPicturePick(message, candidates);
         } catch (error) {
             console.warn('[Image Search] picture choice failed, using the closest match', error);
+            toastr.warning(`The AI could not choose (${String(error?.message || error).slice(0, 120)}). Showing the closest pictures by keywords.`, 'Image Search');
         }
-        noneFits = Array.isArray(picked) && !picked.length;
-        const first = picked?.length ? picked : [];
+        noneFits = Boolean(picked) && !picked.choices.length;
+        reasons = picked?.reasons || new Map();
+        noneWhy = picked?.none || '';
+        const first = picked?.choices || [];
         options = [...first, ...candidates.filter(choice => !first.includes(choice))].slice(0, SEND_SHORTLIST);
     } finally {
         toastr.clear?.(notice);
@@ -3354,7 +3844,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard(options, noneFits);
+        showPictureCard(options, noneFits, reasons, noneWhy);
     } else {
         forcePicture(options[0]);
     }
@@ -4166,6 +4656,12 @@ async function openPicker(initialTags = null) {
             }
             const badge = el('span', 'stis-set-badge');
             cell.appendChild(badge);
+            if (item.video) {
+                const play = el('span', 'stis-video-badge');
+                play.appendChild(el('i', 'fa-solid fa-play'));
+                play.title = 'Video: made into a GIF when you use or save it';
+                cell.appendChild(play);
+            }
             const family = { rep: item, members: [item], badge, loaded: false };
             gridFamilies.set(key, family);
             familyBadge(family);
@@ -4383,10 +4879,14 @@ async function openPicker(initialTags = null) {
         ui.preview.innerHTML = '';
         ui.preview.scrollTop = 0;
         const main = el('div', 'stis-preview-main');
-        const img = el('img', 'stis-preview-img');
+        const isVideo = typeof src !== 'string' && Boolean(src?.video);
+        const img = el(isVideo ? 'video' : 'img', 'stis-preview-img');
         img.draggable = false;
         if (typeof src === 'string') {
             img.src = src;
+        } else if (isVideo) {
+            Object.assign(img, { muted: true, loop: true, playsInline: true, autoplay: true, controls: true, poster: src.img });
+            img.src = proxyUrl(src.video);
         } else {
             setPreviewSource(img, src);
         }
@@ -4651,16 +5151,77 @@ async function openPicker(initialTags = null) {
         ui.tabLibrary.textContent = `Library (${library.entries.length})${waiting ? ` · saving ${waiting}` : ''}`;
     }
 
+    function clipBar(current, player) {
+        const clip = el('div', 'stis-clip');
+        const startText = el('span', 'stis-clip-start');
+        const paintStart = () => {
+            startText.textContent = `Start: ${(Number(current.clipStart) || 0).toFixed(1)} s`;
+        };
+        const startHere = el('div', 'menu_button', 'Start here');
+        startHere.title = 'Start the GIF where the video is now';
+        const length = el('input', 'text_pole stis-clip-len');
+        Object.assign(length, { type: 'number', min: '1', max: '30', step: '1', value: String(current.clipSeconds || s.gifSeconds || 6) });
+        length.title = 'Seconds of video in the GIF';
+        const make = el('div', 'menu_button', 'Make GIF');
+        const status = el('small', 'stis-clip-status');
+        const reset = () => {
+            downloads.delete(current.img);
+            status.textContent = '';
+            make.textContent = 'Make GIF';
+        };
+        startHere.addEventListener('click', () => {
+            current.clipStart = Math.max(0, Number(player.currentTime) || 0);
+            paintStart();
+            reset();
+        });
+        length.addEventListener('input', () => {
+            current.clipSeconds = Math.min(30, Math.max(1, Number(length.value) || 6));
+            reset();
+        });
+        make.addEventListener('click', async () => {
+            if (make.textContent === 'Making…') {
+                return;
+            }
+            reset();
+            make.textContent = 'Making…';
+            const promise = convertVideoItem(current, share => {
+                status.textContent = `Making the GIF… ${Math.round(share * 100)}%`;
+            });
+            downloads.set(current.img, promise);
+            promise.catch(() => downloads.delete(current.img));
+            try {
+                const picture = await promise;
+                status.textContent = `GIF ready: ${(picture.blob.size / 1048576).toFixed(1)} MB, ${picture.frames} frames. Use it or save it.`;
+                make.textContent = 'Make again';
+                if (previewState?.variant === current && player.isConnected) {
+                    const gif = el('img', 'stis-preview-img');
+                    gif.alt = '';
+                    gif.src = URL.createObjectURL(picture.blob);
+                    player.replaceWith(gif);
+                }
+            } catch (error) {
+                make.textContent = 'Make GIF';
+                status.textContent = `Could not make the GIF: ${error?.message || error}`;
+            }
+        });
+        paintStart();
+        clip.append(startText, startHere, length, el('span', '', 's'), make, status);
+        return clip;
+    }
+
     function showPreview(item, chosen = null) {
         const family = gridFamilies.get(familyKey(item));
         const current = chosen || item;
         const { bar, img, link, below } = previewShell(current, current.page, item, 'item');
         previewState.variant = current;
-        if (s.saveLocal) {
+        if (s.saveLocal && !current.video) {
             prepareDownload(current).catch(() => {});
         }
         const stripHolder = el('div', 'stis-variant-holder');
         bar.before(stripHolder);
+        if (current.video && s.saveLocal) {
+            bar.before(clipBar(current, img));
+        }
         const drawStrip = () => {
             stripHolder.innerHTML = '';
             if (family && family.members.length > 1) {
@@ -5060,7 +5621,7 @@ async function openPicker(initialTags = null) {
     let touchY = 0;
     ui.preview.addEventListener('touchstart', event => {
         const touch = event.changedTouches[0];
-        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox') ? null : touch.clientX;
+        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox, .stis-clip, video') ? null : touch.clientX;
         touchY = touch.clientY;
     }, { passive: true });
     ui.preview.addEventListener('touchend', event => {
@@ -5394,6 +5955,10 @@ function buildSettings() {
                 <textarea id="st_imagesearch_looks" class="text_pole"></textarea>
                 <div>Leave out pictures with these tags (comma-separated; sent to the site as -tag where it allows it, checked here otherwise)</div>
                 <textarea id="st_imagesearch_exclude" class="text_pole"></textarea>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> Include videos (made into GIFs when you use or save them)</label>
+                <div class="st-imagesearch-row"><span>GIF from a video: seconds</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div>
+                <div class="st-imagesearch-row"><span>GIF width in pixels</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div>
+                <div class="st-imagesearch-row"><span>GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div>
                 <div>Allowed ratings</div>
                 <div class="st-imagesearch-row">
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
@@ -5528,6 +6093,10 @@ function buildSettings() {
     bind('st_imagesearch_fetcher_url', 'fetcherUrl');
     bind('st_imagesearch_fetcher_key', 'fetcherKey');
     bind('st_imagesearch_exclude', 'excludeTags');
+    bind('st_imagesearch_videos', 'includeVideos', 'checked');
+    bind('st_imagesearch_gif_seconds', 'gifSeconds', 'number');
+    bind('st_imagesearch_gif_width', 'gifWidth', 'number');
+    bind('st_imagesearch_gif_fps', 'gifFps', 'number');
     const favBox = document.getElementById('st_imagesearch_favorites');
     favBox.value = favoriteTags().join(', ');
     favBox.addEventListener('input', () => {

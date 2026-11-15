@@ -1,11 +1,13 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 4;
 const LIBRARY_FILE = 'imagesearch-library.json';
 const PIC_TAG = /\[pic:\s*([a-z0-9]{4,12})\s*\]/gi;
-const DEFAULT_SHOW_PROMPT = 'Saved pictures you can show in this story. When one clearly fits the moment, write its tag, for example [pic:ab12cd], on its own line where it belongs. At most one per reply, only when it adds to the scene, and never mention the tag itself. The user sees the picture, not the tag.';
+const LOREBOOK = 'Image Search Pictures';
+const WI_COMMENT = /^\[pic:([a-z0-9]+)\]/;
+const COUNT_TAGS = /^(\d+(girl|boy|other)s?|solo|male|female|multiple_.*|.*_focus|no_humans)$/;
 const STOP_WORDS = new Set(['the', 'and', 'with', 'her', 'his', 'their', 'she', 'him', 'them', 'they', 'you', 'your', 'are', 'was', 'were', 'has', 'have', 'had', 'this', 'that', 'there', 'then', 'than', 'from', 'into', 'onto', 'over', 'under', 'out', 'for', 'not', 'but', 'its', 'who', 'what', 'when', 'where', 'which', 'while', 'some', 'very', 'just', 'like', 'one', 'two', 'picture', 'shows', 'showing', 'shown', 'image', 'wearing', 'looks', 'look', 'seems', 'standing', 'sitting', 'background']);
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
 const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena'];
@@ -16,7 +18,8 @@ const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', fema
 
 const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
 const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
-const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}';
+const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}';
+const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}'];
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
 const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
@@ -45,9 +48,8 @@ const DEFAULTS = {
     describeWaitSec: 15,
     keepLibrary: true,
     aiShow: true,
-    aiShowCount: 6,
-    aiShowDepth: 1,
-    showPrompt: DEFAULT_SHOW_PROMPT,
+    aiShowDepth: 2,
+    wiDisabledByUs: [],
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
     lastTags: [],
@@ -106,6 +108,12 @@ function settings() {
             s.maxSuggested = 6;
         }
         s.schema = 2;
+    }
+    if (OLD_VISION_PROMPTS.includes(s.visionPrompt)) {
+        s.visionPrompt = DEFAULT_VISION_PROMPT;
+    }
+    if (!Array.isArray(s.wiDisabledByUs)) {
+        s.wiDisabledByUs = [];
     }
     if (OLD_TAG_PROMPTS.includes(s.tagPrompt)) {
         s.tagPrompt = DEFAULT_TAG_PROMPT;
@@ -1125,6 +1133,23 @@ function visionProfileId() {
     return s.visionProfile || s.tagProfile;
 }
 
+function parseKeywords(text) {
+    const seen = new Set();
+    return String(text || '')
+        .split(/[,;\n]/)
+        .map(word => word.toLowerCase().replace(/[^a-z0-9' -]/g, '').replace(/\s+/g, ' ').trim())
+        .filter(word => word.length >= 3 && word.length <= 30 && !STOP_WORDS.has(word) && !seen.has(word) && seen.add(word))
+        .slice(0, 8);
+}
+
+function parseDescription(raw) {
+    const keywordMatch = raw.match(/^\s*\**keywords?\**\s*:\s*(.+)$/im);
+    const keywords = keywordMatch ? parseKeywords(keywordMatch[1]) : [];
+    const body = keywordMatch ? raw.slice(0, keywordMatch.index) + raw.slice(keywordMatch.index + keywordMatch[0].length) : raw;
+    const text = body.replace(/^\s*\**description\**\s*:\s*/im, '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+    return { text, keywords };
+}
+
 async function requestDescription(url, tags) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
@@ -1136,11 +1161,12 @@ async function requestDescription(url, tags) {
     const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
     const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }];
     const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
-    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    if (!text) {
+    const raw = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const parsed = parseDescription(raw);
+    if (!parsed.text) {
         throw new Error('The vision model gave no description.');
     }
-    return text.slice(0, 1500);
+    return parsed;
 }
 
 function readyDescription(url, tags, text) {
@@ -1152,11 +1178,12 @@ function startDescription(url, postTags, onDone) {
     if (!s.describe) {
         return;
     }
-    const entry = { url, tags: summaryTags(postTags), text: '', error: '', started: Date.now(), ms: 0, done: false };
+    const entry = { url, tags: summaryTags(postTags), text: '', keywords: [], error: '', started: Date.now(), ms: 0, done: false };
     entry.promise = requestDescription(url, entry.tags)
-        .then(text => {
+        .then(({ text, keywords }) => {
             entry.text = text;
-            onDone?.(text);
+            entry.keywords = keywords;
+            onDone?.(text, keywords);
         })
         .catch(error => {
             entry.error = String(error?.cause?.message || error?.message || error);
@@ -1167,7 +1194,7 @@ function startDescription(url, postTags, onDone) {
             entry.ms = Date.now() - entry.started;
             if (settings().debug) {
                 const seconds = (entry.ms / 1000).toFixed(1);
-                toastr.info(entry.text ? `Described in ${seconds} s: ${entry.text}` : `Description failed after ${seconds} s: ${entry.error}. The AI gets the tags instead.`, 'Image Search debug', { timeOut: 15000 });
+                toastr.info(entry.text ? `Described in ${seconds} s: ${entry.text} Keywords: ${entry.keywords.join(', ') || 'none'}` : `Description failed after ${seconds} s: ${entry.error}. The AI gets the tags instead.`, 'Image Search debug', { timeOut: 15000 });
             }
         });
     descriptions.set(url, entry);
@@ -1198,6 +1225,8 @@ function cleanEntry(entry) {
         tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
         searchTags: Array.isArray(entry.searchTags) ? entry.searchTags.map(String) : [],
         description: String(entry.description || ''),
+        keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
+        wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
         characters: Array.isArray(entry.characters) ? entry.characters.map(String) : [],
         added: Number(entry.added) || Date.now(),
         lastUsed: Number(entry.lastUsed) || 0,
@@ -1248,7 +1277,7 @@ function utf8ToBase64(text) {
     return btoa(binary);
 }
 
-function saveLibrary() {
+function saveLibrary({ skipSync = false } = {}) {
     library.saving = library.saving.then(async () => {
         if (library.broken) {
             await loadLibrary(true);
@@ -1270,6 +1299,9 @@ function saveLibrary() {
         });
         if (!response.ok) {
             throw new Error(`The picture library could not be saved (${response.status}).`);
+        }
+        if (!skipSync) {
+            scheduleLorebookSync();
         }
     }).catch(error => {
         console.warn('[Image Search] library save failed', error);
@@ -1373,21 +1405,199 @@ function recentText(count = 3) {
         .join(' ');
 }
 
-async function updateShowPrompt() {
+function fallbackKeywords(entry) {
+    return entry.tags
+        .filter(tag => !COUNT_TAGS.test(tag) && !META_TAG.test(tag) && !isDetailTag(tag) && !DROP_TAGS.has(tag))
+        .map(tag => tag.replace(/_\([^)]*\)$/, '').replace(/_/g, ' '))
+        .filter(word => word.length >= 3)
+        .slice(0, 8);
+}
+
+function entryKeywords(entry) {
+    const words = entry.keywords.length ? entry.keywords : fallbackKeywords(entry);
+    return [...new Set(words.map(word => word.toLowerCase()))].slice(0, 12);
+}
+
+function pictureOffer(entry) {
+    return `Saved picture you can show: ${shortDescription(entry)} If it truly fits this moment, write [pic:${entry.id}] on its own line where it belongs. At most one picture per reply; never mention the tag itself.`;
+}
+
+function newWiEntry(uid, depth) {
+    return {
+        uid,
+        key: [],
+        keysecondary: [],
+        comment: '',
+        content: '',
+        constant: false,
+        vectorized: false,
+        selective: true,
+        selectiveLogic: 0,
+        addMemo: true,
+        order: 1,
+        position: 4,
+        disable: false,
+        ignoreBudget: false,
+        excludeRecursion: true,
+        preventRecursion: true,
+        matchPersonaDescription: false,
+        matchCharacterDescription: false,
+        matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false,
+        matchScenario: false,
+        matchCreatorNotes: false,
+        delayUntilRecursion: 0,
+        probability: 100,
+        useProbability: true,
+        depth,
+        outletName: '',
+        group: 'imagesearch',
+        groupOverride: false,
+        groupWeight: 100,
+        scanDepth: null,
+        caseSensitive: false,
+        matchWholeWords: true,
+        useGroupScoring: true,
+        automationId: '',
+        role: 0,
+        sticky: null,
+        cooldown: 4,
+        delay: null,
+        triggers: [],
+        displayIndex: uid,
+    };
+}
+
+function lorebookActive() {
+    return [...document.querySelectorAll('#world_info option')].some(option => option.selected && option.textContent.trim() === LOREBOOK);
+}
+
+async function activateLorebook() {
+    const c = ctx();
+    if (lorebookActive() || !c.executeSlashCommandsWithOptions) {
+        return;
+    }
+    try {
+        await c.executeSlashCommandsWithOptions(`/world state=on silent=true ${LOREBOOK}`);
+    } catch (error) {
+        console.warn('[Image Search] could not turn on the lorebook', error);
+    }
+}
+
+let lorebookTimer = null;
+let lorebookRunning = Promise.resolve();
+
+function scheduleLorebookSync(options = {}) {
+    clearTimeout(lorebookTimer);
+    lorebookTimer = setTimeout(() => {
+        lorebookRunning = lorebookRunning.then(() => syncLorebook(options)).catch(error => console.warn('[Image Search] lorebook sync failed', error));
+    }, 1500);
+}
+
+async function syncLorebook({ activate = false } = {}) {
     const s = settings();
     const c = ctx();
-    if (!s.enabled || !s.aiShow) {
-        c.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
+    if (!c.loadWorldInfo || !c.saveWorldInfo) {
         return;
     }
     await loadLibrary();
-    const ranked = rankEntries(library.entries, { text: recentText(3), character: c.name2 || '' })
-        .filter(item => item.score > 0)
-        .slice(0, Math.max(1, Number(s.aiShowCount) || 6));
-    const value = ranked.length
-        ? `${s.showPrompt || DEFAULT_SHOW_PROMPT}\n${ranked.map(({ entry }) => `- [pic:${entry.id}] ${shortDescription(entry)}`).join('\n')}`
-        : '';
-    c.setExtensionPrompt?.(PROMPT_KEY, value, 1, Math.max(0, Number(s.aiShowDepth) || 0), false, 0);
+    if (library.broken) {
+        return;
+    }
+    const exists = (c.getWorldInfoNames?.() || []).includes(LOREBOOK);
+    let data = exists ? await c.loadWorldInfo(LOREBOOK) : null;
+    if (exists && (!data || typeof data.entries !== 'object')) {
+        return;
+    }
+    let created = false;
+    if (!data) {
+        if (!library.entries.length) {
+            return;
+        }
+        data = { entries: {} };
+        created = true;
+    }
+    const byId = new Map();
+    for (const wi of Object.values(data.entries)) {
+        const match = String(wi?.comment || '').match(WI_COMMENT);
+        if (match) {
+            byId.set(match[1], wi);
+        }
+    }
+    let changed = created;
+    let libraryChanged = false;
+    const wanted = new Set(library.entries.map(entry => entry.id));
+    for (const [id, wi] of byId) {
+        if (!wanted.has(id)) {
+            delete data.entries[wi.uid];
+            changed = true;
+        }
+    }
+    let nextUid = Math.max(-1, ...Object.keys(data.entries).map(Number).filter(Number.isFinite)) + 1;
+    const depth = Math.max(0, Number(s.aiShowDepth) || 0);
+    const disabledByUs = new Set(s.wiDisabledByUs);
+    for (const entry of library.entries) {
+        let wi = byId.get(entry.id);
+        if (!wi) {
+            wi = newWiEntry(nextUid++, depth);
+            data.entries[wi.uid] = wi;
+            changed = true;
+        }
+        const keys = entryKeywords(entry);
+        const userEdited = Array.isArray(entry.wiKeys) && Array.isArray(wi.key) && wi.key.length && JSON.stringify(wi.key) !== JSON.stringify(entry.wiKeys);
+        if (!userEdited) {
+            if (JSON.stringify(wi.key) !== JSON.stringify(keys)) {
+                wi.key = keys;
+                changed = true;
+            }
+            if (JSON.stringify(entry.wiKeys) !== JSON.stringify(keys)) {
+                entry.wiKeys = keys;
+                libraryChanged = true;
+            }
+        }
+        const comment = `[pic:${entry.id}] ${shortDescription(entry)}`.slice(0, 200);
+        const content = pictureOffer(entry);
+        if (wi.comment !== comment || wi.content !== content || wi.depth !== depth) {
+            wi.comment = comment;
+            wi.content = content;
+            wi.depth = depth;
+            changed = true;
+        }
+        if (!s.aiShow && !wi.disable) {
+            wi.disable = true;
+            disabledByUs.add(entry.id);
+            changed = true;
+        } else if (s.aiShow && wi.disable && disabledByUs.has(entry.id)) {
+            wi.disable = false;
+            disabledByUs.delete(entry.id);
+            changed = true;
+        }
+    }
+    s.wiDisabledByUs = [...disabledByUs].filter(id => wanted.has(id));
+    save();
+    if (changed) {
+        await c.saveWorldInfo(LOREBOOK, data, true);
+        c.reloadWorldInfoEditor?.(LOREBOOK, false);
+    }
+    if (created) {
+        await c.updateWorldInfoList?.();
+    }
+    if ((created || activate) && s.aiShow) {
+        await activateLorebook();
+    }
+    if (libraryChanged) {
+        await saveLibrary({ skipSync: true });
+    }
+}
+
+function onWorldInfoActivated(entries) {
+    if (!settings().debug || !Array.isArray(entries)) {
+        return;
+    }
+    const offered = entries.filter(entry => entry?.world === LOREBOOK).map(entry => entry.comment);
+    if (offered.length) {
+        toastr.info(`Offered to the AI: ${offered.join(' | ')}`, 'Image Search debug', { timeOut: 10000 });
+    }
 }
 
 function setMessageText(message, text) {
@@ -1958,8 +2168,9 @@ async function openPicker(initialTags = null) {
         if (entry.description) {
             descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
         } else if (!descriptions.has(entry.url)) {
-            startDescription(entry.url, entry.tags, text => {
+            startDescription(entry.url, entry.tags, (text, keywords) => {
                 entry.description = text;
+                entry.keywords = keywords;
                 saveLibrary();
             });
         }
@@ -1984,9 +2195,10 @@ async function openPicker(initialTags = null) {
             return { url: item.img, entry: null };
         }
         const entry = s.keepLibrary ? await addToLibrary(item, src, [...tags]) : null;
-        startDescription(src, item.tags, text => {
+        startDescription(src, item.tags, (text, keywords) => {
             if (entry) {
                 entry.description = text;
+                entry.keywords = keywords;
                 saveLibrary();
             }
         });
@@ -2296,7 +2508,8 @@ function buildSettings() {
                 <div>Vision profile (empty = use the tag profile)</div>
                 <select id="st_imagesearch_vision_profile" class="text_pole"></select>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep picked pictures in the library</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies (adds a short list of fitting pictures to the prompt)</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies</span></label>
+                <small>Saved pictures are offered through the lorebook "${LOREBOOK}" (World Info): one entry per picture, triggered by its keywords, at most one picture per reply. Keep that lorebook turned on. You can edit keywords there; your edits are kept.</small>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
@@ -2307,10 +2520,7 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Saved pictures offered to the AI</span><input type="number" min="1" max="20" id="st_imagesearch_aishow_count" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Depth of that list in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
-                    <div>Instruction for showing saved pictures (the list is added below it)</div>
-                    <textarea id="st_imagesearch_show_prompt" class="text_pole"></textarea>
+                    <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
                     <div>Description prompt ({{tags}} is filled in)</div>
                     <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
                     <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
@@ -2355,7 +2565,6 @@ function buildSettings() {
     };
     bind('st_imagesearch_enabled', 'enabled', 'checked', () => {
         updateButtons();
-        updateShowPrompt();
         if (!s.enabled) {
             onChatChanged();
         }
@@ -2380,10 +2589,8 @@ function buildSettings() {
     bind('st_imagesearch_debug', 'debug', 'checked');
     bind('st_imagesearch_describe', 'describe', 'checked');
     bind('st_imagesearch_keep', 'keepLibrary', 'checked');
-    bind('st_imagesearch_aishow', 'aiShow', 'checked', updateShowPrompt);
-    bind('st_imagesearch_aishow_count', 'aiShowCount', 'number', updateShowPrompt);
-    bind('st_imagesearch_aishow_depth', 'aiShowDepth', 'number', updateShowPrompt);
-    bind('st_imagesearch_show_prompt', 'showPrompt', 'value', updateShowPrompt);
+    bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
+    bind('st_imagesearch_aishow_depth', 'aiShowDepth', 'number', () => scheduleLorebookSync());
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
@@ -2443,7 +2650,8 @@ jQuery(() => {
     applyReferrerPolicy();
     settings();
     buildSettings();
-    updateShowPrompt();
+    c.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
+    scheduleLorebookSync();
     refreshCleanup();
     setInterval(refreshCleanup, CLEANUP_REFRESH_MS);
     registerCommand();
@@ -2451,9 +2659,9 @@ jQuery(() => {
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onAiPictures);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onReplyFinished);
-    c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, updateShowPrompt);
     c.eventSource.on(c.eventTypes.MESSAGE_SENT, onMessageSent);
-    c.eventSource.on(c.eventTypes.MESSAGE_SENT, updateShowPrompt);
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, onChatChanged);
-    c.eventSource.on(c.eventTypes.CHAT_CHANGED, updateShowPrompt);
+    if (c.eventTypes.WORLD_INFO_ACTIVATED) {
+        c.eventSource.on(c.eventTypes.WORLD_INFO_ACTIVATED, onWorldInfoActivated);
+    }
 });

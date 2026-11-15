@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.10.0';
+const VERSION = '2.10.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3607,6 +3607,7 @@ function onWorldInfoActivated(entries) {
 }
 
 const SEND_SHORTLIST = 30;
+const PICK_COUNT = 5;
 const sendState = { pending: null, busy: false };
 
 function chatPictures() {
@@ -3704,11 +3705,25 @@ async function askPicturePick(message, candidates) {
     const shortlist = candidates.slice(0, SEND_SHORTLIST);
     const user = c.name1 || 'The user';
     const looks = appearanceNotes();
-    const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with up to 3 lines, best first, each like this:\n7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: 0 - why`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 220, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with your ${Math.min(PICK_COUNT, shortlist.length)} best pictures, all different, best first, one per line, like this:\n#7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: #0 - why`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 450, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const picks = [];
-    for (const line of text.split('\n')) {
+    for (const raw of text.split('\n')) {
+        const line = raw.replace(/\*\*/g, '').replace(/^\s*(?:[-*•]+|\d+[.)])\s+(?=(?:picture\s*)?#?\d)/i, '');
+        if (/\d/.test(line) && /^[\s#\d,;.]+$/.test(line)) {
+            const numbers = line.match(/\d+/g).map(Number);
+            if (numbers[0] === 0 && !picks.length) {
+                return { choices: [], none: '' };
+            }
+            for (const number of numbers) {
+                const choice = shortlist[number - 1];
+                if (choice && !picks.some(pick => pick.choice === choice)) {
+                    picks.push({ choice, why: '' });
+                }
+            }
+            continue;
+        }
         const match = line.match(/^\s*(?:[-*#]+\s*)?(?:picture\s*)?#?(\d+)(?:\s*[.):\-–—*]+\s*|\s+|$)(.*)$/i);
         if (!match) {
             continue;
@@ -3722,15 +3737,16 @@ async function askPicturePick(message, candidates) {
         if (choice && !picks.some(pick => pick.choice === choice)) {
             picks.push({ choice, why });
         }
-        if (picks.length >= 3) {
+        if (picks.length >= PICK_COUNT) {
             break;
         }
     }
     if (!picks.length) {
         const numbers = [...text.matchAll(/\d+/g)].map(match => Number(match[0])).filter(number => number >= 1 && number <= shortlist.length);
-        return numbers.length ? { choices: [...new Set(numbers)].slice(0, 3).map(number => shortlist[number - 1]), reasons: new Map() } : null;
+        return numbers.length ? { choices: [...new Set(numbers)].slice(0, PICK_COUNT).map(number => shortlist[number - 1]), reasons: new Map() } : null;
     }
-    return { choices: picks.map(pick => pick.choice), reasons: new Map(picks.map(pick => [pick.choice, pick.why])) };
+    const chosen = picks.slice(0, PICK_COUNT);
+    return { choices: chosen.map(pick => pick.choice), reasons: new Map(chosen.filter(pick => pick.why).map(pick => [pick.choice, pick.why])), picked: new Set(chosen.map(pick => pick.choice)) };
 }
 
 function forceInstruction(choice) {
@@ -3759,7 +3775,7 @@ function forcePicture(choice) {
     }
 }
 
-function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '') {
+function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '', picked = new Set()) {
     const c = ctx();
     let index = 0;
     const root = el('div', 'stis-sendcard');
@@ -3781,7 +3797,7 @@ function showPictureCard(options, noneFits, reasons = new Map(), noneWhy = '') {
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
         const reason = reasons.get(choice);
-        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : reasons.size ? 'Not picked by the AI, closest by keywords.' : '';
+        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI, closest by keywords.' : '';
         note.textContent = noneFits ? 'Nothing in the library really fits this message. Closest pictures:' : `Choice ${index + 1} of ${options.length}`;
         another.classList.toggle('stis-disabled', index >= options.length - 1);
     };
@@ -3816,6 +3832,7 @@ async function sendWithPicture() {
     let options = [];
     let noneFits = false;
     let reasons = new Map();
+    let aiPicked = new Set();
     let noneWhy = '';
     try {
         await loadLibrary();
@@ -3833,6 +3850,7 @@ async function sendWithPicture() {
         }
         noneFits = Boolean(picked) && !picked.choices.length;
         reasons = picked?.reasons || new Map();
+        aiPicked = picked?.picked || new Set(picked?.choices || []);
         noneWhy = picked?.none || '';
         const first = picked?.choices || [];
         options = [...first, ...candidates.filter(choice => !first.includes(choice))].slice(0, SEND_SHORTLIST);
@@ -3844,7 +3862,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard(options, noneFits, reasons, noneWhy);
+        showPictureCard(options, noneFits, reasons, noneWhy, aiPicked);
     } else {
         forcePicture(options[0]);
     }

@@ -1,14 +1,17 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const BATCH = 24;
-const MAX_PAGE_CALLS = 4;
+const MAX_PAGE_CALLS = 3;
+const RANK_WINDOW = 150;
+const MAX_SIDE = 1280;
 const LIBRARY_FILE = 'imagesearch-library.json';
 const PIC_TAG = /\[pic:\s*([a-z0-9]{4,12})\s*\]/gi;
 const LOREBOOK = 'Image Search Pictures';
 const WI_COMMENT = /^\[pic:([a-z0-9]+)\]/;
 const COUNT_TAGS = /^(\d+(girl|boy|other)s?|solo|male|female|multiple_.*|.*_focus|no_humans)$/;
 const STOP_WORDS = new Set(['the', 'and', 'with', 'her', 'his', 'their', 'she', 'him', 'them', 'they', 'you', 'your', 'are', 'was', 'were', 'has', 'have', 'had', 'this', 'that', 'there', 'then', 'than', 'from', 'into', 'onto', 'over', 'under', 'out', 'for', 'not', 'but', 'its', 'who', 'what', 'when', 'where', 'which', 'while', 'some', 'very', 'just', 'like', 'one', 'two', 'picture', 'shows', 'showing', 'shown', 'image', 'wearing', 'looks', 'look', 'seems', 'standing', 'sitting', 'background']);
+const GENERIC_KEYWORDS = new Set(['girl', 'girls', 'boy', 'boys', 'man', 'men', 'woman', 'women', 'person', 'people', 'human', 'humans', 'guy', 'lady', 'smile', 'smiling', 'grin', 'hair', 'eyes', 'face', 'body', 'clothes', 'clothing', 'outfit', 'standing', 'sitting', 'looking', 'portrait', 'picture', 'image', 'character', 'solo', 'adult', 'young', 'pose', 'posing', 'background']);
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
 const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena'];
 const NOT_BOARD = new Set(['web', 'web-unchecked', 'none']);
@@ -16,8 +19,8 @@ const KNOWN_WEB = /(^|\.)(wikimedia\.org|wikipedia\.org|pexels\.com|unsplash\.co
 const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky', 'outdoor', 'indoor', 'urban', 'city_street', 'rooftop', 'building', 'house', 'road', 'standing', 'sitting', 'walking', 'running', 'lying', 'kneeling', 'squatting', 'crouching', 'leaning', 'leaning_forward', 'jumping', 'fighting', 'holding', 'talking', 'walking_away', 'looking_at_viewer', 'looking_away', 'looking_back', 'looking_down', 'looking_up', 'arms_crossed', 'hands_on_hips', 'from_side', 'from_behind', 'from_above', 'from_below', 'full_body', 'upper_body', 'cowboy_shot', 'portrait', 'close-up']);
 const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', female: '1girl', woman: '1girl', girl: '1girl', lady: '1girl', men: 'multiple_boys', women: 'multiple_girls', two_girls: '2girls', two_boys: '2boys', blond: 'blonde_hair', blonde: 'blonde_hair', blond_hair: 'blonde_hair', redhead: 'red_hair', ginger_hair: 'orange_hair', dark_skinned: 'dark_skin', pale: 'pale_skin', elf_ears: 'pointy_ears' };
 
-const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}';
-const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
+const DEFAULT_TAG_PROMPT = 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}';
+const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}'];
 const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}'];
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
@@ -36,6 +39,8 @@ const DEFAULTS = {
     tagProfile: '',
     prefetch: true,
     maxSuggested: 6,
+    requiredCount: 2,
+    characterLooks: '',
     minTagPosts: 50,
     suggestBlacklist: 'human',
     contextMessages: 3,
@@ -53,6 +58,7 @@ const DEFAULTS = {
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
     lastTags: [],
+    lastRequired: [],
     lastSite: '',
     engines: {},
 };
@@ -102,6 +108,9 @@ function settings() {
     }
     if (!Array.isArray(s.lastTags)) {
         s.lastTags = [];
+    }
+    if (!Array.isArray(s.lastRequired)) {
+        s.lastRequired = [];
     }
     if ((Number(s.schema) || 0) < 2) {
         if (s.maxSuggested === 8) {
@@ -524,12 +533,18 @@ function capFor(domain) {
     return engine ? engine.cap : 0;
 }
 
-async function fetchPage(entry, engineName, tags, page) {
+function defaultRequired(tags) {
+    const value = Number(settings().requiredCount);
+    const count = Number.isFinite(value) ? Math.max(0, value) : 2;
+    return tags.slice(0, count);
+}
+
+async function fetchPage(entry, engineName, required, page) {
     const s = settings();
     const engine = ENGINES[engineName];
     const origin = `https://${entry.domain}`;
-    const siteTags = tags.slice(0, engine.cap);
-    const localTags = tags.slice(engine.cap);
+    const siteTags = required.slice(0, engine.cap);
+    const localTags = required.slice(engine.cap);
     let noOrder = noOrderSites.has(entry.domain);
     for (let attempt = 0; attempt < 2; attempt++) {
         const query = engine.tags(siteTags, s.ratings, noOrder);
@@ -559,12 +574,52 @@ async function fetchPage(entry, engineName, tags, page) {
     return { items: [], done: true, debug: null };
 }
 
-function createBrowse(domain, tags) {
-    return { domain, tags: [...tags], page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [] };
+function createBrowse(domain, tags, required) {
+    const req = tags.filter(tag => required.includes(tag));
+    return { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [] };
 }
 
 function sameTags(a, b) {
     return a.length === b.length && a.every((tag, i) => tag === b[i]);
+}
+
+function sameSearch(browse, domain, tags, required) {
+    return Boolean(browse) && browse.domain === domain && sameTags(browse.tags, tags) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+}
+
+function sameRequired(browse, domain, tags, required) {
+    return Boolean(browse) && browse.domain === domain && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+}
+
+function rankItems(items, preferred) {
+    const count = preferred.length;
+    for (const item of items) {
+        const have = new Set(item.tags || []);
+        let score = 0;
+        let matched = 0;
+        preferred.forEach((tag, index) => {
+            if (have.has(tag)) {
+                score += count - index;
+                matched++;
+            }
+        });
+        item.score = score;
+        item.matched = matched;
+    }
+    if (!count) {
+        return items;
+    }
+    return items
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => b.item.score - a.item.score || a.index - b.index)
+        .map(entry => entry.item);
+}
+
+function rerankBrowse(old, tags, required) {
+    const next = createBrowse(old.domain, tags, required);
+    Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages });
+    next.items = rankItems(old.items.slice(), next.preferred);
+    return next;
 }
 
 async function loadMore(browse) {
@@ -579,30 +634,33 @@ async function loadMore(browse) {
         if (!entry) {
             throw new Error(`${browse.domain} is not in the approved sites.`);
         }
-        const engineName = await engineOf(entry, browse.tags);
+        const engineName = await engineOf(entry, browse.required.length ? browse.required : browse.tags);
         browse.engine = engineName;
         if (NOT_BOARD.has(engineName) || !ENGINES[engineName]) {
             throw new Error(`${browse.domain} is not an image board this extension can search.`);
         }
-        const added = [];
+        const batch = [];
+        let received = 0;
         let calls = 0;
-        while (!browse.done && added.length < BATCH && calls < MAX_PAGE_CALLS) {
+        while (!browse.done && received < RANK_WINDOW && calls < MAX_PAGE_CALLS) {
             calls++;
-            const { items, done, debug } = await fetchPage(entry, engineName, browse.tags, browse.page);
+            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page);
             if (debug) {
                 browse.pages.push(debug);
+                received += debug.received;
             }
             browse.page++;
             browse.done = done;
             for (const item of items) {
                 if (!browse.seen.has(item.img)) {
                     browse.seen.add(item.img);
-                    browse.items.push(item);
-                    added.push(item);
+                    batch.push(item);
                 }
             }
         }
-        return added;
+        const ranked = rankItems(batch, browse.preferred);
+        browse.items.push(...ranked);
+        return ranked;
     })();
     try {
         return await browse.loading;
@@ -648,16 +706,94 @@ function buildTagPrompt() {
             return `${m.name || (m.is_user ? 'User' : 'Character')}: ${text.length > chars ? '…' + text.slice(-chars) : text}`;
         });
     const avoid = [...suggestBlacklist()].slice(0, 40);
-    const context = (avoid.length ? `Never use these tags: ${avoid.join(', ')}.\n\n` : '') + lines.join('\n');
+    const known = parseLooks().map(look => look.name).slice(0, 30);
+    const context = (known.length ? `If the person is one of these characters, write the name exactly like this: ${known.join(', ')}.\n` : '')
+        + (avoid.length ? `Never use these tags: ${avoid.join(', ')}.\n` : '')
+        + (known.length || avoid.length ? '\n' : '')
+        + lines.join('\n');
     return String(s.tagPrompt || DEFAULT_TAG_PROMPT)
         .replace(/\{\{max\}\}/g, String(maxSuggested() + 2))
         .replace(/\{\{char\}\}/g, c.name2 || 'the main character')
         .replace(/\{\{context\}\}/g, () => context);
 }
 
+function parseLooks(text = settings().characterLooks) {
+    const looks = [];
+    for (const line of String(text || '').split('\n')) {
+        const colon = line.indexOf(':');
+        if (colon <= 0) {
+            continue;
+        }
+        const name = line.slice(0, colon).trim();
+        const tags = [];
+        const mustHave = [];
+        for (const part of line.slice(colon + 1).split(',')) {
+            const trimmed = part.trim();
+            const tag = normalizeTag(trimmed.replace(/^!+/, ''));
+            if (!tag || tags.includes(tag)) {
+                continue;
+            }
+            tags.push(tag);
+            if (trimmed.startsWith('!')) {
+                mustHave.push(tag);
+            }
+        }
+        if (name && tags.length) {
+            looks.push({ name, tags, required: mustHave.length ? mustHave : defaultRequired(tags) });
+        }
+    }
+    return looks;
+}
+
+function findLook(name, looks = parseLooks()) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) {
+        return null;
+    }
+    const first = key.split(/\s+/)[0];
+    return looks.find(look => look.name.toLowerCase() === key)
+        || looks.find(look => look.name.toLowerCase().split(/\s+/)[0] === first)
+        || null;
+}
+
+function escapeRegex(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mentionedLooks(looks = parseLooks()) {
+    const text = recentText(2);
+    return looks.filter(look => {
+        const names = [look.name, look.name.split(/\s+/)[0]].filter(name => name.length >= 3);
+        return names.some(name => new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegex(name)}($|[^\\p{L}\\p{N}])`, 'iu').test(text));
+    });
+}
+
+function saveLook(name, tags, requiredList) {
+    const s = settings();
+    const cleanName = String(name || '').replace(/[:\n]/g, ' ').trim();
+    if (!cleanName || !tags.length) {
+        return null;
+    }
+    const line = `${cleanName}: ${tags.map(tag => (requiredList.includes(tag) ? '!' : '') + tag).join(', ')}`;
+    const lines = String(s.characterLooks || '').split('\n').filter(row => row.trim());
+    const index = lines.findIndex(row => row.indexOf(':') > 0 && row.slice(0, row.indexOf(':')).trim().toLowerCase() === cleanName.toLowerCase());
+    if (index >= 0) {
+        lines[index] = line;
+    } else {
+        lines.push(line);
+    }
+    s.characterLooks = lines.join('\n');
+    save();
+    const box = document.getElementById('st_imagesearch_looks');
+    if (box) {
+        box.value = s.characterLooks;
+    }
+    return findLook(cleanName);
+}
+
 function storyNames() {
     const c = ctx();
-    const names = [c.name1, c.name2, ...(c.chat || []).slice(-30).map(m => m?.name)];
+    const names = [c.name1, c.name2, ...(c.chat || []).slice(-30).map(m => m?.name), ...parseLooks().map(look => look.name)];
     const words = new Set();
     for (const name of names) {
         const full = normalizeTag(name);
@@ -677,13 +813,23 @@ function isStoryName(tag, names) {
     return names.has(tag) || names.has(bare);
 }
 
+function splitSuggestion(text) {
+    const clean = String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, ' ');
+    const subjectMatch = clean.match(/^\s*\**subject\**\s*:\s*(.*)$/im);
+    let subject = subjectMatch ? subjectMatch[1].replace(/[*"'`]/g, '').replace(/[.,;]+$/, '').trim() : '';
+    if (/^(none|unknown|n\/a|nobody|no one|-)$/i.test(subject)) {
+        subject = '';
+    }
+    const rest = subjectMatch ? clean.slice(0, subjectMatch.index) + clean.slice(subjectMatch.index + subjectMatch[0].length) : clean;
+    const tagsMatch = rest.match(/^\s*\**tags?\**\s*:\s*([\s\S]*)$/im);
+    return { subject: subject.slice(0, 60), body: tagsMatch ? tagsMatch[1] : rest };
+}
+
 function parseSuggestion(text) {
     const limit = maxSuggested() + 2;
     const names = storyNames();
     const banned = suggestBlacklist();
-    const body = String(text || '')
-        .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
-        .replace(/^\s*tags?\s*:/i, '');
+    const { subject, body } = splitSuggestion(text);
     const seen = new Set();
     const tags = [];
     const dropped = [];
@@ -727,7 +873,7 @@ function parseSuggestion(text) {
             tags.push(tag);
         }
     }
-    return { tags, dropped };
+    return { tags, dropped, subject };
 }
 
 async function suggestTags(signal) {
@@ -744,12 +890,12 @@ async function suggestTags(signal) {
     const prompt = service.constructPrompt(messages, s.tagProfile);
     const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 100), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.3 });
     const text = typeof result === 'string' ? result : result?.content || '';
-    const { tags, dropped } = parseSuggestion(text);
-    if (!tags.length) {
+    const { tags, dropped, subject } = parseSuggestion(text);
+    if (!tags.length && !findLook(subject)) {
         const usedReasoning = typeof result === 'object' && result?.reasoning;
         throw new Error(usedReasoning ? 'The tag model spent its tokens thinking and gave no tags. Use a non-thinking model or raise the token limit.' : 'The tag model gave no usable tags.');
     }
-    return { tags, dropped, raw: String(text).trim().slice(0, 400) };
+    return { tags, dropped, subject, raw: String(text).trim().slice(0, 400) };
 }
 
 function tagKey(domain, tag) {
@@ -886,7 +1032,7 @@ function startPrefetch() {
         state.prefetch = null;
         return null;
     }
-    const entry = { chatId: currentChatId(), controller: new AbortController(), tags: null, browse: null, error: '', raw: '', dropped: [] };
+    const entry = { chatId: currentChatId(), controller: new AbortController(), tags: null, required: [], aiTags: [], aiRequired: [], subject: '', lookName: '', browse: null, error: '', raw: '', dropped: [] };
     entry.promise = (async () => {
         try {
             const suggestion = await suggestTags(entry.controller.signal);
@@ -894,18 +1040,29 @@ function startPrefetch() {
                 return;
             }
             entry.raw = suggestion.raw;
+            entry.subject = suggestion.subject;
             const domain = activeDomain();
-            const checked = domain ? await checkSuggested(domain, suggestion) : suggestion;
+            const checked = domain && suggestion.tags.length ? await checkSuggested(domain, suggestion) : suggestion;
             if (entry.controller.signal.aborted) {
                 return;
             }
             entry.dropped = checked.dropped;
-            if (!checked.tags.length) {
-                throw new Error(`None of the suggested tags exist on ${domain}.`);
+            entry.aiTags = checked.tags;
+            entry.aiRequired = defaultRequired(checked.tags);
+            const look = findLook(suggestion.subject);
+            if (look) {
+                entry.lookName = look.name;
+                entry.tags = look.tags;
+                entry.required = look.required;
+            } else {
+                if (!checked.tags.length) {
+                    throw new Error(`None of the suggested tags exist on ${domain}.`);
+                }
+                entry.tags = checked.tags;
+                entry.required = entry.aiRequired;
             }
-            entry.tags = checked.tags;
             if (domain) {
-                entry.browse = createBrowse(domain, entry.tags);
+                entry.browse = createBrowse(domain, entry.tags, entry.required);
                 loadMore(entry.browse).then(warmThumbs).catch(() => {});
             }
         } catch (error) {
@@ -992,30 +1149,7 @@ function fetcherLink(url) {
     return `${root}/?key=${encodeURIComponent(s.fetcherKey || '')}&url=${encodeURIComponent(url)}`;
 }
 
-async function saveImage(url) {
-    const errors = [];
-    const viaFetcher = fetcherLink(url);
-    if (viaFetcher) {
-        try {
-            return await saveImageOnce(viaFetcher, {}, 'fetcher');
-        } catch (error) {
-            errors.push(`Cloudflare fetcher: ${error?.message || error}`);
-        }
-    }
-    for (const variant of ACCEPT_VARIANTS) {
-        try {
-            return await saveImageOnce(proxyUrl(url), variant, 'proxy');
-        } catch (error) {
-            errors.push(String(error?.message || error));
-            if (!/web page instead/.test(String(error?.message))) {
-                break;
-            }
-        }
-    }
-    throw new Error(errors.join(' | '));
-}
-
-async function saveImageOnce(downloadUrl, variant, route) {
+async function fetchImageBlob(downloadUrl, variant, route) {
     const headers = ctx().getRequestHeaders();
     let response;
     try {
@@ -1047,11 +1181,64 @@ async function saveImageOnce(downloadUrl, variant, route) {
         }
         throw new Error(`The downloaded file is not a supported picture (${type || 'unknown type'}).`);
     }
-    const image = await blobToBase64(blob);
+    return { blob, format };
+}
+
+async function downloadImage(url) {
+    const errors = [];
+    const viaFetcher = fetcherLink(url);
+    if (viaFetcher) {
+        try {
+            return await fetchImageBlob(viaFetcher, {}, 'fetcher');
+        } catch (error) {
+            errors.push(`Cloudflare fetcher: ${error?.message || error}`);
+        }
+    }
+    for (const variant of ACCEPT_VARIANTS) {
+        try {
+            return await fetchImageBlob(proxyUrl(url), variant, 'proxy');
+        } catch (error) {
+            errors.push(String(error?.message || error));
+            if (!/web page instead/.test(String(error?.message))) {
+                break;
+            }
+        }
+    }
+    throw new Error(errors.join(' | '));
+}
+
+async function shrinkImage(picture) {
+    if (typeof createImageBitmap !== 'function') {
+        return picture;
+    }
+    try {
+        const bitmap = await createImageBitmap(picture.blob);
+        const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+        if (scale === 1 && picture.format === 'jpg' && picture.blob.size < 600000) {
+            bitmap.close?.();
+            return picture;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const context = canvas.getContext('2d');
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close?.();
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+        return blob ? { blob, format: 'jpg' } : picture;
+    } catch {
+        return picture;
+    }
+}
+
+async function uploadImage(picture) {
+    const image = await blobToBase64(picture.blob);
     const upload = await fetch('/api/images/upload', {
         method: 'POST',
-        headers,
-        body: JSON.stringify({ image, format, ch_name: 'imagesearch', filename: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }),
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ image, format: picture.format, ch_name: 'imagesearch', filename: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }),
     });
     if (!upload.ok) {
         throw new Error(`SillyTavern could not save the picture (${upload.status}).`);
@@ -1060,17 +1247,40 @@ async function saveImageOnce(downloadUrl, variant, route) {
     return `/${String(data.path).replace(/\\/g, '/').replace(/^\/+/, '')}`;
 }
 
-async function saveBest(item) {
-    const lines = [];
-    for (const url of [item.img, ...(item.alts || [])]) {
-        try {
-            const src = await saveImage(url);
-            return { src, lines };
-        } catch (error) {
-            lines.push(`Save failed for ${url}: ${error?.message || error}`);
-        }
+const downloads = new Map();
+
+function prepareDownload(item) {
+    const key = item.img;
+    if (downloads.has(key)) {
+        return downloads.get(key);
     }
-    return { src: '', lines };
+    const promise = (async () => {
+        const errors = [];
+        for (const url of [item.img, ...(item.alts || [])]) {
+            try {
+                return await shrinkImage(await downloadImage(url));
+            } catch (error) {
+                errors.push(`${url}: ${error?.message || error}`);
+            }
+        }
+        throw new Error(errors.join(' | '));
+    })();
+    downloads.set(key, promise);
+    promise.catch(() => downloads.delete(key));
+    while (downloads.size > 8) {
+        downloads.delete(downloads.keys().next().value);
+    }
+    return promise;
+}
+
+async function saveBest(item) {
+    try {
+        const picture = await prepareDownload(item);
+        const src = await uploadImage(picture);
+        return { src, blob: picture.blob, lines: [] };
+    } catch (error) {
+        return { src: '', blob: null, lines: [String(error?.message || error)] };
+    }
 }
 
 function cleanAlt(text) {
@@ -1097,7 +1307,6 @@ function insertIntoChatBox(text) {
     const post = after && !after.startsWith('\n') ? '\n' : '';
     box.value = before + pre + text + post + after;
     const caret = (before + pre + text + post).length;
-    box.focus();
     box.setSelectionRange(caret, caret);
     box.dispatchEvent(new Event('input', { bubbles: true }));
 }
@@ -1108,12 +1317,15 @@ function summaryTags(tags) {
         .slice(0, 60);
 }
 
-async function imageDataUrl(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Could not read the saved picture (${response.status}).`);
+async function imageDataUrl(url, source = null) {
+    let blob = source;
+    if (!blob) {
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`Could not read the saved picture (${response.status}).`);
+        }
+        blob = await response.blob();
     }
-    const blob = await response.blob();
     try {
         const bitmap = await createImageBitmap(blob);
         const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
@@ -1150,14 +1362,14 @@ function parseDescription(raw) {
     return { text, keywords };
 }
 
-async function requestDescription(url, tags) {
+async function requestDescription(url, tags, blob = null) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
     const profile = visionProfileId();
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const image = await imageDataUrl(url);
+    const image = await imageDataUrl(url, blob);
     const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
     const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }];
     const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
@@ -1173,13 +1385,13 @@ function readyDescription(url, tags, text) {
     return { url, tags: tags || [], text: text || '', error: '', started: Date.now(), ms: 0, done: true, promise: Promise.resolve() };
 }
 
-function startDescription(url, postTags, onDone) {
+function startDescription(url, postTags, onDone, blob = null) {
     const s = settings();
     if (!s.describe) {
         return;
     }
     const entry = { url, tags: summaryTags(postTags), text: '', keywords: [], error: '', started: Date.now(), ms: 0, done: false };
-    entry.promise = requestDescription(url, entry.tags)
+    entry.promise = requestDescription(url, entry.tags, blob)
         .then(({ text, keywords }) => {
             entry.text = text;
             entry.keywords = keywords;
@@ -1415,7 +1627,7 @@ function fallbackKeywords(entry) {
 
 function entryKeywords(entry) {
     const words = entry.keywords.length ? entry.keywords : fallbackKeywords(entry);
-    return [...new Set(words.map(word => word.toLowerCase()))].slice(0, 12);
+    return [...new Set(words.map(word => word.toLowerCase()))].filter(word => !GENERIC_KEYWORDS.has(word)).slice(0, 12);
 }
 
 function pictureOffer(entry) {
@@ -1651,10 +1863,14 @@ function setNote(media, entry) {
 
 async function applyDescription(message, media, entry) {
     const timeout = Math.max(0, Number(settings().describeWaitSec) || 0) * 1000;
+    const notice = !entry.done && timeout > 0 ? toastr.info('Waiting for the picture description…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 }) : null;
     const finished = entry.done || await Promise.race([
         entry.promise.then(() => true),
         new Promise(resolve => setTimeout(() => resolve(false), timeout)),
     ]);
+    if (notice) {
+        toastr.clear?.(notice);
+    }
     setNote(media, entry);
     if (!finished) {
         entry.promise.then(async () => {
@@ -1747,6 +1963,42 @@ function setPreviewSource(img, item) {
     img.src = sources[0];
 }
 
+function bindPress(cell, onTap, onLong) {
+    let timer = null;
+    let fired = false;
+    let startX = 0;
+    let startY = 0;
+    const cancel = () => {
+        clearTimeout(timer);
+        timer = null;
+    };
+    cell.addEventListener('pointerdown', event => {
+        fired = false;
+        startX = event.clientX;
+        startY = event.clientY;
+        cancel();
+        timer = setTimeout(() => {
+            timer = null;
+            fired = true;
+            onLong();
+        }, 550);
+    });
+    cell.addEventListener('pointermove', event => {
+        if (timer && (Math.abs(event.clientX - startX) > 10 || Math.abs(event.clientY - startY) > 10)) {
+            cancel();
+        }
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(name => cell.addEventListener(name, cancel));
+    cell.addEventListener('contextmenu', event => event.preventDefault());
+    cell.addEventListener('click', () => {
+        if (fired) {
+            fired = false;
+            return;
+        }
+        onTap();
+    });
+}
+
 async function openPicker(initialTags = null) {
     const s = settings();
     const c = ctx();
@@ -1762,20 +2014,28 @@ async function openPicker(initialTags = null) {
 
     const ui = {
         root: el('div', 'stis-picker'),
+        tabs: el('div', 'stis-tabs'),
+        tabSearch: el('div', 'menu_button stis-tab stis-tab-on', 'Search'),
+        tabLibrary: el('div', 'menu_button stis-tab', 'Library'),
+        who: el('div', 'stis-who'),
         top: el('div', 'stis-top'),
         site: el('select', 'text_pole stis-site'),
         chips: el('div', 'stis-chips'),
         input: el('input', 'text_pole stis-input'),
         suggest: el('div', 'menu_button stis-btn'),
         search: el('div', 'menu_button stis-btn'),
+        chipMenu: el('div', 'stis-chip-menu'),
+        lookBar: el('div', 'stis-look-bar'),
+        lookButton: el('div', 'menu_button stis-look-btn', 'Save as character look'),
+        lookForm: el('div', 'stis-look-form'),
+        lookName: el('input', 'text_pole'),
+        lookSave: el('div', 'menu_button', 'Save'),
+        lookCancel: el('div', 'menu_button', 'Cancel'),
         status: el('div', 'stis-status'),
         debug: el('div', 'stis-debug'),
         grid: el('div', 'stis-grid'),
         sentinel: el('div', 'stis-sentinel'),
         preview: el('div', 'stis-preview'),
-        tabs: el('div', 'stis-tabs'),
-        tabSearch: el('div', 'menu_button stis-tab stis-tab-on', 'Search'),
-        tabLibrary: el('div', 'menu_button stis-tab', 'Library'),
         libraryView: el('div', 'stis-library'),
         libSearch: el('input', 'text_pole stis-lib-search'),
         libGrid: el('div', 'stis-grid'),
@@ -1799,12 +2059,20 @@ async function openPicker(initialTags = null) {
     ui.site.value = activeDomain();
     ui.chips.appendChild(ui.input);
     ui.top.append(ui.site, ui.chips, ui.suggest, ui.search);
+    ui.chipMenu.hidden = true;
+    ui.lookName.type = 'text';
+    ui.lookName.placeholder = 'Character name';
+    ui.lookForm.append(ui.lookName, ui.lookSave, ui.lookCancel);
+    ui.lookForm.hidden = true;
+    ui.lookBar.append(ui.lookButton, ui.lookForm);
+    ui.who.hidden = true;
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.top, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
 
     let tags = [];
+    let required = new Set();
     let edited = false;
     let browse = null;
     let rendered = 0;
@@ -1813,60 +2081,114 @@ async function openPicker(initialTags = null) {
     let busy = false;
     let dragFrom = -1;
     let shown = null;
+    let menuTag = '';
+    let selectedWho = '';
+    let previewState = null;
+    let libraryOrder = [];
 
     const setStatus = (text, kind = '') => {
         ui.status.textContent = text;
         ui.status.className = `stis-status ${kind}`;
     };
 
-    let shownCap = 0;
+    const requiredList = () => tags.filter(tag => required.has(tag));
+
+    const selectedLookName = () => {
+        if (!selectedWho || selectedWho === '*ai*') {
+            return '';
+        }
+        return findLook(selectedWho)?.name || '';
+    };
+
+    const whoOptions = () => {
+        const looks = parseLooks();
+        const options = [];
+        const add = look => {
+            if (look && !options.some(option => option.key === look.name.toLowerCase())) {
+                options.push({ key: look.name.toLowerCase(), label: look.name, look });
+            }
+        };
+        const pre = currentPrefetch();
+        if (pre?.subject) {
+            add(findLook(pre.subject, looks));
+        }
+        mentionedLooks(looks).forEach(add);
+        if (selectedWho && selectedWho !== '*ai*') {
+            add(findLook(selectedWho, looks));
+        }
+        if (options.length && pre?.aiTags?.length) {
+            options.push({ key: '*ai*', label: 'Suggested', ai: pre });
+        }
+        return options;
+    };
+
+    const renderWho = () => {
+        ui.who.innerHTML = '';
+        const options = whoOptions();
+        ui.who.hidden = !options.length;
+        if (!options.length) {
+            return;
+        }
+        ui.who.appendChild(el('span', 'stis-who-label', 'Who:'));
+        for (const option of options) {
+            const chip = el('span', 'stis-who-chip', option.label);
+            chip.classList.toggle('stis-who-on', option.key === selectedWho);
+            chip.title = option.look ? `Use ${option.look.name}'s saved look` : 'Use the tags the AI suggested';
+            chip.addEventListener('click', () => {
+                selectedWho = option.key;
+                if (option.look) {
+                    setTags(option.look.tags, true, option.look.required);
+                } else {
+                    shown = option.ai;
+                    setTags(option.ai.aiTags, true, option.ai.aiRequired);
+                }
+                renderWho();
+                runSearch();
+            });
+            ui.who.appendChild(chip);
+        }
+    };
+
     const renderChips = () => {
         ui.chips.querySelectorAll('.stis-chip').forEach(chip => chip.remove());
-        const cap = capFor(ui.site.value);
-        shownCap = cap;
+        const domain = ui.site.value;
+        const cap = capFor(domain);
+        const req = requiredList();
         tags.forEach((tag, index) => {
             const chip = el('span', 'stis-chip');
-            chip.draggable = true;
-            if (cap && index >= cap) {
-                chip.classList.add('stis-local');
-                chip.title = 'Checked by the extension (the site only takes the first tags)';
-            } else {
-                chip.title = 'Sent to the site. Drag to reorder, double-click to move first.';
-            }
-            const count = knownCount(ui.site.value, tag);
+            const isRequired = required.has(tag);
+            chip.classList.add(isRequired ? 'stis-req' : 'stis-pref');
+            const position = req.indexOf(tag);
+            let title = isRequired
+                ? (cap && position >= cap ? `Required, checked by the extension (${domain} takes ${cap} tags)` : 'Required: only pictures with this tag')
+                : 'Preferred: pictures with this tag come first';
+            const count = knownCount(domain, tag);
             if (count === 0) {
                 chip.classList.add('stis-unknown');
-                chip.title = `Not found on ${ui.site.value}`;
+                title = `Not found on ${domain}`;
             } else if (count !== null) {
-                chip.title += ` ${count} posts.`;
+                title += `, ${count} posts`;
             }
+            chip.title = `${title}. Tap for options.`;
+            if (menuTag === tag) {
+                chip.classList.add('stis-chip-open');
+            }
+            chip.draggable = true;
             chip.appendChild(el('span', '', tag));
-            const ban = el('i', 'fa-solid fa-ban stis-chip-x');
-            ban.title = 'Never suggest this tag again';
-            ban.addEventListener('click', event => {
-                event.stopPropagation();
-                addToSuggestBlacklist(tag);
-                tags.splice(index, 1);
-                toastr.info(`"${tag}" will not be suggested again. You can undo this in the settings.`, 'Image Search');
-                tagsChanged();
-            });
-            chip.appendChild(ban);
             const remove = el('i', 'fa-solid fa-xmark stis-chip-x');
             remove.title = 'Remove from this search';
-            remove.addEventListener('click', () => {
-                tags.splice(index, 1);
-                tagsChanged();
+            remove.addEventListener('click', event => {
+                event.stopPropagation();
+                removeTag(tag);
             });
             chip.appendChild(remove);
+            chip.addEventListener('click', () => {
+                menuTag = menuTag === tag ? '' : tag;
+                renderChips();
+            });
             chip.addEventListener('dragstart', event => {
                 dragFrom = index;
                 event.dataTransfer?.setData('text/plain', tag);
-            });
-            chip.addEventListener('dblclick', () => {
-                if (index > 0) {
-                    tags.unshift(...tags.splice(index, 1));
-                    tagsChanged();
-                }
             });
             chip.addEventListener('dragover', event => event.preventDefault());
             chip.addEventListener('drop', event => {
@@ -1881,8 +2203,49 @@ async function openPicker(initialTags = null) {
             });
             ui.chips.insertBefore(chip, ui.input);
         });
+        renderMenu();
         renderDebug();
     };
+
+    function renderMenu() {
+        ui.chipMenu.innerHTML = '';
+        if (!menuTag || !tags.includes(menuTag)) {
+            menuTag = '';
+            ui.chipMenu.hidden = true;
+            return;
+        }
+        const tag = menuTag;
+        ui.chipMenu.hidden = false;
+        ui.chipMenu.appendChild(el('b', 'stis-menu-tag', tag));
+        const action = (label, run) => {
+            const button = el('div', 'menu_button stis-menu-btn', label);
+            button.addEventListener('click', () => {
+                menuTag = '';
+                run();
+            });
+            ui.chipMenu.appendChild(button);
+        };
+        action(required.has(tag) ? 'Make preferred' : 'Make required', () => {
+            if (required.has(tag)) {
+                required.delete(tag);
+            } else {
+                required.add(tag);
+            }
+            tagsChanged();
+        });
+        if (tags.indexOf(tag) > 0) {
+            action('Move first', () => {
+                tags.unshift(...tags.splice(tags.indexOf(tag), 1));
+                tagsChanged();
+            });
+        }
+        action('Remove', () => removeTag(tag));
+        action('Never suggest', () => {
+            addToSuggestBlacklist(tag);
+            toastr.info(`"${tag}" will not be suggested again. You can undo this in the settings.`, 'Image Search');
+            removeTag(tag);
+        });
+    }
 
     const refreshCounts = async () => {
         const domain = ui.site.value;
@@ -1902,7 +2265,7 @@ async function openPicker(initialTags = null) {
             ui.debug.hidden = true;
             return;
         }
-        ui.debug.hidden = false;
+        ui.debug.hidden = !ui.libraryView.hidden;
         ui.debug.innerHTML = '';
         const line = (label, value) => {
             const row = el('div', 'stis-debug-row');
@@ -1912,6 +2275,9 @@ async function openPicker(initialTags = null) {
         };
         if (shown?.raw) {
             line('Tag model reply:', shown.raw);
+        }
+        if (shown) {
+            line('Subject:', `${shown.subject || 'none'}${shown.lookName ? ` (using ${shown.lookName}'s saved look)` : ''}`);
         }
         if (shown?.dropped?.length) {
             line('Removed:', shown.dropped.join(', '));
@@ -1925,19 +2291,22 @@ async function openPicker(initialTags = null) {
             link.href = first.siteUrl;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            line('Site:', link);
+            line('Site (required tags):', link);
             if (first.localTags.length) {
-                line('Checked here, not by the site:', first.localTags.join(', '));
+                line('Required, checked here:', first.localTags.join(', '));
+            }
+            if (browse.preferred.length) {
+                line('Preferred, used for sorting:', browse.preferred.join(', '));
             }
             line('API:', first.apiUrl);
-            browse.pages.forEach(p => line(`Page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing checked tags ${p.local}, not a picture ${p.notImage})`));
+            browse.pages.forEach(p => line(`Page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing required tags ${p.local}, not a picture ${p.notImage})`));
         }
         if (browse?.error) {
             line('Error:', browse.error);
         }
     }
 
-    const setTags = (list, fromUser) => {
+    const setTags = (list, fromUser, wantedRequired = null) => {
         const seen = new Set();
         const removed = [];
         tags = list.map(normalizeTag).filter(tag => {
@@ -1951,12 +2320,15 @@ async function openPicker(initialTags = null) {
             }
             return true;
         });
+        const wanted = new Set((wantedRequired || defaultRequired(tags)).map(normalizeTag));
+        required = new Set(tags.filter(tag => wanted.has(tag)));
         if (fromUser) {
             edited = true;
         }
         if (removed.length) {
             toastr.info(`Not searchable: ${removed.join(', ')}`, 'Image Search');
         }
+        menuTag = '';
         renderChips();
         refreshCounts();
     };
@@ -1969,13 +2341,22 @@ async function openPicker(initialTags = null) {
         searchTimer = setTimeout(runSearch, 700);
     };
 
+    const removeTag = tag => {
+        tags = tags.filter(item => item !== tag);
+        required.delete(tag);
+        if (menuTag === tag) {
+            menuTag = '';
+        }
+        tagsChanged();
+    };
+
     const commitInput = () => {
         const parts = ui.input.value.split(',').map(normalizeTag).filter(Boolean);
         ui.input.value = '';
         if (!parts.length) {
             return false;
         }
-        setTags([...tags, ...parts], true);
+        setTags([...tags, ...parts], true, requiredList());
         tagsChanged();
         return true;
     };
@@ -1984,14 +2365,22 @@ async function openPicker(initialTags = null) {
         if (!browse) {
             return;
         }
+        const total = browse.preferred.length;
         for (const item of browse.items.slice(rendered)) {
             const cell = el('div', 'stis-cell');
             const img = el('img');
             img.loading = 'lazy';
             img.alt = '';
+            img.draggable = false;
             setThumbSource(img, item);
             cell.appendChild(img);
-            cell.addEventListener('click', () => showPreview(item));
+            if (total) {
+                cell.appendChild(el('span', 'stis-badge', `${item.matched || 0}/${total}`));
+            }
+            bindPress(cell, () => showPreview(item), () => {
+                cell.classList.add('stis-picking');
+                pick(item, null);
+            });
             ui.grid.insertBefore(cell, ui.sentinel);
         }
         rendered = browse.items.length;
@@ -2005,9 +2394,10 @@ async function openPicker(initialTags = null) {
         if (browse.error) {
             setStatus(browse.error, 'stis-error');
         } else if (!browse.items.length && browse.done) {
-            setStatus(tags.length > 1 ? 'No pictures. Try removing a tag.' : 'No pictures for these tags.');
+            setStatus(browse.required.length ? 'No pictures with the required tags. Make one preferred or remove it.' : 'No pictures found.');
         } else {
-            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${browse.domain}`);
+            const sorted = browse.preferred.length ? ', best matches first' : '';
+            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${browse.domain}${sorted}`);
         }
     };
 
@@ -2028,9 +2418,7 @@ async function openPicker(initialTags = null) {
         }
         renderNew();
         describe();
-        if (capFor(current.domain) !== shownCap) {
-            renderChips();
-        }
+        renderChips();
         refreshCounts();
         const rect = ui.sentinel.getBoundingClientRect();
         const box = ui.grid.getBoundingClientRect();
@@ -2045,6 +2433,9 @@ async function openPicker(initialTags = null) {
         ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
         ui.grid.scrollTop = 0;
         renderNew();
+        if (next.items.length) {
+            describe();
+        }
         pump();
     };
 
@@ -2053,37 +2444,58 @@ async function openPicker(initialTags = null) {
         if (closed) {
             return;
         }
+        const req = requiredList();
         s.lastTags = [...tags];
+        s.lastRequired = req;
         s.lastSite = ui.site.value;
         save();
         if (!tags.length) {
             browse = null;
             ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
             setStatus('Add a tag to search.');
+            renderDebug();
             return;
         }
+        const domain = ui.site.value;
         const pre = currentPrefetch();
-        if (pre?.browse && pre.browse.domain === ui.site.value && sameTags(pre.browse.tags, tags) && !pre.browse.error) {
+        if (pre?.browse && !pre.browse.error && sameSearch(pre.browse, domain, tags, req)) {
             useBrowse(pre.browse);
             return;
         }
-        if (browse && browse.domain === ui.site.value && sameTags(browse.tags, tags) && !browse.error) {
+        if (browse && !browse.error && sameSearch(browse, domain, tags, req)) {
             return;
         }
-        useBrowse(createBrowse(ui.site.value, tags));
+        if (browse && !browse.error && !browse.loading && browse.items.length && sameRequired(browse, domain, tags, req)) {
+            useBrowse(rerankBrowse(browse, tags, req));
+            return;
+        }
+        useBrowse(createBrowse(domain, tags, req));
     }
 
     const adoptSuggestion = pre => {
         if (closed || edited || !pre?.tags) {
+            renderWho();
+            return;
+        }
+        const keepLook = selectedLookName() && pre.lookName !== selectedLookName();
+        if (keepLook) {
+            renderWho();
             return;
         }
         shown = pre;
-        setTags(pre.tags, false);
+        selectedWho = pre.lookName ? pre.lookName.toLowerCase() : '';
+        setTags(pre.tags, false, pre.required);
+        if (!selectedWho && whoOptions().some(option => option.look)) {
+            selectedWho = '*ai*';
+        }
+        renderWho();
         runSearch();
     };
 
     const waitForSuggestion = pre => {
-        setStatus('Suggesting tags…');
+        if (!selectedLookName()) {
+            setStatus('Suggesting tags…');
+        }
         pre.promise.then(() => {
             if (closed || state.prefetch !== pre) {
                 return;
@@ -2091,10 +2503,13 @@ async function openPicker(initialTags = null) {
             if (pre.error) {
                 shown = pre;
                 renderDebug();
-                setStatus(pre.error, 'stis-error');
+                if (!selectedLookName()) {
+                    setStatus(pre.error, 'stis-error');
+                }
                 return;
             }
             if (edited) {
+                renderWho();
                 describe();
                 return;
             }
@@ -2108,15 +2523,49 @@ async function openPicker(initialTags = null) {
             return;
         }
         edited = false;
+        selectedWho = '';
         const pre = startPrefetch();
         if (pre) {
             waitForSuggestion(pre);
         }
     };
 
-    function previewShell(src, sourceUrl) {
+    function previewList() {
+        return previewState?.kind === 'entry' ? libraryOrder : (browse?.items || []);
+    }
+
+    function navigate(delta) {
+        if (!previewState || ui.preview.hidden) {
+            return;
+        }
+        const list = previewList();
+        const next = list.indexOf(previewState.target) + delta;
+        if (next < 0) {
+            return;
+        }
+        if (next >= list.length) {
+            if (previewState.kind === 'item' && browse && !browse.done) {
+                const before = list.length;
+                pump().then(() => {
+                    if ((browse?.items.length || 0) > before) {
+                        navigate(delta);
+                    }
+                });
+            }
+            return;
+        }
+        if (previewState.kind === 'entry') {
+            showEntry(list[next]);
+        } else {
+            showPreview(list[next]);
+        }
+    }
+
+    function previewShell(src, sourceUrl, target, kind) {
+        previewState = { kind, target };
         ui.preview.innerHTML = '';
         const img = el('img', 'stis-preview-img');
+        img.draggable = false;
         if (typeof src === 'string') {
             img.src = src;
         } else {
@@ -2126,22 +2575,35 @@ async function openPicker(initialTags = null) {
         const back = el('div', 'menu_button', 'Back');
         back.addEventListener('click', () => {
             ui.preview.hidden = true;
+            previewState = null;
         });
+        const prev = el('div', 'menu_button stis-nav');
+        prev.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
+        prev.title = 'Previous';
+        prev.addEventListener('click', () => navigate(-1));
+        const next = el('div', 'menu_button stis-nav');
+        next.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+        next.title = 'Next';
+        next.addEventListener('click', () => navigate(1));
+        const list = previewList();
+        const more = kind === 'item' && browse && !browse.done ? '+' : '';
+        const position = el('small', 'stis-pos', `${list.indexOf(target) + 1} / ${list.length}${more}`);
         const link = el('a', 'stis-post-link', 'Open post');
         link.href = sourceUrl || '#';
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.hidden = !sourceUrl;
-        bar.append(back, link);
+        bar.append(back, prev, position, next, link);
         ui.preview.append(img, bar);
         ui.preview.hidden = false;
         return bar;
     }
 
     function showPreview(item) {
-        const bar = previewShell(item, item.page);
-        const use = el('div', 'menu_button stis-use', 'Use this');
-        use.addEventListener('click', () => pick(item, use));
+        const bar = previewShell(item, item.page, item, 'item');
+        if (s.saveLocal) {
+            prepareDownload(item).catch(() => {});
+        }
         if (s.keepLibrary && s.saveLocal) {
             const keep = el('div', 'menu_button', 'Save to library');
             loadLibrary().then(() => {
@@ -2155,12 +2617,14 @@ async function openPicker(initialTags = null) {
                 }
                 busy = true;
                 keep.textContent = 'Saving…';
-                const { entry } = await storeItem(item);
+                const { entry } = await storeItem(item, [...tags]);
                 busy = false;
                 keep.textContent = entry ? 'In library' : 'Save to library';
             });
             bar.append(keep);
         }
+        const use = el('div', 'menu_button stis-use', 'Use this');
+        use.addEventListener('click', () => pick(item, use));
         bar.append(use);
     }
 
@@ -2176,7 +2640,7 @@ async function openPicker(initialTags = null) {
         }
     }
 
-    async function storeItem(item) {
+    async function storeItem(item, searchTags) {
         if (s.keepLibrary) {
             await loadLibrary();
             const existing = entryForSource(item.page);
@@ -2188,29 +2652,24 @@ async function openPicker(initialTags = null) {
         if (!s.saveLocal) {
             return { url: item.img, entry: null };
         }
-        const { src, lines } = await saveBest(item);
+        const { src, blob, lines } = await saveBest(item);
         if (!src) {
             console.warn('[Image Search] save failed', lines);
             toastr.warning(`${lines[0] || 'Saving failed.'} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
             return { url: item.img, entry: null };
         }
-        const entry = s.keepLibrary ? await addToLibrary(item, src, [...tags]) : null;
+        const entry = s.keepLibrary ? await addToLibrary(item, src, searchTags) : null;
         startDescription(src, item.tags, (text, keywords) => {
             if (entry) {
                 entry.description = text;
                 entry.keywords = keywords;
                 saveLibrary();
             }
-        });
+        }, blob);
         if (entry) {
             saveLibrary();
         }
         return { url: src, entry };
-    }
-
-    async function finishPick(text) {
-        await popup.completeCancelled();
-        setTimeout(() => insertIntoChatBox(text), 0);
     }
 
     async function pick(item, button) {
@@ -2218,13 +2677,29 @@ async function openPicker(initialTags = null) {
             return;
         }
         busy = true;
-        button.textContent = 'Saving…';
-        const { url, entry } = await storeItem(item);
-        if (entry) {
-            noteUse(entry, ctx().name2 || '');
-            saveLibrary();
+        if (button) {
+            button.textContent = 'Adding…';
         }
-        await finishPick(markdownFor(url, tags));
+        const searchTags = [...tags];
+        const who = selectedLookName();
+        await popup.completeCancelled();
+        let notice = null;
+        const slow = setTimeout(() => {
+            notice = toastr.info('Adding the picture…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
+        }, 700);
+        try {
+            const { url, entry } = await storeItem(item, searchTags);
+            if (entry) {
+                noteUse(entry, who || ctx().name2 || '');
+                saveLibrary();
+            }
+            insertIntoChatBox(markdownFor(url, searchTags));
+        } finally {
+            clearTimeout(slow);
+            if (notice) {
+                toastr.clear?.(notice);
+            }
+        }
     }
 
     async function pickEntry(entry, button) {
@@ -2232,15 +2707,18 @@ async function openPicker(initialTags = null) {
             return;
         }
         busy = true;
-        button.textContent = 'Adding…';
-        noteUse(entry, ctx().name2 || '');
+        if (button) {
+            button.textContent = 'Adding…';
+        }
+        noteUse(entry, selectedLookName() || ctx().name2 || '');
         prepareEntryDescription(entry);
         saveLibrary();
-        await finishPick(markdownFor(entry.url, entry.searchTags.length ? entry.searchTags : entry.tags.slice(0, 6)));
+        await popup.completeCancelled();
+        insertIntoChatBox(markdownFor(entry.url, entry.searchTags.length ? entry.searchTags : entry.tags.slice(0, 6)));
     }
 
     function showEntry(entry) {
-        const bar = previewShell(entry.url, entry.source);
+        const bar = previewShell(entry.url, entry.source, entry, 'entry');
         const info = el('div', 'stis-entry-info');
         info.appendChild(el('div', '', entry.description || 'No description yet. One is made the next time you use it.'));
         const meta = [entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
@@ -2251,6 +2729,7 @@ async function openPicker(initialTags = null) {
         remove.addEventListener('click', async () => {
             await removeFromLibrary(entry);
             ui.preview.hidden = true;
+            previewState = null;
             renderLibrary();
         });
         const use = el('div', 'menu_button stis-use', 'Use this');
@@ -2266,28 +2745,33 @@ async function openPicker(initialTags = null) {
         ui.tabLibrary.textContent = `Library (${library.entries.length})`;
         ui.libGrid.innerHTML = '';
         const query = [...wordsOf(ui.libSearch.value)];
-        let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: ctx().name2 || '' });
+        let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: selectedLookName() || ctx().name2 || '' });
         if (query.length) {
             ranked = ranked.filter(({ entry }) => {
                 const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.characters.join(' ')}`.toLowerCase().replace(/_/g, ' ');
                 return query.every(word => hay.includes(word));
             });
         }
+        libraryOrder = ranked.map(({ entry }) => entry);
         if (!ranked.length) {
             const message = library.broken ? 'The library could not be read.' : library.entries.length ? 'Nothing matches.' : 'Pictures you pick are saved here.';
             ui.libGrid.appendChild(el('div', 'stis-status', message));
             return;
         }
-        for (const { entry } of ranked) {
+        for (const entry of libraryOrder) {
             const cell = el('div', 'stis-cell');
             const img = el('img');
             img.loading = 'lazy';
             img.alt = '';
+            img.draggable = false;
             img.src = entry.url;
             img.onerror = () => cell.classList.add('stis-broken');
             cell.title = shortDescription(entry);
             cell.appendChild(img);
-            cell.addEventListener('click', () => showEntry(entry));
+            bindPress(cell, () => showEntry(entry), () => {
+                cell.classList.add('stis-picking');
+                pickEntry(entry, null);
+            });
             ui.libGrid.appendChild(cell);
         }
     }
@@ -2297,15 +2781,53 @@ async function openPicker(initialTags = null) {
         ui.top.hidden = lib;
         ui.status.hidden = lib;
         ui.grid.hidden = lib;
+        ui.lookBar.hidden = lib;
+        ui.chipMenu.hidden = lib || !menuTag;
+        ui.who.hidden = lib || !ui.who.childElementCount;
         ui.debug.hidden = lib || !s.debug;
         ui.libraryView.hidden = !lib;
         ui.tabSearch.classList.toggle('stis-tab-on', !lib);
         ui.tabLibrary.classList.toggle('stis-tab-on', lib);
         ui.preview.hidden = true;
+        previewState = null;
         if (lib) {
             renderLibrary();
         }
     }
+
+    const closeLookForm = () => {
+        ui.lookForm.hidden = true;
+        ui.lookButton.hidden = false;
+    };
+    const saveLookForm = () => {
+        const name = ui.lookName.value.trim();
+        if (!name || !tags.length) {
+            toastr.warning(name ? 'Add some tags first.' : 'Type the character name.', 'Image Search');
+            return;
+        }
+        const look = saveLook(name, tags, requiredList());
+        if (look) {
+            selectedWho = look.name.toLowerCase();
+            toastr.success(`Saved ${look.name}'s look.`, 'Image Search');
+        }
+        closeLookForm();
+        renderWho();
+    };
+    ui.lookButton.addEventListener('click', () => {
+        ui.lookName.value = selectedLookName() || currentPrefetch()?.subject || '';
+        ui.lookForm.hidden = false;
+        ui.lookButton.hidden = true;
+        ui.lookName.focus();
+    });
+    ui.lookSave.addEventListener('click', saveLookForm);
+    ui.lookCancel.addEventListener('click', closeLookForm);
+    ui.lookName.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            saveLookForm();
+        }
+    });
 
     ui.tabSearch.addEventListener('click', () => setView('search'));
     ui.tabLibrary.addEventListener('click', () => setView('library'));
@@ -2327,6 +2849,33 @@ async function openPicker(initialTags = null) {
         }
     });
 
+    let touchX = 0;
+    let touchY = 0;
+    ui.preview.addEventListener('touchstart', event => {
+        const touch = event.changedTouches[0];
+        touchX = touch.clientX;
+        touchY = touch.clientY;
+    }, { passive: true });
+    ui.preview.addEventListener('touchend', event => {
+        const touch = event.changedTouches[0];
+        const dx = touch.clientX - touchX;
+        const dy = touch.clientY - touchY;
+        if (Math.abs(dx) > 60 && Math.abs(dy) < 60) {
+            navigate(dx < 0 ? 1 : -1);
+        }
+    }, { passive: true });
+    const onKey = event => {
+        if (ui.preview.hidden) {
+            return;
+        }
+        if (event.key === 'ArrowRight') {
+            navigate(1);
+        } else if (event.key === 'ArrowLeft') {
+            navigate(-1);
+        }
+    };
+    document.addEventListener('keydown', onKey);
+
     ui.input.addEventListener('keydown', event => {
         if (event.key === 'Enter') {
             event.preventDefault();
@@ -2338,8 +2887,7 @@ async function openPicker(initialTags = null) {
             event.preventDefault();
             commitInput();
         } else if (event.key === 'Backspace' && !ui.input.value && tags.length) {
-            tags.pop();
-            tagsChanged();
+            removeTag(tags[tags.length - 1]);
         }
     });
     ui.input.addEventListener('paste', () => setTimeout(() => {
@@ -2383,6 +2931,7 @@ async function openPicker(initialTags = null) {
             state.pickerOpen = false;
             observer.disconnect();
             clearTimeout(searchTimer);
+            document.removeEventListener('keydown', onKey);
         },
     });
     popup.show();
@@ -2390,17 +2939,30 @@ async function openPicker(initialTags = null) {
 
     if (Array.isArray(initialTags) && initialTags.length) {
         setTags(initialTags, true);
+        renderWho();
         runSearch();
         return;
     }
     let pre = currentPrefetch();
     if (pre?.tags) {
         shown = pre;
-        setTags(pre.tags, false);
+        selectedWho = pre.lookName ? pre.lookName.toLowerCase() : '';
+        setTags(pre.tags, false, pre.required);
+        if (!selectedWho && whoOptions().some(option => option.look)) {
+            selectedWho = '*ai*';
+        }
+        renderWho();
         runSearch();
         return;
     }
-    setTags(s.lastTags || [], false);
+    const mentioned = mentionedLooks();
+    if (mentioned.length) {
+        selectedWho = mentioned[0].name.toLowerCase();
+        setTags(mentioned[0].tags, false, mentioned[0].required);
+    } else {
+        setTags(s.lastTags || [], false, s.lastRequired?.length || !s.lastTags?.length ? s.lastRequired : null);
+    }
+    renderWho();
     runSearch();
     if (!pre && s.tagProfile) {
         pre = startPrefetch();
@@ -2409,11 +2971,13 @@ async function openPicker(initialTags = null) {
         if (pre.error) {
             shown = pre;
             renderDebug();
-            setStatus(pre.error, 'stis-error');
+            if (!selectedLookName()) {
+                setStatus(pre.error, 'stis-error');
+            }
         } else {
             waitForSuggestion(pre);
         }
-    } else if (!s.tagProfile) {
+    } else if (!s.tagProfile && !selectedLookName()) {
         setStatus(tags.length ? 'Last tags. Choose a tag profile in settings to get suggestions.' : 'Type some tags, or choose a tag profile in settings to get suggestions.');
     }
 }
@@ -2495,6 +3059,8 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_prefetch"> <span>Prepare tags and pictures after each AI reply</span></label>
                 <div>Never suggest these tags (one per line, or tap <i class="fa-solid fa-ban"></i> on a tag in the picker)</div>
                 <textarea id="st_imagesearch_blacklist" class="text_pole"></textarea>
+                <div>Character looks (one per line, e.g. <code>Kaelen: !1boy, !muscular_male, bald, beard</code>; <code>!</code> marks tags a picture must have, the others only sort the results). You can also save the current tags with "Save as character look" in the picker.</div>
+                <textarea id="st_imagesearch_looks" class="text_pole"></textarea>
                 <div>Allowed ratings</div>
                 <div class="st-imagesearch-row">
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
@@ -2513,6 +3079,7 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
+                    <div class="st-imagesearch-row"><span>Tags required by default (the rest only sort the results)</span><input type="number" min="0" max="6" id="st_imagesearch_required" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Max suggested tags</span><input type="number" min="1" max="20" id="st_imagesearch_max" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Minimum posts for a suggested tag</span><input type="number" min="0" max="100000" id="st_imagesearch_min_posts" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Messages sent to the tag model</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div>
@@ -2600,6 +3167,8 @@ function buildSettings() {
         save();
     });
     bind('st_imagesearch_max', 'maxSuggested', 'number');
+    bind('st_imagesearch_required', 'requiredCount', 'number');
+    bind('st_imagesearch_looks', 'characterLooks');
     bind('st_imagesearch_min_posts', 'minTagPosts', 'number');
     bind('st_imagesearch_blacklist', 'suggestBlacklist');
     bind('st_imagesearch_ctx_count', 'contextMessages', 'number');

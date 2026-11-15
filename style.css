@@ -247,3 +247,98 @@
     flex-direction: column;
     gap: 2px;
 }
+
+.stis-chip.stis-req {
+    border-style: solid;
+    font-weight: bold;
+}
+
+.stis-chip.stis-pref {
+    border-style: dashed;
+}
+
+.stis-chip.stis-chip-open {
+    outline: 2px solid var(--SmartThemeQuoteColor);
+}
+
+.stis-chip-menu,
+.stis-who,
+.stis-look-bar,
+.stis-look-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.stis-chip-menu {
+    padding: 4px 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+.stis-menu-btn,
+.stis-look-btn,
+.stis-look-form .menu_button,
+.stis-nav {
+    margin: 0;
+    padding: 4px 10px;
+    font-size: 0.9em;
+}
+
+.stis-look-form input.text_pole {
+    margin: 0;
+    width: 12em;
+}
+
+.stis-who-chip {
+    padding: 2px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    cursor: pointer;
+    user-select: none;
+}
+
+.stis-who-chip.stis-who-on {
+    border-color: var(--SmartThemeQuoteColor);
+    font-weight: bold;
+}
+
+.stis-badge {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 0.75em;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    pointer-events: none;
+}
+
+.stis-cell,
+.stis-cell img {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.stis-cell.stis-picking::after {
+    content: 'Adding…';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+}
+
+.stis-pos {
+    opacity: 0.8;
+    white-space: nowrap;
+}
+
+.stis-preview-img {
+    touch-action: pan-y;
+}

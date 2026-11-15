@@ -1,8 +1,12 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 4;
+const LIBRARY_FILE = 'imagesearch-library.json';
+const PIC_TAG = /\[pic:\s*([a-z0-9]{4,12})\s*\]/gi;
+const DEFAULT_SHOW_PROMPT = 'Saved pictures you can show in this story. When one clearly fits the moment, write its tag, for example [pic:ab12cd], on its own line where it belongs. At most one per reply, only when it adds to the scene, and never mention the tag itself. The user sees the picture, not the tag.';
+const STOP_WORDS = new Set(['the', 'and', 'with', 'her', 'his', 'their', 'she', 'him', 'them', 'they', 'you', 'your', 'are', 'was', 'were', 'has', 'have', 'had', 'this', 'that', 'there', 'then', 'than', 'from', 'into', 'onto', 'over', 'under', 'out', 'for', 'not', 'but', 'its', 'who', 'what', 'when', 'where', 'which', 'while', 'some', 'very', 'just', 'like', 'one', 'two', 'picture', 'shows', 'showing', 'shown', 'image', 'wearing', 'looks', 'look', 'seems', 'standing', 'sitting', 'background']);
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
 const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena'];
 const NOT_BOARD = new Set(['web', 'web-unchecked', 'none']);
@@ -39,6 +43,11 @@ const DEFAULTS = {
     visionPrompt: DEFAULT_VISION_PROMPT,
     visionMaxTokens: 300,
     describeWaitSec: 15,
+    keepLibrary: true,
+    aiShow: true,
+    aiShowCount: 6,
+    aiShowDepth: 1,
+    showPrompt: DEFAULT_SHOW_PROMPT,
     tagPrompt: DEFAULT_TAG_PROMPT,
     debug: false,
     lastTags: [],
@@ -1134,7 +1143,11 @@ async function requestDescription(url, tags) {
     return text.slice(0, 1500);
 }
 
-function startDescription(url, postTags) {
+function readyDescription(url, tags, text) {
+    return { url, tags: tags || [], text: text || '', error: '', started: Date.now(), ms: 0, done: true, promise: Promise.resolve() };
+}
+
+function startDescription(url, postTags, onDone) {
     const s = settings();
     if (!s.describe) {
         return;
@@ -1143,6 +1156,7 @@ function startDescription(url, postTags) {
     entry.promise = requestDescription(url, entry.tags)
         .then(text => {
             entry.text = text;
+            onDone?.(text);
         })
         .catch(error => {
             entry.error = String(error?.cause?.message || error?.message || error);
@@ -1159,14 +1173,262 @@ function startDescription(url, postTags) {
     descriptions.set(url, entry);
 }
 
-function pictureNote(entry) {
+function pictureNote(entry, who = 'the user shared') {
     if (entry.text) {
-        return `[Picture the user shared: ${entry.text}]`;
+        return `[Picture ${who}: ${entry.text}]`;
     }
     if (entry.tags.length) {
-        return `[Picture the user shared, tagged: ${entry.tags.slice(0, 25).join(', ').replace(/_/g, ' ')}]`;
+        return `[Picture ${who}, tagged: ${entry.tags.slice(0, 25).join(', ').replace(/_/g, ' ')}]`;
     }
     return '';
+}
+
+const library = { entries: [], loaded: false, broken: false, loading: null, saving: Promise.resolve(), deleted: new Set() };
+
+function validEntry(entry) {
+    return entry && typeof entry === 'object' && typeof entry.id === 'string' && typeof entry.url === 'string';
+}
+
+function cleanEntry(entry) {
+    return {
+        id: entry.id,
+        url: entry.url,
+        source: String(entry.source || ''),
+        site: String(entry.site || ''),
+        tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
+        searchTags: Array.isArray(entry.searchTags) ? entry.searchTags.map(String) : [],
+        description: String(entry.description || ''),
+        characters: Array.isArray(entry.characters) ? entry.characters.map(String) : [],
+        added: Number(entry.added) || Date.now(),
+        lastUsed: Number(entry.lastUsed) || 0,
+        used: Number(entry.used) || 0,
+    };
+}
+
+async function readLibraryFile() {
+    const response = await fetch(`/user/files/${LIBRARY_FILE}?t=${Date.now()}`, { cache: 'no-store' });
+    if (response.status === 404) {
+        return [];
+    }
+    if (!response.ok) {
+        throw new Error(`The picture library could not be read (${response.status}).`);
+    }
+    const data = JSON.parse(await response.text());
+    return (Array.isArray(data?.entries) ? data.entries : []).filter(validEntry).map(cleanEntry);
+}
+
+async function loadLibrary(force = false) {
+    if (library.loaded && !force) {
+        return library.entries;
+    }
+    if (library.loading) {
+        return library.loading;
+    }
+    library.loading = (async () => {
+        try {
+            library.entries = await readLibraryFile();
+            library.broken = false;
+        } catch (error) {
+            console.warn('[Image Search] library unavailable', error);
+            library.broken = true;
+        }
+        library.loaded = true;
+        library.loading = null;
+        return library.entries;
+    })();
+    return library.loading;
+}
+
+function utf8ToBase64(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+}
+
+function saveLibrary() {
+    library.saving = library.saving.then(async () => {
+        if (library.broken) {
+            await loadLibrary(true);
+            if (library.broken) {
+                throw new Error('The picture library could not be read, so it was not saved, to avoid overwriting it.');
+            }
+        }
+        try {
+            const remote = await readLibraryFile();
+            const known = new Set(library.entries.map(entry => entry.id));
+            remote.filter(entry => !known.has(entry.id) && !library.deleted.has(entry.id)).forEach(entry => library.entries.push(entry));
+        } catch {
+        }
+        const body = JSON.stringify({ version: 1, entries: library.entries });
+        const response = await fetch('/api/files/upload', {
+            method: 'POST',
+            headers: ctx().getRequestHeaders(),
+            body: JSON.stringify({ name: LIBRARY_FILE, data: utf8ToBase64(body) }),
+        });
+        if (!response.ok) {
+            throw new Error(`The picture library could not be saved (${response.status}).`);
+        }
+    }).catch(error => {
+        console.warn('[Image Search] library save failed', error);
+        toastr.warning(String(error?.message || error), 'Image Search');
+    });
+    return library.saving;
+}
+
+function newEntryId() {
+    let id = '';
+    do {
+        id = Math.random().toString(36).slice(2, 8);
+    } while (id.length < 6 || library.entries.some(entry => entry.id === id));
+    return id;
+}
+
+function entryForSource(source) {
+    return source ? library.entries.find(entry => entry.source === source) : null;
+}
+
+function entryForUrl(url) {
+    return library.entries.find(entry => entry.url === url) || null;
+}
+
+function noteUse(entry, character) {
+    entry.used = (entry.used || 0) + 1;
+    entry.lastUsed = Date.now();
+    if (character && !entry.characters.includes(character)) {
+        entry.characters.push(character);
+    }
+}
+
+async function addToLibrary(item, url, searchTags) {
+    await loadLibrary();
+    let entry = entryForSource(item.page) || entryForUrl(url);
+    if (!entry) {
+        entry = cleanEntry({
+            id: newEntryId(),
+            url,
+            source: item.page,
+            site: hostOf(item.page),
+            tags: summaryTags(item.tags),
+            searchTags,
+        });
+        library.entries.unshift(entry);
+    }
+    return entry;
+}
+
+function removeFromLibrary(entry) {
+    library.entries = library.entries.filter(e => e.id !== entry.id);
+    library.deleted.add(entry.id);
+    return saveLibrary();
+}
+
+function shortDescription(entry) {
+    const text = entry.description || entry.tags.slice(0, 12).join(', ').replace(/_/g, ' ');
+    const first = text.split(/(?<=[.!?])\s/)[0] || text;
+    return first.length > 160 ? `${first.slice(0, 157)}…` : first;
+}
+
+function wordsOf(text) {
+    return new Set(String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3 && !STOP_WORDS.has(word)));
+}
+
+function scoreEntry(entry, words, tags, character) {
+    let score = 0;
+    for (const tag of entry.tags) {
+        if (tags.has(tag)) {
+            score += 3;
+        }
+        if (tag.split('_').some(part => words.has(part))) {
+            score += 1;
+        }
+    }
+    for (const word of wordsOf(entry.description)) {
+        if (words.has(word)) {
+            score += 1;
+        }
+    }
+    if (character && entry.characters.includes(character)) {
+        score += 4;
+    }
+    return score;
+}
+
+function rankEntries(entries, { text = '', tags = [], character = '' } = {}) {
+    const words = wordsOf(text);
+    tags.forEach(tag => tag.split('_').forEach(part => part.length >= 3 && words.add(part)));
+    const tagSet = new Set(tags);
+    return entries
+        .map(entry => ({ entry, score: scoreEntry(entry, words, tagSet, character) }))
+        .sort((a, b) => b.score - a.score || (b.entry.lastUsed || b.entry.added) - (a.entry.lastUsed || a.entry.added));
+}
+
+function recentText(count = 3) {
+    return (ctx().chat || [])
+        .filter(m => m && !m.is_system && typeof m.mes === 'string')
+        .slice(-count)
+        .map(m => cleanForPrompt(m.mes).slice(-800))
+        .join(' ');
+}
+
+async function updateShowPrompt() {
+    const s = settings();
+    const c = ctx();
+    if (!s.enabled || !s.aiShow) {
+        c.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
+        return;
+    }
+    await loadLibrary();
+    const ranked = rankEntries(library.entries, { text: recentText(3), character: c.name2 || '' })
+        .filter(item => item.score > 0)
+        .slice(0, Math.max(1, Number(s.aiShowCount) || 6));
+    const value = ranked.length
+        ? `${s.showPrompt || DEFAULT_SHOW_PROMPT}\n${ranked.map(({ entry }) => `- [pic:${entry.id}] ${shortDescription(entry)}`).join('\n')}`
+        : '';
+    c.setExtensionPrompt?.(PROMPT_KEY, value, 1, Math.max(0, Number(s.aiShowDepth) || 0), false, 0);
+}
+
+function setMessageText(message, text) {
+    message.mes = text;
+    if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipe_id < message.swipes.length) {
+        message.swipes[message.swipe_id] = text;
+    }
+}
+
+async function onAiPictures(messageId) {
+    const s = settings();
+    const c = ctx();
+    const id = Number(messageId);
+    const message = c.chat[id];
+    if (!s.enabled || !message || message.is_user || message.is_system || typeof message.mes !== 'string' || !/\[pic:/i.test(message.mes)) {
+        return;
+    }
+    await loadLibrary();
+    const ids = [...message.mes.matchAll(PIC_TAG)].map(match => match[1].toLowerCase());
+    setMessageText(message, message.mes.replace(PIC_TAG, '').replace(/\n{3,}/g, '\n\n').trim());
+    const entries = [...new Set(ids)].map(pid => library.entries.find(entry => entry.id === pid)).filter(Boolean).slice(0, 2);
+    if (entries.length) {
+        if (!message.extra || typeof message.extra !== 'object') {
+            message.extra = {};
+        }
+        if (!Array.isArray(message.extra.media)) {
+            message.extra.media = [];
+        }
+        for (const entry of entries) {
+            if (!message.extra.media.some(item => item.url === entry.url)) {
+                const note = pictureNote(readyDescription(entry.url, entry.tags, entry.description), 'shown in the story');
+                message.extra.media.push({ type: 'image', url: entry.url, title: note, append_title: true, source: 'upload' });
+            }
+            noteUse(entry, message.name || c.name2 || '');
+        }
+        saveLibrary();
+    }
+    if (document.querySelector(`#chat .mes[mesid="${id}"]`)) {
+        c.updateMessageBlock(id, message);
+    }
+    await c.saveChat();
 }
 
 function setNote(media, entry) {
@@ -1301,7 +1563,18 @@ async function openPicker(initialTags = null) {
         grid: el('div', 'stis-grid'),
         sentinel: el('div', 'stis-sentinel'),
         preview: el('div', 'stis-preview'),
+        tabs: el('div', 'stis-tabs'),
+        tabSearch: el('div', 'menu_button stis-tab stis-tab-on', 'Search'),
+        tabLibrary: el('div', 'menu_button stis-tab', 'Library'),
+        libraryView: el('div', 'stis-library'),
+        libSearch: el('input', 'text_pole stis-lib-search'),
+        libGrid: el('div', 'stis-grid'),
     };
+    ui.libSearch.type = 'text';
+    ui.libSearch.placeholder = 'search saved pictures';
+    ui.tabs.append(ui.tabSearch, ui.tabLibrary);
+    ui.libraryView.append(ui.libSearch, ui.libGrid);
+    ui.libraryView.hidden = true;
     ui.input.type = 'text';
     ui.input.placeholder = 'add tag, Enter';
     ui.suggest.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
@@ -1319,7 +1592,7 @@ async function openPicker(initialTags = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.top, ui.status, ui.debug, ui.grid, ui.preview);
+    ui.root.append(ui.tabs, ui.top, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
 
     let tags = [];
     let edited = false;
@@ -1631,24 +1904,101 @@ async function openPicker(initialTags = null) {
         }
     };
 
-    function showPreview(item) {
+    function previewShell(src, sourceUrl) {
         ui.preview.innerHTML = '';
         const img = el('img', 'stis-preview-img');
-        setPreviewSource(img, item);
+        if (typeof src === 'string') {
+            img.src = src;
+        } else {
+            setPreviewSource(img, src);
+        }
         const bar = el('div', 'stis-preview-bar');
         const back = el('div', 'menu_button', 'Back');
-        const use = el('div', 'menu_button stis-use', 'Use this');
-        const link = el('a', 'stis-post-link', 'Open post');
-        link.href = item.page;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
         back.addEventListener('click', () => {
             ui.preview.hidden = true;
         });
-        use.addEventListener('click', () => pick(item, use));
-        bar.append(back, link, use);
+        const link = el('a', 'stis-post-link', 'Open post');
+        link.href = sourceUrl || '#';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.hidden = !sourceUrl;
+        bar.append(back, link);
         ui.preview.append(img, bar);
         ui.preview.hidden = false;
+        return bar;
+    }
+
+    function showPreview(item) {
+        const bar = previewShell(item, item.page);
+        const use = el('div', 'menu_button stis-use', 'Use this');
+        use.addEventListener('click', () => pick(item, use));
+        if (s.keepLibrary && s.saveLocal) {
+            const keep = el('div', 'menu_button', 'Save to library');
+            loadLibrary().then(() => {
+                if (entryForSource(item.page)) {
+                    keep.textContent = 'In library';
+                }
+            });
+            keep.addEventListener('click', async () => {
+                if (busy || keep.textContent !== 'Save to library') {
+                    return;
+                }
+                busy = true;
+                keep.textContent = 'Saving…';
+                const { entry } = await storeItem(item);
+                busy = false;
+                keep.textContent = entry ? 'In library' : 'Save to library';
+            });
+            bar.append(keep);
+        }
+        bar.append(use);
+    }
+
+    function prepareEntryDescription(entry) {
+        if (entry.description) {
+            descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
+        } else if (!descriptions.has(entry.url)) {
+            startDescription(entry.url, entry.tags, text => {
+                entry.description = text;
+                saveLibrary();
+            });
+        }
+    }
+
+    async function storeItem(item) {
+        if (s.keepLibrary) {
+            await loadLibrary();
+            const existing = entryForSource(item.page);
+            if (existing) {
+                prepareEntryDescription(existing);
+                return { url: existing.url, entry: existing };
+            }
+        }
+        if (!s.saveLocal) {
+            return { url: item.img, entry: null };
+        }
+        const { src, lines } = await saveBest(item);
+        if (!src) {
+            console.warn('[Image Search] save failed', lines);
+            toastr.warning(`${lines[0] || 'Saving failed.'} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
+            return { url: item.img, entry: null };
+        }
+        const entry = s.keepLibrary ? await addToLibrary(item, src, [...tags]) : null;
+        startDescription(src, item.tags, text => {
+            if (entry) {
+                entry.description = text;
+                saveLibrary();
+            }
+        });
+        if (entry) {
+            saveLibrary();
+        }
+        return { url: src, entry };
+    }
+
+    async function finishPick(text) {
+        await popup.completeCancelled();
+        setTimeout(() => insertIntoChatBox(text), 0);
     }
 
     async function pick(item, button) {
@@ -1657,21 +2007,113 @@ async function openPicker(initialTags = null) {
         }
         busy = true;
         button.textContent = 'Saving…';
-        let url = item.img;
-        if (s.saveLocal) {
-            const { src, lines } = await saveBest(item);
-            if (src) {
-                url = src;
-                startDescription(src, item.tags);
-            } else {
-                console.warn('[Image Search] save failed', lines);
-                toastr.warning(`${lines[0] || 'Saving failed.'} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
-            }
+        const { url, entry } = await storeItem(item);
+        if (entry) {
+            noteUse(entry, ctx().name2 || '');
+            saveLibrary();
         }
-        const text = markdownFor(url, tags);
-        await popup.completeCancelled();
-        setTimeout(() => insertIntoChatBox(text), 0);
+        await finishPick(markdownFor(url, tags));
     }
+
+    async function pickEntry(entry, button) {
+        if (busy) {
+            return;
+        }
+        busy = true;
+        button.textContent = 'Adding…';
+        noteUse(entry, ctx().name2 || '');
+        prepareEntryDescription(entry);
+        saveLibrary();
+        await finishPick(markdownFor(entry.url, entry.searchTags.length ? entry.searchTags : entry.tags.slice(0, 6)));
+    }
+
+    function showEntry(entry) {
+        const bar = previewShell(entry.url, entry.source);
+        const info = el('div', 'stis-entry-info');
+        info.appendChild(el('div', '', entry.description || 'No description yet. One is made the next time you use it.'));
+        const meta = [entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        info.appendChild(el('small', '', meta));
+        ui.preview.insertBefore(info, bar);
+        const remove = el('div', 'menu_button', 'Remove');
+        remove.title = 'Remove from the library. The file stays, so chats that show it keep working.';
+        remove.addEventListener('click', async () => {
+            await removeFromLibrary(entry);
+            ui.preview.hidden = true;
+            renderLibrary();
+        });
+        const use = el('div', 'menu_button stis-use', 'Use this');
+        use.addEventListener('click', () => pickEntry(entry, use));
+        bar.append(remove, use);
+    }
+
+    async function renderLibrary() {
+        await loadLibrary();
+        if (closed) {
+            return;
+        }
+        ui.tabLibrary.textContent = `Library (${library.entries.length})`;
+        ui.libGrid.innerHTML = '';
+        const query = [...wordsOf(ui.libSearch.value)];
+        let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: ctx().name2 || '' });
+        if (query.length) {
+            ranked = ranked.filter(({ entry }) => {
+                const hay = `${entry.tags.join(' ')} ${entry.description} ${entry.characters.join(' ')}`.toLowerCase().replace(/_/g, ' ');
+                return query.every(word => hay.includes(word));
+            });
+        }
+        if (!ranked.length) {
+            const message = library.broken ? 'The library could not be read.' : library.entries.length ? 'Nothing matches.' : 'Pictures you pick are saved here.';
+            ui.libGrid.appendChild(el('div', 'stis-status', message));
+            return;
+        }
+        for (const { entry } of ranked) {
+            const cell = el('div', 'stis-cell');
+            const img = el('img');
+            img.loading = 'lazy';
+            img.alt = '';
+            img.src = entry.url;
+            img.onerror = () => cell.classList.add('stis-broken');
+            cell.title = shortDescription(entry);
+            cell.appendChild(img);
+            cell.addEventListener('click', () => showEntry(entry));
+            ui.libGrid.appendChild(cell);
+        }
+    }
+
+    function setView(next) {
+        const lib = next === 'library';
+        ui.top.hidden = lib;
+        ui.status.hidden = lib;
+        ui.grid.hidden = lib;
+        ui.debug.hidden = lib || !s.debug;
+        ui.libraryView.hidden = !lib;
+        ui.tabSearch.classList.toggle('stis-tab-on', !lib);
+        ui.tabLibrary.classList.toggle('stis-tab-on', lib);
+        ui.preview.hidden = true;
+        if (lib) {
+            renderLibrary();
+        }
+    }
+
+    ui.tabSearch.addEventListener('click', () => setView('search'));
+    ui.tabLibrary.addEventListener('click', () => setView('library'));
+    let libTimer = null;
+    ui.libSearch.addEventListener('input', () => {
+        clearTimeout(libTimer);
+        libTimer = setTimeout(renderLibrary, 250);
+    });
+    ui.libSearch.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            renderLibrary();
+        }
+    });
+    loadLibrary().then(() => {
+        if (!closed) {
+            ui.tabLibrary.textContent = `Library (${library.entries.length})`;
+        }
+    });
 
     ui.input.addEventListener('keydown', event => {
         if (event.key === 'Enter') {
@@ -1853,6 +2295,8 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_describe"> <span>Describe picked pictures for the AI (a vision model looks at the picture and its tags; the description is sent to the AI with the picture, hidden from the chat)</span></label>
                 <div>Vision profile (empty = use the tag profile)</div>
                 <select id="st_imagesearch_vision_profile" class="text_pole"></select>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep picked pictures in the library</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies (adds a short list of fitting pictures to the prompt)</span></label>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
                 <details>
                     <summary>Advanced</summary>
@@ -1863,6 +2307,10 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Saved pictures offered to the AI</span><input type="number" min="1" max="20" id="st_imagesearch_aishow_count" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Depth of that list in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
+                    <div>Instruction for showing saved pictures (the list is added below it)</div>
+                    <textarea id="st_imagesearch_show_prompt" class="text_pole"></textarea>
                     <div>Description prompt ({{tags}} is filled in)</div>
                     <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
                     <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
@@ -1907,6 +2355,7 @@ function buildSettings() {
     };
     bind('st_imagesearch_enabled', 'enabled', 'checked', () => {
         updateButtons();
+        updateShowPrompt();
         if (!s.enabled) {
             onChatChanged();
         }
@@ -1930,6 +2379,11 @@ function buildSettings() {
     bind('st_imagesearch_attach', 'attachOnSend', 'checked');
     bind('st_imagesearch_debug', 'debug', 'checked');
     bind('st_imagesearch_describe', 'describe', 'checked');
+    bind('st_imagesearch_keep', 'keepLibrary', 'checked');
+    bind('st_imagesearch_aishow', 'aiShow', 'checked', updateShowPrompt);
+    bind('st_imagesearch_aishow_count', 'aiShowCount', 'number', updateShowPrompt);
+    bind('st_imagesearch_aishow_depth', 'aiShowDepth', 'number', updateShowPrompt);
+    bind('st_imagesearch_show_prompt', 'showPrompt', 'value', updateShowPrompt);
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
@@ -1988,14 +2442,18 @@ jQuery(() => {
     const c = ctx();
     applyReferrerPolicy();
     settings();
-    c.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
     buildSettings();
+    updateShowPrompt();
     refreshCleanup();
     setInterval(refreshCleanup, CLEANUP_REFRESH_MS);
     registerCommand();
     addButtons();
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);
+    c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onAiPictures);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onReplyFinished);
+    c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, updateShowPrompt);
     c.eventSource.on(c.eventTypes.MESSAGE_SENT, onMessageSent);
+    c.eventSource.on(c.eventTypes.MESSAGE_SENT, updateShowPrompt);
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, onChatChanged);
+    c.eventSource.on(c.eventTypes.CHAT_CHANGED, updateShowPrompt);
 });

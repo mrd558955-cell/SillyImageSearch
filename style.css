@@ -206,3 +206,44 @@
 .stis-debug-row {
     margin: 2px 0;
 }
+
+.stis-picker [hidden] {
+    display: none !important;
+}
+
+.stis-tabs {
+    display: flex;
+    gap: 6px;
+}
+
+.stis-tab {
+    margin: 0;
+    padding: 4px 12px;
+    opacity: 0.6;
+}
+
+.stis-tab.stis-tab-on {
+    opacity: 1;
+    font-weight: bold;
+}
+
+.stis-library {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.stis-lib-search.text_pole {
+    margin: 0;
+}
+
+.stis-entry-info {
+    font-size: 0.85em;
+    max-height: 30%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}

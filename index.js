@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.9.0';
+const VERSION = '2.9.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -1240,6 +1240,10 @@ function parseSuggestion(text, evidenceText = null) {
     return { tags, dropped, subject, evidence, noQuotes: evidenceText !== null && settings().requireEvidence && !anyQuote && entries.length > 0 };
 }
 
+function samplers(temperature) {
+    return { temperature, top_p: undefined, top_k: undefined, top_a: undefined, min_p: undefined, frequency_penalty: undefined, presence_penalty: undefined, repetition_penalty: undefined };
+}
+
 async function suggestTags(signal) {
     const s = settings();
     const c = ctx();
@@ -1253,7 +1257,7 @@ async function suggestTags(signal) {
     const request = buildTagRequest();
     const messages = [{ role: 'user', content: request.prompt }];
     const prompt = service.constructPrompt(messages, s.tagProfile);
-    const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 250), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.2 });
+    const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 250), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = typeof result === 'string' ? result : result?.content || '';
     const { tags, dropped, subject, evidence, noQuotes } = parseSuggestion(text, request.evidence);
     if (noQuotes) {
@@ -1978,7 +1982,7 @@ async function requestDescription(url, tags, blob = null) {
     const image = await imageDataUrl(url, blob);
     const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
     const messages = [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }];
-    const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
     const raw = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     const parsed = parseDescription(raw);
     if (!parsed.text) {
@@ -2314,7 +2318,7 @@ async function describeStep(entry, index, blob) {
     const image = await imageDataUrl(entry.variants[index].url, blob || null);
     const before = index === 1 ? ([entry.sections?.visual, entry.sections?.action].filter(Boolean).join(' ') || entry.description) : (entry.variants[index - 1].diff || entry.description);
     const prompt = `This picture is picture ${index + 1} of a ${entry.variants.length}-picture sequence used to tell a story. The picture before it shows: ${before}\n\nIn 1 to 2 sentences, say what this picture shows and what happens in it compared to the one before. Ignore writing in the picture, except onomatopoeia.`;
-    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 160, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 160, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
     return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*\**(picture\s*\d+|step\s*\d+)\**\s*:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
@@ -2323,7 +2327,7 @@ async function describeDifference(entry, index, blob) {
     const image = await imageDataUrl(entry.variants[index].url, blob || null);
     const scene = [entry.sections?.visual, entry.sections?.action].filter(Boolean).join(' ') || entry.description;
     const prompt = `This picture is one version of a scene described below. In 1 sentence, say only what this version shows that is different: expression, pose, outfit, framing or what is happening. Ignore writing in the picture, except onomatopoeia.\n\nThe scene: ${scene}`;
-    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 120, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 120, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
     return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*\**(version\s*\d+|difference)\**\s*:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 400);
 }
 
@@ -2344,7 +2348,7 @@ async function describeSet(entry, blobs = []) {
             images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
         }
         const content = [{ type: 'text', text: sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
-        const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+        const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
         parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
     } catch (error) {
         console.warn('[Image Search] set description failed, describing one picture at a time', error);
@@ -3235,7 +3239,7 @@ async function askPicturePick(message, candidates) {
     const shortlist = candidates.slice(0, SEND_SHORTLIST);
     const user = c.name1 || 'The user';
     const prompt = `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Pick the pictures that best show what happens next in that reply: the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing). Prefer pictures whose people look like the characters in the story.\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with up to 3 picture numbers, best first, separated by commas, or 0 if none of them fits at all. Numbers only.`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 80, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, { temperature: 0.2 });
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 80, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const numbers = [...text.matchAll(/\d+/g)].map(match => Number(match[0]));
     if (!numbers.length) {

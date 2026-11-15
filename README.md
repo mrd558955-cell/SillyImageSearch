@@ -11,11 +11,17 @@ Click the images icon next to the chat box (or the wand menu, or `/imgsearch tag
 
 Saving pictures needs `enableCorsProxy: true` in `config.yaml`, or the Cloudflare image fetcher.
 
-With more than one image board listed, "All sites" in the picker searches them all at once. Typing two letters or more in the tag box suggests matching tags from the sites.
+With more than one image board listed, "All sites" in the picker searches them all at once; the site switches under the tag box leave some out. Typing two letters or more in the tag box suggests matching tags from the sites, favorites first.
+
+Scroll down in a picture's preview to see all its tags: select some to add them to the search, mark them as favorites (the ★ row under the tag box), or leave out pictures that have them. The left-out list is in the settings ("Leave out pictures with these tags").
 
 ## Library
 
 Pictures you pick are kept in the library (Library tab in the picker) and offered to the AI through the lorebook "Image Search Pictures". In the library you can redo a picture's description or delete it (the file is deleted too). The settings have "Redo all descriptions" and "Delete everything".
+
+The bookmark button on a picture saves it to the library in the background without adding it to the chat, so you can keep browsing.
+
+"Select" lets you tap pictures in story order (from different searches and from the library) and "Save as sequence". The lorebook entry tells the AI to show them one at a time, in order, as the story moves on.
 
 Some posts have other versions on the site (parent and child posts). They share one cell in the grid, with a count in the corner. Open it to see every version; "Save set" keeps them as one library entry, with one full description and what is different in each version.
 

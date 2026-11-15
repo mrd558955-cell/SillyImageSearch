@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.7.0';
+const VERSION = '2.8.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -22,8 +22,8 @@ const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', fema
 const DEFAULT_TAG_PROMPT = 'You pick image-board (booru) tags to find a picture of one person from a roleplay. First decide who the picture should show: {{char}} if they are in the latest messages, otherwise the person the latest message is about. Then give tags for that person only, based only on what the text below says or clearly implies. Never guess: if the text does not say it, leave it out. Three correct tags are better than many guesses. Give at most {{max}} tags.\nUseful kinds of tags, most important first: how many and gender (1girl, 1boy), species if not human, body type and age look, skin color, hair color or baldness, lasting features of the body, and the kind of outfit.\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, place, background, time, weather or lighting. Never use names from the story. Use common booru tags: lowercase, with underscores inside a tag.\nFor every tag, quote the few words of the text below that support it.\n\nReply in exactly this format:\nSubject: the person\'s name, or none\nTags:\ntag = "exact words from the text"\ntag = "exact words from the text"\n\n{{context}}';
 const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}'];
 const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|inch(es)?|met(er|re)s?|build|muscular|muscles?|slim|slender|thin|skinny|fat|chubby|plump|curvy|stocky|broad|shoulders|beard|mustache|moustache|scars?|tattoos?|horns?|tails?|wings?|ears?|fur|scales|freckles|wears?|wearing|dressed|clothes|clothing|outfit|armou?r|robes?|dress|uniform|coat|cloak|appearance|looks? like|face|body|figure|years? old|elderly|petite|breasts?|hips|thighs|legs|arms|complexion|pale|tanned|dark-skinned)\b/i;
-const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}';
-const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}'];
+const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
+const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
@@ -38,6 +38,9 @@ const DEFAULTS = {
     fetcherUrl: '',
     fetcherKey: '',
     extraExcluded: '',
+    excludeTags: 'animated, animated_gif, animated_png, video, comic, 4koma',
+    favoriteTags: [],
+    skipSites: [],
     tagProfile: '',
     prefetch: true,
     maxSuggested: 6,
@@ -134,6 +137,20 @@ function settings() {
         }
         s.schema = 3;
     }
+    if (s.schema < 4) {
+        const extra = normalizeTagList(s.extraExcluded);
+        if (extra.length) {
+            s.excludeTags = [...new Set([...normalizeTagList(s.excludeTags), ...extra])].join(', ');
+            s.extraExcluded = '';
+        }
+        s.schema = 4;
+    }
+    if (!Array.isArray(s.favoriteTags)) {
+        s.favoriteTags = [];
+    }
+    if (!Array.isArray(s.skipSites)) {
+        s.skipSites = [];
+    }
     if (OLD_VISION_PROMPTS.includes(s.visionPrompt)) {
         s.visionPrompt = DEFAULT_VISION_PROMPT;
     }
@@ -190,6 +207,49 @@ function addToSuggestBlacklist(tag) {
     if (box) {
         box.value = s.suggestBlacklist;
     }
+}
+
+function excludedTags(wanted = []) {
+    const skip = new Set(wanted.map(normalizeTag));
+    return [...new Set(normalizeTagList(settings().excludeTags))].filter(tag => !skip.has(tag));
+}
+
+function addExcludedTags(list) {
+    const s = settings();
+    const current = normalizeTagList(s.excludeTags);
+    const added = list.map(normalizeTag).filter(tag => tag && !current.includes(tag));
+    if (added.length) {
+        s.excludeTags = [...current, ...added].join(', ');
+        save();
+        const box = document.getElementById('st_imagesearch_exclude');
+        if (box) {
+            box.value = s.excludeTags;
+        }
+    }
+    return added;
+}
+
+function favoriteTags() {
+    return [...new Set((settings().favoriteTags || []).map(normalizeTag).filter(Boolean))];
+}
+
+function setFavorites(list) {
+    const s = settings();
+    s.favoriteTags = [...new Set(list.map(normalizeTag).filter(Boolean))];
+    save();
+    const box = document.getElementById('st_imagesearch_favorites');
+    if (box) {
+        box.value = s.favoriteTags.join(', ');
+    }
+}
+
+function toggleFavorite(tag, on = !favoriteTags().includes(tag)) {
+    const list = favoriteTags().filter(item => item !== tag);
+    if (on) {
+        list.push(tag);
+    }
+    setFavorites(list);
+    return on;
 }
 
 function isDetailTag(tag) {
@@ -258,7 +318,13 @@ function activeDomain() {
 }
 
 function domainsFor(domain) {
-    return domain === ALL_SITES ? siteEntries().map(entry => entry.domain) : (domain ? [domain] : []);
+    if (domain !== ALL_SITES) {
+        return domain ? [domain] : [];
+    }
+    const all = siteEntries().map(entry => entry.domain);
+    const skip = new Set(settings().skipSites || []);
+    const on = all.filter(name => !skip.has(name));
+    return on.length ? on : all;
 }
 
 function siteLabel(domain) {
@@ -382,7 +448,7 @@ const ENGINES = {
         cap: 6,
         pageSize: 100,
         url: (origin, tags, extra, page) => `${origin}/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=${page}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
-        tags: (userTags, ratings) => [...userTags, 'sort:score:desc', '-animated', '-comic', ...ratingNegatives(ratings, { general: ['general', 'safe'], sensitive: ['sensitive'], questionable: ['questionable'], explicit: ['explicit'] })],
+        tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, 'sort:score:desc', ...exclude.slice(0, 8).map(tag => `-${tag}`), ...ratingNegatives(ratings, { general: ['general', 'safe'], sensitive: ['sensitive'], questionable: ['questionable'], explicit: ['explicit'] })],
         parse: result => {
             if (!result.ok) {
                 return null;
@@ -437,7 +503,7 @@ const ENGINES = {
         cap: 6,
         pageSize: 100,
         url: (origin, tags, extra, page) => `${origin}/posts.json?limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
-        tags: (userTags, ratings) => [...userTags, 'order:score', '-animated', '-comic', ...ratingNegatives(ratings, { general: ['s'], questionable: ['q'], explicit: ['e'] })],
+        tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, 'order:score', ...exclude.slice(0, 10).map(tag => `-${tag}`), ...ratingNegatives(ratings, { general: ['s'], questionable: ['q'], explicit: ['e'] })],
         parse: result => (result.ok && result.data && Array.isArray(result.data.posts) ? result.data.posts : null),
         image: (post, origin) => absolute(post.sample?.url, origin) || absolute(post.file?.url, origin),
         full: (post, origin) => absolute(post.file?.url, origin),
@@ -478,7 +544,7 @@ const ENGINES = {
         cap: 5,
         pageSize: 50,
         url: (origin, tags, extra, page) => `${origin}/api/v1/json/search/images?per_page=50&page=${page + 1}&sf=score&sd=desc&q=${encodeURIComponent(tags.length ? tags.join(', ') : '*')}${extra}`,
-        tags: (userTags, ratings) => [...userTags.map(tag => tag.replace(/_/g, ' ')), ...(onlyGeneral(ratings) ? ['safe'] : [])],
+        tags: (userTags, ratings, noOrder, exclude = []) => [...userTags.map(tag => tag.replace(/_/g, ' ')), ...exclude.slice(0, 6).map(tag => `-${tag.replace(/_/g, ' ')}`), ...(onlyGeneral(ratings) ? ['safe'] : [])],
         parse: result => (result.ok && result.data && Array.isArray(result.data.images) ? result.data.images : null),
         image: (post, origin) => absolute(post.representations?.large, origin) || absolute(post.representations?.full, origin) || absolute(post.view_url, origin),
         full: (post, origin) => absolute(post.representations?.full, origin) || absolute(post.view_url, origin),
@@ -504,7 +570,7 @@ function engineFor(name, result) {
     return name;
 }
 
-function postsToItems(engineName, posts, origin, ratings, localTags, stats) {
+function postsToItems(engineName, posts, origin, ratings, localTags, stats, exclude = new Set(excludedTags())) {
     const engine = ENGINES[engineName];
     const items = [];
     for (const post of posts) {
@@ -517,7 +583,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats) {
             continue;
         }
         const tags = engine.postTags(post).map(tag => tag.toLowerCase());
-        if (tags.some(tag => BLOCKED_TAGS.has(tag) || EXCLUDED_TAGS.has(tag) || isCleanupTag(tag))) {
+        if (tags.some(tag => BLOCKED_TAGS.has(tag) || exclude.has(tag) || isCleanupTag(tag))) {
             stats.excluded++;
             continue;
         }
@@ -606,15 +672,16 @@ function defaultRequired(tags) {
     return tags.slice(0, count);
 }
 
-async function fetchPage(entry, engineName, required, page) {
+async function fetchPage(entry, engineName, required, page, wanted = required) {
     const s = settings();
     const engine = ENGINES[engineName];
     const origin = `https://${entry.domain}`;
     const siteTags = required.slice(0, engine.cap);
     const localTags = required.slice(engine.cap);
+    const exclude = excludedTags(wanted);
     let noOrder = noOrderSites.has(entry.domain);
     for (let attempt = 0; attempt < 2; attempt++) {
-        const query = engine.tags(siteTags, s.ratings, noOrder);
+        const query = engine.tags(siteTags, s.ratings, noOrder, exclude);
         const result = await request(engine.url(origin, query, entry.extra, page));
         const posts = engine.parse(result);
         if (posts === null) {
@@ -626,12 +693,12 @@ async function fetchPage(entry, engineName, required, page) {
             throw new Error(`${entry.domain} answered ${result.status}: ${String(result.text).slice(0, 150)}`);
         }
         const stats = { rating: 0, excluded: 0, local: 0, notImage: 0 };
-        const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats);
+        const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats, new Set(exclude));
         const debug = {
             domain: entry.domain,
             page,
             apiUrl: engine.url(origin, query, entry.extra, page),
-            siteUrl: engine.siteUrl(origin, engine.tags([...siteTags, ...localTags], s.ratings, noOrder)),
+            siteUrl: engine.siteUrl(origin, engine.tags([...siteTags, ...localTags], s.ratings, noOrder, exclude)),
             localTags,
             received: posts.length,
             kept: items.length,
@@ -676,7 +743,7 @@ async function fetchFamily(item) {
         const isRoot = !item.parentId && item.postId === item.root;
         const queries = engine.family(item.root).filter(tags => !(isRoot && tags.some(tag => tag.startsWith('id:'))));
         const results = await Promise.allSettled(queries.map(async tags => {
-            const result = await request(engine.url(origin, engine.tags(tags, s.ratings, noOrder), entry.extra, 0));
+            const result = await request(engine.url(origin, engine.tags(tags, s.ratings, noOrder, excludedTags()), entry.extra, 0));
             const posts = engine.parse(result);
             return posts ? postsToItems(engineName, posts, origin, s.ratings, [], { rating: 0, excluded: 0, local: 0, notImage: 0 }) : [];
         }));
@@ -699,11 +766,15 @@ async function fetchFamily(item) {
 
 function createBrowse(domain, tags, required) {
     const req = tags.filter(tag => required.includes(tag));
-    const browse = { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [], subs: null, siteErrors: [] };
+    const browse = { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [], subs: null, siteErrors: [], scope: searchScope(domain) };
     if (domain === ALL_SITES) {
-        browse.subs = siteEntries().map(entry => createBrowse(entry.domain, tags, required));
+        browse.subs = domainsFor(ALL_SITES).map(name => createBrowse(name, tags, required));
     }
     return browse;
+}
+
+function searchScope(domain) {
+    return `${domainsFor(domain).join(',')}|${excludedTags().join(',')}`;
 }
 
 function sameTags(a, b) {
@@ -711,11 +782,11 @@ function sameTags(a, b) {
 }
 
 function sameSearch(browse, domain, tags, required) {
-    return Boolean(browse) && browse.domain === domain && sameTags(browse.tags, tags) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain) && sameTags(browse.tags, tags) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
 }
 
 function sameRequired(browse, domain, tags, required) {
-    return Boolean(browse) && browse.domain === domain && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
 }
 
 function rankItems(items, preferred) {
@@ -806,7 +877,7 @@ async function loadMore(browse) {
         let calls = 0;
         while (!browse.done && received < RANK_WINDOW && calls < MAX_PAGE_CALLS) {
             calls++;
-            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page);
+            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page, [...browse.required, ...browse.preferred]);
             if (debug) {
                 browse.pages.push(debug);
                 received += debug.received;
@@ -1413,7 +1484,7 @@ function rankCompletions(list, prefix) {
 }
 
 function usableCompletion(name) {
-    return name && !BLOCKED_TAGS.has(name) && !EXCLUDED_TAGS.has(name) && !isCleanupTag(name);
+    return name && !BLOCKED_TAGS.has(name) && !isCleanupTag(name);
 }
 
 async function completeTag(domain, typed) {
@@ -1827,7 +1898,7 @@ function renderSections(sections) {
 }
 
 function parseDescription(raw) {
-    const labels = 'visual|expression|action|atmosphere|framing|keywords?|description|variant\\s*\\d+|version\\s*\\d+';
+    const labels = 'visual|expression|action|atmosphere|framing|keywords?|description|variant\\s*\\d+|version\\s*\\d+|picture\\s*\\d+|step\\s*\\d+';
     const marks = [...String(raw || '').matchAll(new RegExp(`^[\\s*#>-]*\\**(${labels})\\**\\s*:\\s*(?:\\*\\*\\s*)?`, 'gim'))];
     const sections = {};
     const variants = {};
@@ -1842,7 +1913,7 @@ function parseDescription(raw) {
             keywords = parseKeywords(content);
         } else if (label === 'description') {
             plain += ` ${content}`;
-        } else if (/^(variant|version) \d+$/.test(label)) {
+        } else if (/^(variant|version|picture|step) \d+$/.test(label)) {
             variants[Number(label.split(' ')[1])] = content.slice(0, 500);
         } else if (content) {
             sections[label] = content.slice(0, 700);
@@ -1934,7 +2005,7 @@ function cleanEntry(entry) {
         searchTags: Array.isArray(entry.searchTags) ? entry.searchTags.map(String) : [],
         description: String(entry.description || ''),
         sections: entry.sections && typeof entry.sections === 'object' ? Object.fromEntries(SECTIONS.filter(([key]) => typeof entry.sections[key] === 'string').map(([key]) => [key, entry.sections[key]])) : {},
-        kind: entry.kind === 'set' ? 'set' : 'single',
+        kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
@@ -2031,8 +2102,9 @@ function newEntryId() {
 }
 
 function findPicture(test) {
-    for (const entry of library.entries) {
-        if (entry.kind === 'set' && entry.variants.length) {
+    const ordered = [...library.entries.filter(entry => entry.kind !== 'sequence'), ...library.entries.filter(entry => entry.kind === 'sequence')];
+    for (const entry of ordered) {
+        if (hasVariants(entry)) {
             const variant = entry.variants.find(test);
             if (variant) {
                 return { entry, variant };
@@ -2042,6 +2114,19 @@ function findPicture(test) {
         }
     }
     return null;
+}
+
+function freshIds(count) {
+    const ids = allIds();
+    const out = [];
+    while (out.length < count) {
+        const id = Math.random().toString(36).slice(2, 8);
+        if (id.length === 6 && !ids.has(id)) {
+            ids.add(id);
+            out.push(id);
+        }
+    }
+    return out;
 }
 
 function findBySource(source) {
@@ -2069,14 +2154,44 @@ function allIds() {
     return ids;
 }
 
+function hasVariants(entry) {
+    return (entry?.kind === 'set' || entry?.kind === 'sequence') && Array.isArray(entry.variants) && entry.variants.length > 0;
+}
+
+function isMulti(entry) {
+    return hasVariants(entry) && entry.variants.length > 1;
+}
+
 function entryUrls(entry) {
-    return entry.kind === 'set' && entry.variants.length ? entry.variants.map(variant => variant.url) : [entry.url];
+    return hasVariants(entry) ? entry.variants.map(variant => variant.url) : [entry.url];
 }
 
 function describedVariant(entry, variant) {
+    if (entry.kind === 'sequence' && isMulti(entry)) {
+        const index = Math.max(0, entry.variants.findIndex(item => item.id === variant?.id));
+        const count = entry.variants.length;
+        const current = entry.variants[index];
+        const text = index === 0
+            ? `Picture 1 of a ${count}-picture sequence.\n${entry.description}`
+            : `Picture ${index + 1} of a ${count}-picture sequence: ${current.diff || 'the next picture.'}\nThe sequence starts with: ${shortDescription(entry)}`;
+        return readyDescription(current.url, current.tags?.length ? current.tags : entry.tags, entry.description ? text : '');
+    }
     const isOther = variant && entry.kind === 'set' && variant.id !== entry.variants[0]?.id;
     const text = isOther && variant.diff ? `${entry.description}\nThis version: ${variant.diff}` : entry.description;
     return readyDescription(variant?.url || entry.url, entry.tags, text);
+}
+
+function urlInUse(url) {
+    return library.entries.some(entry => entryUrls(entry).includes(url));
+}
+
+async function deleteUnusedFiles(urls) {
+    for (const url of new Set(urls)) {
+        if (!urlInUse(url)) {
+            descriptions.delete(url);
+            await deleteImageFile(url);
+        }
+    }
 }
 
 async function deleteImageFile(url) {
@@ -2097,10 +2212,7 @@ async function deleteEntry(entry) {
     await loadLibrary();
     const urls = entryUrls(entry);
     await removeFromLibrary(entry);
-    for (const url of urls) {
-        descriptions.delete(url);
-        await deleteImageFile(url);
-    }
+    await deleteUnusedFiles(urls);
 }
 
 async function deleteAllPictures() {
@@ -2109,19 +2221,15 @@ async function deleteAllPictures() {
     all.forEach(entry => library.deleted.add(entry.id));
     library.entries = [];
     await saveLibrary();
-    for (const entry of all) {
-        for (const url of entryUrls(entry)) {
-            descriptions.delete(url);
-            await deleteImageFile(url);
-        }
-    }
+    await deleteUnusedFiles(all.flatMap(entryUrls));
     return all.length;
 }
 
 async function removeVariant(entry, variant) {
-    if (entry.kind !== 'set' || entry.variants.length < 2) {
+    if (!isMulti(entry)) {
         return deleteEntry(entry);
     }
+    const wasFirst = entry.variants[0].id === variant.id;
     entry.variants = entry.variants.filter(item => item.id !== variant.id);
     const main = entry.variants[0];
     if (entry.id !== main.id) {
@@ -2131,19 +2239,38 @@ async function removeVariant(entry, variant) {
     entry.id = main.id;
     entry.url = main.url;
     entry.source = main.source;
+    const sequence = entry.kind === 'sequence';
     if (entry.variants.length === 1) {
+        entry.tags = main.tags?.length && sequence ? main.tags : entry.tags;
         entry.kind = 'single';
         entry.variants = [];
     }
-    descriptions.delete(variant.url);
     await saveLibrary();
-    await deleteImageFile(variant.url);
+    await deleteUnusedFiles([variant.url]);
+    if (sequence && wasFirst) {
+        redoEntry(entry).catch(error => console.warn('[Image Search] could not describe the sequence again', error));
+    }
 }
 
 function setPrompt(tags, count) {
     const base = String(settings().visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
     const versions = Array.from({ length: count - 1 }, (_, i) => `Version ${i + 2}: 1 sentence on what is different in picture ${i + 2} compared to picture 1 (expression, pose, outfit, framing or what is happening)`).join('\n');
     return `You will see ${count} pictures. They are versions of the same scene; picture 1 is the main one. Describe picture 1 as asked below, then add the version lines.\n\n${base}\n\nAfter the Keywords line, add one line per other picture:\n${versions}`;
+}
+
+function sequencePrompt(tags, count) {
+    const base = String(settings().visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const steps = Array.from({ length: count - 1 }, (_, i) => `Picture ${i + 2}: 1 to 2 sentences on what picture ${i + 2} shows and what happens in it compared to the picture before (who, action, expression, framing)`).join('\n');
+    return `You will see ${count} pictures. They are a sequence, in this order, that the user will use to tell a story. They can come from different artists, so the same person may be drawn differently. Describe picture 1 as asked below, then add the picture lines.\n\n${base}\n\nAfter the Keywords line, add one line per other picture:\n${steps}`;
+}
+
+async function describeStep(entry, index, blob) {
+    const service = ctx().ConnectionManagerRequestService;
+    const image = await imageDataUrl(entry.variants[index].url, blob || null);
+    const before = index === 1 ? ([entry.sections?.visual, entry.sections?.action].filter(Boolean).join(' ') || entry.description) : (entry.variants[index - 1].diff || entry.description);
+    const prompt = `This picture is picture ${index + 1} of a ${entry.variants.length}-picture sequence used to tell a story. The picture before it shows: ${before}\n\nIn 1 to 2 sentences, say what this picture shows and what happens in it compared to the one before. Ignore writing in the picture, except onomatopoeia.`;
+    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 160, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
+    return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*\**(picture\s*\d+|step\s*\d+)\**\s*:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 async function describeDifference(entry, index, blob) {
@@ -2163,20 +2290,22 @@ async function describeSet(entry, blobs = []) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
     const count = Math.min(entry.variants.length, 8);
+    const sequence = entry.kind === 'sequence';
+    const firstTags = sequence && entry.variants[0].tags?.length ? entry.variants[0].tags : entry.tags;
     let parsed = null;
     try {
         const images = [];
         for (let i = 0; i < count; i++) {
             images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
         }
-        const content = [{ type: 'text', text: setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
+        const content = [{ type: 'text', text: sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
         const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.3 });
         parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
     } catch (error) {
         console.warn('[Image Search] set description failed, describing one picture at a time', error);
     }
     if (!parsed?.text) {
-        parsed = await requestDescription(entry.variants[0].url, entry.tags, blobs[0] || null);
+        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null);
         parsed.variants = {};
     }
     entry.description = parsed.text;
@@ -2186,7 +2315,7 @@ async function describeSet(entry, blobs = []) {
         let diff = parsed.variants?.[i + 1] || '';
         if (!diff) {
             try {
-                diff = await describeDifference(entry, i, blobs[i]);
+                diff = sequence ? await describeStep(entry, i, blobs[i]) : await describeDifference(entry, i, blobs[i]);
             } catch (error) {
                 console.warn('[Image Search] variant description failed', error);
             }
@@ -2198,7 +2327,7 @@ async function describeSet(entry, blobs = []) {
 }
 
 async function redoEntry(entry, { save: saveNow = true } = {}) {
-    if (entry.kind === 'set' && entry.variants.length > 1) {
+    if (isMulti(entry)) {
         await describeSet(entry);
     } else {
         const result = await requestDescription(entry.url, entry.tags);
@@ -2262,10 +2391,20 @@ async function saveSet(items, searchTags) {
         }
     }
     for (const item of members) {
+        const pending = saveJobs.get(saveKey(item));
+        if (pending && (pending.state === 'queued' || pending.state === 'saving')) {
+            await pending.promise;
+        }
         const found = findBySource(item.page);
         if (found?.entry.kind === 'set') {
             const variant = found.variant;
             variants.push({ ...variant });
+            blobs.push(null);
+            continue;
+        }
+        if (found?.entry.kind === 'sequence') {
+            const [id] = freshIds(1);
+            variants.push({ id, url: found.variant.url, source: item.page, tags: summaryTags(item.tags), diff: '' });
             blobs.push(null);
             continue;
         }
@@ -2285,6 +2424,11 @@ async function saveSet(items, searchTags) {
             } while (id.length < 6 || ids.has(id));
             variants.push({ id, url: src, source: item.page, tags: summaryTags(item.tags), diff: '' });
             blobs.push(blob);
+        }
+    }
+    for (let i = 0; i < variants.length; i++) {
+        if (variants.slice(0, i).some(other => other.id === variants[i].id)) {
+            variants[i].id = freshIds(1)[0];
         }
     }
     if (!variants.length) {
@@ -2324,6 +2468,187 @@ async function saveSet(items, searchTags) {
             return false;
         });
     return { entry, work };
+}
+
+async function saveSequence(picks, searchTags) {
+    await loadLibrary();
+    const variants = [];
+    const blobs = [];
+    const failed = [];
+    for (const pick of picks.slice(0, 8)) {
+        if (pick.entry) {
+            const picture = pick.variant || pick.entry;
+            variants.push({ url: picture.url, source: picture.source || pick.entry.source, tags: (picture.tags?.length ? picture.tags : pick.entry.tags).slice(), diff: '' });
+            blobs.push(null);
+            continue;
+        }
+        const item = pick.item;
+        const pending = saveJobs.get(saveKey(item));
+        if (pending && (pending.state === 'queued' || pending.state === 'saving')) {
+            await pending.promise;
+        }
+        const found = findBySource(item.page);
+        if (found) {
+            variants.push({ url: (found.variant || found.entry).url, source: item.page, tags: summaryTags(item.tags), diff: '' });
+            blobs.push(null);
+            continue;
+        }
+        const { src, blob, lines } = await saveBest(item);
+        if (!src) {
+            failed.push(lines[0] || 'saving failed');
+            continue;
+        }
+        variants.push({ url: src, source: item.page, tags: summaryTags(item.tags), diff: '' });
+        blobs.push(blob);
+    }
+    if (variants.length < 2) {
+        throw new Error(failed.length ? `Only ${variants.length} picture(s) could be saved: ${failed[0]}` : 'A sequence needs at least 2 pictures.');
+    }
+    freshIds(variants.length).forEach((id, index) => {
+        variants[index].id = id;
+    });
+    const entry = cleanEntry({ id: variants[0].id, url: variants[0].url, source: variants[0].source, site: hostOf(variants[0].source), tags: summaryTags(variants.flatMap(variant => variant.tags)), searchTags, kind: 'sequence', variants });
+    library.deleted.delete(entry.id);
+    library.entries.unshift(entry);
+    await saveLibrary();
+    const work = describeSet(entry, blobs)
+        .then(() => saveLibrary())
+        .then(() => true)
+        .catch(error => {
+            console.warn('[Image Search] sequence description failed', error);
+            toastr.warning(`The sequence was saved, but describing it failed: ${error?.message || error}`, 'Image Search');
+            return false;
+        });
+    return { entry, work, failed };
+}
+
+function prepareEntryDescription(entry, variant = null) {
+    const url = variant?.url || entry.url;
+    if (entry.description) {
+        descriptions.set(url, describedVariant(entry, variant));
+    } else if (!descriptions.has(url)) {
+        if (isMulti(entry)) {
+            const pending = { url, tags: entry.tags, text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
+            pending.promise = describeSet(entry)
+                .then(() => {
+                    pending.text = describedVariant(entry, variant).text;
+                    return saveLibrary();
+                })
+                .catch(error => {
+                    pending.error = String(error?.message || error);
+                })
+                .finally(() => {
+                    pending.done = true;
+                });
+            descriptions.set(url, pending);
+        } else {
+            startDescription(entry.url, entry.tags, (text, keywords, sections) => {
+                entry.description = text;
+                entry.keywords = keywords;
+                entry.sections = sections || {};
+                saveLibrary();
+            });
+        }
+    }
+}
+
+async function storePicture(item, searchTags, keep = settings().keepLibrary) {
+    const s = settings();
+    if (keep) {
+        await loadLibrary();
+        const found = findBySource(item.page);
+        if (found) {
+            prepareEntryDescription(found.entry, found.variant);
+            return { url: found.variant?.url || found.entry.url, entry: found.entry, existed: true };
+        }
+    }
+    if (!s.saveLocal) {
+        return { url: item.img, entry: null };
+    }
+    const { src, blob, lines } = await saveBest(item);
+    if (!src) {
+        return { url: item.img, entry: null, failed: true, error: lines[0] || 'Saving failed.', lines };
+    }
+    const entry = keep ? await addToLibrary(item, src, searchTags) : null;
+    startDescription(src, item.tags, (text, keywords, sections) => {
+        if (entry) {
+            entry.description = text;
+            entry.keywords = keywords;
+            entry.sections = sections || {};
+            saveLibrary();
+        }
+    }, blob);
+    if (entry) {
+        saveLibrary();
+    }
+    return { url: src, entry };
+}
+
+const saveJobs = new Map();
+const saveWaiting = [];
+const saveWatchers = new Set();
+let saveActive = 0;
+
+function saveKey(item) {
+    return item.page || item.img;
+}
+
+function saveState(item) {
+    return saveJobs.get(saveKey(item))?.state || '';
+}
+
+function pendingSaves() {
+    return [...saveJobs.values()].filter(job => job.state === 'queued' || job.state === 'saving').length;
+}
+
+function notifySaves(key, state) {
+    saveWatchers.forEach(watch => {
+        try {
+            watch(key, state);
+        } catch (error) {
+            console.warn('[Image Search] save watcher failed', error);
+        }
+    });
+}
+
+function queueSave(item, searchTags) {
+    const key = saveKey(item);
+    const known = saveJobs.get(key);
+    if (known && known.state !== 'failed') {
+        return known.promise;
+    }
+    const job = { state: 'queued', error: '', promise: null };
+    job.promise = new Promise(resolve => saveWaiting.push({ item, searchTags, job, key, resolve }));
+    saveJobs.set(key, job);
+    notifySaves(key, 'queued');
+    pumpSaves();
+    return job.promise;
+}
+
+function pumpSaves() {
+    while (saveActive < 2 && saveWaiting.length) {
+        const next = saveWaiting.shift();
+        saveActive++;
+        next.job.state = 'saving';
+        notifySaves(next.key, 'saving');
+        storePicture(next.item, next.searchTags, true).then(result => {
+            if (!result.entry) {
+                throw new Error(result.error || 'Saving pictures is turned off in the settings.');
+            }
+            next.job.state = 'done';
+            next.resolve(result.entry);
+        }).catch(error => {
+            next.job.state = 'failed';
+            next.job.error = String(error?.message || error);
+            console.warn('[Image Search] background save failed', error);
+            toastr.warning(`Could not save a picture to the library: ${next.job.error}`, 'Image Search');
+            next.resolve(null);
+        }).finally(() => {
+            saveActive--;
+            notifySaves(next.key, next.job.state);
+            pumpSaves();
+        });
+    }
 }
 
 function noteUse(entry, character) {
@@ -2417,15 +2742,127 @@ function fallbackKeywords(entry) {
         .slice(0, 8);
 }
 
+const VERB_PAST = { run: 'ran', sit: 'sat', swim: 'swam', get: 'got', win: 'won', spin: 'spun', dig: 'dug', begin: 'began', stand: 'stood', fight: 'fought', hold: 'held', kneel: 'knelt', sleep: 'slept', eat: 'ate', drink: 'drank', ride: 'rode', throw: 'threw', fall: 'fell', lie: 'lay', hide: 'hid', bite: 'bit', hang: 'hung', sing: 'sang', shoot: 'shot', catch: 'caught', draw: 'drew', write: 'wrote', drive: 'drove', fly: 'flew', sink: 'sank', swing: 'swung', sneak: 'snuck', weep: 'wept', blow: 'blew', break: 'broke', wake: 'woke', speak: 'spoke', bring: 'brought', teach: 'taught', feel: 'felt', lead: 'led', rise: 'rose', shake: 'shook', steal: 'stole', freeze: 'froze', tear: 'tore', strike: 'struck', cling: 'clung', creep: 'crept', flee: 'fled', fling: 'flung', slide: 'slid', read: 'read', cut: 'cut', hit: 'hit', hurt: 'hurt', cast: 'cast', shut: 'shut', spread: 'spread', feed: 'fed', bleed: 'bled', meet: 'met', build: 'built', send: 'sent', bend: 'bent', seek: 'sought', buy: 'bought', stick: 'stuck', light: 'lit', shine: 'shone', grow: 'grew', sweep: 'swept', leap: 'leapt', swear: 'swore', choose: 'chose' };
+const VERB_FROM_PAST = Object.fromEntries(Object.entries(VERB_PAST).map(([base, past]) => [past, base]));
+const GENERIC_VERBS = new Set(['be', 'have', 'do', 'make', 'take', 'go', 'come', 'get', 'look', 'see', 'show', 'use', 'put', 'set', 'let', 'keep', 'give', 'seem', 'appear', 'wear', 'stand', 'sit', 'face', 'smile', 'pose', 'hold', 'feature', 'depict', 'contain', 'include', 'remain', 'stay', 'turn', 'try', 'start', 'begin', 'continue', 'say', 'tell', 'ask', 'think', 'know', 'feel', 'find', 'want', 'need', 'hear', 'become', 'leave']);
+const NOT_VERB_ING = new Set(['thing', 'things', 'something', 'nothing', 'anything', 'everything', 'ceiling', 'building', 'clothing', 'evening', 'morning', 'during', 'sibling', 'darling', 'lightning', 'pudding', 'railing', 'stocking', 'earring', 'painting', 'drawing', 'ending', 'bedding', 'wedding', 'feeling', 'being', 'setting', 'lighting', 'opening', 'awning', 'icing', 'frosting', 'padding', 'filling', 'lining', 'housing', 'crossing', 'landing', 'clearing', 'dwelling', 'outing', 'legging', 'shading', 'string', 'spring', 'bring', 'swing', 'sting', 'king', 'ring', 'wing']);
+const SUBJECT_WORDS = new Set(['she', 'he', 'they', 'it', 'who', 'and', 'both', 'then', 'which', 'that', 'woman', 'man', 'girl', 'boy', 'figure', 'character', 'person', 'creature']);
+
+function vowelGroups(word) {
+    return (word.match(/[aeiou]+/g) || []).length;
+}
+
+function restoreE(stem) {
+    if (/(.)\1$/.test(stem) || stem.endsWith('e')) {
+        return stem;
+    }
+    if (/[bcdfgkptz]l$/.test(stem) || /(c|v|z|dg|rg|u)$/.test(stem)) {
+        return `${stem}e`;
+    }
+    if (vowelGroups(stem) === 1 && /[^aeiou][aeiou][^aeiouwxy]$/.test(stem)) {
+        return `${stem}e`;
+    }
+    return stem;
+}
+
+function baseFromIng(word) {
+    const special = { lying: 'lie', dying: 'die', tying: 'tie' };
+    if (special[word]) {
+        return special[word];
+    }
+    const stem = word.slice(0, -3);
+    if (stem.length < 2) {
+        return '';
+    }
+    if (stem.length >= 3 && /([^aeiouflsz])\1$/.test(stem)) {
+        return stem.slice(0, -1);
+    }
+    return restoreE(stem);
+}
+
+function baseFromInflected(word) {
+    const special = { lies: 'lie', lied: 'lie', dies: 'die', died: 'die', ties: 'tie', tied: 'tie' };
+    if (special[word] || VERB_FROM_PAST[word] || VERB_PAST[word]) {
+        return special[word] || VERB_FROM_PAST[word] || word;
+    }
+    if (word.length < 4 || /(ly|ss|us|is)$/.test(word)) {
+        return '';
+    }
+    if (/[^aeiou]ies$/.test(word) || /[^aeiou]ied$/.test(word)) {
+        return `${word.slice(0, -3)}y`;
+    }
+    if (/(ss|sh|ch|x|z|o)es$/.test(word)) {
+        return word.slice(0, -2);
+    }
+    if (word.endsWith('ed') && word.length >= 5) {
+        const stem = word.slice(0, -2);
+        if (/([^aeiouflsz])\1$/.test(stem)) {
+            return stem.slice(0, -1);
+        }
+        return restoreE(stem);
+    }
+    if (word.endsWith('s')) {
+        return word.slice(0, -1);
+    }
+    return '';
+}
+
+function actionVerbs(text) {
+    const words = String(text || '').toLowerCase().match(/[a-z]+/g) || [];
+    const found = [];
+    words.forEach((word, index) => {
+        let base = '';
+        if (word.length >= 5 && word.endsWith('ing') && !NOT_VERB_ING.has(word)) {
+            base = baseFromIng(word);
+        } else {
+            const before = words[index - 1] || '';
+            const subject = SUBJECT_WORDS.has(before) || (before.endsWith('ly') && SUBJECT_WORDS.has(words[index - 2] || ''));
+            if (subject && !STOP_WORDS.has(word)) {
+                base = baseFromInflected(word);
+            }
+        }
+        if (base && base.length >= 3 && !GENERIC_VERBS.has(base) && !found.includes(base)) {
+            found.push(base);
+        }
+    });
+    return found;
+}
+
+function verbForms(base) {
+    const single = vowelGroups(base) === 1 && /[^aeiou][aeiou][^aeiouwxy]$/.test(base);
+    const third = /(s|sh|ch|x|z|o)$/.test(base) ? `${base}es` : /[^aeiou]y$/.test(base) ? `${base.slice(0, -1)}ies` : `${base}s`;
+    const past = VERB_PAST[base] || (base.endsWith('e') ? `${base}d` : /[^aeiou]y$/.test(base) ? `${base.slice(0, -1)}ied` : single ? `${base}${base.slice(-1)}ed` : `${base}ed`);
+    const ing = base.endsWith('ie') ? `${base.slice(0, -2)}ying` : (base.endsWith('e') && !/(ee|ye|oe)$/.test(base)) ? `${base.slice(0, -1)}ing` : single ? `${base}${base.slice(-1)}ing` : `${base}ing`;
+    return [...new Set([ing, third, past, base])];
+}
+
+function entryVerbs(entry) {
+    const hasSections = Object.keys(entry.sections || {}).length > 0;
+    const texts = [hasSections ? entry.sections.action || '' : entry.description];
+    if (isMulti(entry)) {
+        texts.push(...entry.variants.slice(1).map(variant => variant.diff || ''));
+    }
+    const fromKeywords = entry.keywords.flatMap(word => word.toLowerCase().split(/\s+/)).filter(word => word.length >= 5 && word.endsWith('ing') && !NOT_VERB_ING.has(word)).map(baseFromIng);
+    return [...new Set([...texts.flatMap(actionVerbs), ...fromKeywords])].filter(base => base && base.length >= 3 && !GENERIC_VERBS.has(base));
+}
+
 function entryKeywords(entry) {
     const words = entry.keywords.length ? entry.keywords : fallbackKeywords(entry);
-    return [...new Set(words.map(word => word.toLowerCase()))].filter(word => !GENERIC_KEYWORDS.has(word)).slice(0, 12);
+    const plain = [...new Set(words.map(word => word.toLowerCase().trim()))].filter(word => word && !GENERIC_KEYWORDS.has(word));
+    const forms = entryVerbs(entry).slice(0, 3).flatMap(verbForms).filter(word => !GENERIC_KEYWORDS.has(word));
+    return [...new Set([...plain.filter(word => !forms.includes(word)).slice(0, 12), ...forms])];
 }
 
 function pictureOffer(entry) {
     const rule = 'never mention the tag itself, and show at most one picture per reply.';
     const body = fullDescription(entry);
     const tags = tagsLine(entry.tags);
+    if (entry.kind === 'sequence' && isMulti(entry)) {
+        const steps = entry.variants.map((variant, index) => index === 0
+            ? `Picture 1 [pic:${variant.id}]: as described above.`
+            : `Picture ${index + 1} [pic:${variant.id}]: ${variant.diff || 'the next picture of the sequence.'}`);
+        return [`Saved picture sequence: ${entry.variants.length} pictures that tell a story in this order. When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Show a picture by writing its tag on its own line where it belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
+    }
     if (entry.kind === 'set' && entry.variants.length > 1) {
         const versions = entry.variants.map((variant, index) => index === 0
             ? `Version 1 [pic:${variant.id}]: as described above.`
@@ -2885,10 +3322,25 @@ async function openPicker(initialTags = null) {
         libraryView: el('div', 'stis-library'),
         libSearch: el('input', 'text_pole stis-lib-search'),
         libGrid: el('div', 'stis-grid'),
+        selectToggle: el('div', 'menu_button stis-tab stis-select-btn'),
+        sites: el('div', 'stis-sites'),
+        favs: el('div', 'stis-favs'),
+        selectBar: el('div', 'stis-select-bar'),
+        selectInfo: el('span', 'stis-select-info'),
+        selectSave: el('div', 'menu_button stis-select-save', 'Save as sequence'),
+        selectClear: el('div', 'menu_button', 'Clear'),
+        selectDone: el('div', 'menu_button', 'Done'),
     };
     ui.libSearch.type = 'text';
     ui.libSearch.placeholder = 'search saved pictures';
-    ui.tabs.append(ui.tabSearch, ui.tabLibrary);
+    ui.selectToggle.innerHTML = '<i class="fa-solid fa-list-ol"></i> Select';
+    ui.selectToggle.title = 'Pick pictures in story order and save them as a sequence';
+    ui.selectToggle.hidden = !(s.saveLocal && s.keepLibrary);
+    ui.tabs.append(ui.tabSearch, ui.tabLibrary, ui.selectToggle);
+    ui.selectBar.append(ui.selectInfo, ui.selectSave, ui.selectClear, ui.selectDone);
+    ui.selectBar.hidden = true;
+    ui.sites.hidden = true;
+    ui.favs.hidden = true;
     ui.libraryView.append(ui.libSearch, ui.libGrid);
     ui.libraryView.hidden = true;
     ui.input.type = 'text';
@@ -2921,7 +3373,7 @@ async function openPicker(initialTags = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
 
     let tags = [];
     let required = new Set();
@@ -2939,6 +3391,9 @@ async function openPicker(initialTags = null) {
     let libraryOrder = [];
     let reps = [];
     let gridFamilies = new Map();
+    let selecting = false;
+    let selection = Array.isArray(state.selection) ? state.selection : [];
+    let saveButtons = new Map();
 
     const setStatus = (text, kind = '') => {
         ui.status.textContent = text;
@@ -3059,6 +3514,7 @@ async function openPicker(initialTags = null) {
         });
         renderMenu();
         renderDebug();
+        renderFavs();
     };
 
     function renderMenu() {
@@ -3093,11 +3549,84 @@ async function openPicker(initialTags = null) {
                 tagsChanged();
             });
         }
+        action(favoriteTags().includes(tag) ? '☆ Unfavorite' : '★ Favorite', () => {
+            toggleFavorite(tag);
+            renderChips();
+        });
         action('Remove', () => removeTag(tag));
         action('Never suggest', () => {
             addToSuggestBlacklist(tag);
             toastr.info(`"${tag}" will not be suggested again. You can undo this in the settings.`, 'Image Search');
             removeTag(tag);
+        });
+        action('Leave out', () => {
+            addExcludedTags([tag]);
+            toastr.info(`Pictures tagged ${tag} are left out from now on. You can change this in the settings.`, 'Image Search');
+            removeTag(tag);
+        });
+    }
+
+    function renderFavs() {
+        ui.favs.innerHTML = '';
+        const favorites = favoriteTags();
+        ui.favs.hidden = !favorites.length || !ui.libraryView.hidden;
+        if (ui.favs.hidden) {
+            return;
+        }
+        ui.favs.appendChild(el('span', 'stis-favs-label', '★'));
+        favorites.forEach(tag => {
+            const chip = el('span', 'stis-fav', tag);
+            const active = tags.includes(tag);
+            chip.classList.toggle('stis-fav-on', active);
+            chip.title = active ? 'In the search; tap to take it out' : 'Tap to add it to the search';
+            chip.addEventListener('click', () => {
+                if (tags.includes(tag)) {
+                    removeTag(tag);
+                } else {
+                    setTags([...tags, tag], true, requiredList());
+                    tagsChanged();
+                }
+            });
+            ui.favs.appendChild(chip);
+        });
+    }
+
+    function renderSites() {
+        ui.sites.innerHTML = '';
+        const skip = new Set(s.skipSites || []);
+        const on = entries.filter(entry => !skip.has(entry.domain)).length;
+        const allOption = [...ui.site.options].find(option => option.value === ALL_SITES);
+        if (allOption) {
+            allOption.textContent = on < entries.length ? `All sites (${on}/${entries.length})` : 'All sites';
+        }
+        ui.sites.hidden = ui.site.value !== ALL_SITES || entries.length < 2 || !ui.libraryView.hidden;
+        if (ui.sites.hidden) {
+            return;
+        }
+        ui.sites.appendChild(el('span', 'stis-sites-label', 'Sites:'));
+        entries.forEach(entry => {
+            const off = skip.has(entry.domain);
+            const chip = el('span', 'stis-site-chip', entry.domain);
+            chip.classList.toggle('stis-site-off', off);
+            chip.title = off ? 'Left out of All sites; tap to search it again' : 'Tap to leave this site out of All sites';
+            chip.addEventListener('click', () => {
+                const next = new Set(s.skipSites || []);
+                if (next.has(entry.domain)) {
+                    next.delete(entry.domain);
+                } else if (entries.filter(item => !next.has(item.domain)).length <= 1) {
+                    toastr.info('Keep at least one site on.', 'Image Search');
+                    return;
+                } else {
+                    next.add(entry.domain);
+                }
+                s.skipSites = [...next].filter(domain => entries.some(item => item.domain === domain));
+                save();
+                renderSites();
+                renderChips();
+                refreshCounts();
+                runSearch();
+            });
+            ui.sites.appendChild(chip);
         });
     }
 
@@ -3263,7 +3792,22 @@ async function openPicker(initialTags = null) {
             gridFamilies.set(key, family);
             familyBadge(family);
             reps.push(item);
-            bindPress(cell, () => showPreview(item), () => {
+            const choice = itemPick(item);
+            cell.appendChild(orderBadge(choice));
+            if (s.keepLibrary && s.saveLocal) {
+                cell.appendChild(saveCellButton(item));
+            }
+            bindPress(cell, () => {
+                if (selecting) {
+                    toggleSelect(choice);
+                } else {
+                    showPreview(item);
+                }
+            }, () => {
+                if (selecting) {
+                    toggleSelect(choice);
+                    return;
+                }
                 cell.classList.add('stis-picking');
                 pick(item, null);
             });
@@ -3319,6 +3863,7 @@ async function openPicker(initialTags = null) {
         rendered = 0;
         reps = [];
         gridFamilies = new Map();
+        saveButtons = new Map();
         ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
         ui.grid.scrollTop = 0;
         renderNew();
@@ -3450,9 +3995,16 @@ async function openPicker(initialTags = null) {
         }
     }
 
+    function closePreview() {
+        ui.preview.hidden = true;
+        previewState = null;
+    }
+
     function previewShell(src, sourceUrl, target, kind) {
         previewState = { kind, target };
         ui.preview.innerHTML = '';
+        ui.preview.scrollTop = 0;
+        const main = el('div', 'stis-preview-main');
         const img = el('img', 'stis-preview-img');
         img.draggable = false;
         if (typeof src === 'string') {
@@ -3462,10 +4014,7 @@ async function openPicker(initialTags = null) {
         }
         const bar = el('div', 'stis-preview-bar');
         const back = el('div', 'menu_button', 'Back');
-        back.addEventListener('click', () => {
-            ui.preview.hidden = true;
-            previewState = null;
-        });
+        back.addEventListener('click', closePreview);
         const prev = el('div', 'menu_button stis-nav');
         prev.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
         prev.title = 'Previous';
@@ -3483,16 +4032,19 @@ async function openPicker(initialTags = null) {
         link.rel = 'noopener noreferrer';
         link.hidden = !sourceUrl;
         bar.append(back, prev, position, next, link);
-        ui.preview.append(img, bar);
+        main.append(img, bar);
+        const below = el('div', 'stis-preview-more');
+        ui.preview.append(main, below);
         ui.preview.hidden = false;
-        return { bar, img, link };
+        return { bar, img, link, main, below };
     }
 
-    function variantStrip(members, current, onChoose) {
+    function variantStrip(members, current, onChoose, numbered = false) {
         const strip = el('div', 'stis-variants');
         members.forEach((member, index) => {
+            const wrap = el('span', 'stis-variant-wrap');
             const thumb = el('img', 'stis-variant');
-            thumb.alt = `Version ${index + 1}`;
+            thumb.alt = numbered ? `Picture ${index + 1}` : `Version ${index + 1}`;
             thumb.draggable = false;
             if (member.thumb) {
                 setThumbSource(thumb, member);
@@ -3501,21 +4053,236 @@ async function openPicker(initialTags = null) {
             }
             thumb.classList.toggle('stis-variant-on', member === current);
             thumb.addEventListener('click', () => onChoose(member));
-            strip.appendChild(thumb);
+            wrap.appendChild(thumb);
+            if (numbered) {
+                wrap.appendChild(el('span', 'stis-variant-num', String(index + 1)));
+            }
+            strip.appendChild(wrap);
         });
         return strip;
+    }
+
+    function tagSection(tagNames, below) {
+        const unique = [...new Set((tagNames || []).map(normalizeTag).filter(Boolean))];
+        const box = el('div', 'stis-tagbox');
+        const head = el('div', 'stis-tagbox-head');
+        head.append(el('span', '', `Tags (${unique.length})`), el('i', 'fa-solid fa-chevron-down'));
+        head.title = 'All the tags of this picture';
+        head.addEventListener('click', () => {
+            if (typeof ui.preview.scrollTo === 'function') {
+                ui.preview.scrollTo({ top: box.offsetTop, behavior: 'smooth' });
+            }
+        });
+        const holder = el('div', 'stis-tagbox-tags');
+        const actions = el('div', 'stis-tagbox-actions');
+        const picked = new Set();
+        const chips = new Map();
+        const add = el('div', 'menu_button stis-tagbox-btn');
+        const fav = el('div', 'menu_button stis-tagbox-btn');
+        const out = el('div', 'menu_button stis-tagbox-btn');
+        add.title = 'Add the selected tags to the search, as preferred tags';
+        fav.title = 'Add the selected tags to your favorites, or take them out if they all are';
+        out.title = 'Never show pictures with the selected tags (change it in the settings)';
+        const paint = () => {
+            const favorites = favoriteTags();
+            chips.forEach((chip, tag) => {
+                chip.classList.toggle('stis-tagpick-on', picked.has(tag));
+                chip.classList.toggle('stis-tagpick-have', tags.includes(tag));
+                chip.querySelector('.stis-tagpick-star').hidden = !favorites.includes(tag);
+            });
+            const count = picked.size ? ` (${picked.size})` : '';
+            add.textContent = `Add to search${count}`;
+            fav.textContent = picked.size && [...picked].every(tag => favorites.includes(tag)) ? `☆ Unfavorite${count}` : `★ Favorite${count}`;
+            out.textContent = `Leave out${count}`;
+            [add, fav, out].forEach(button => button.classList.toggle('stis-disabled', !picked.size));
+        };
+        unique.forEach(tag => {
+            const chip = el('span', 'stis-tagpick');
+            chip.append(el('span', 'stis-tagpick-star', '★'), el('span', '', tag));
+            chip.title = tags.includes(tag) ? 'Already in the search' : 'Tap to select';
+            chip.addEventListener('click', () => {
+                if (picked.has(tag)) {
+                    picked.delete(tag);
+                } else {
+                    picked.add(tag);
+                }
+                paint();
+            });
+            chips.set(tag, chip);
+            holder.appendChild(chip);
+        });
+        add.addEventListener('click', () => {
+            if (!picked.size) {
+                return;
+            }
+            const wanted = [...picked].filter(tag => !tags.includes(tag));
+            closePreview();
+            if (!ui.libraryView.hidden) {
+                setView('search');
+            }
+            if (wanted.length) {
+                setTags([...tags, ...wanted], true, requiredList());
+                tagsChanged();
+            }
+        });
+        fav.addEventListener('click', () => {
+            if (!picked.size) {
+                return;
+            }
+            const favorites = favoriteTags();
+            const allFavorite = [...picked].every(tag => favorites.includes(tag));
+            setFavorites(allFavorite ? favorites.filter(tag => !picked.has(tag)) : [...favorites, ...picked]);
+            picked.clear();
+            paint();
+            renderFavs();
+        });
+        out.addEventListener('click', () => {
+            if (!picked.size) {
+                return;
+            }
+            const added = addExcludedTags([...picked]);
+            toastr.info(added.length ? `Pictures tagged ${added.join(', ')} are left out from now on. You can change this in the settings.` : 'Those tags are already left out.', 'Image Search');
+            picked.clear();
+            closePreview();
+            if (!added.length || !ui.libraryView.hidden) {
+                return;
+            }
+            if (tags.some(tag => added.includes(tag))) {
+                tags = tags.filter(tag => !added.includes(tag));
+                added.forEach(tag => required.delete(tag));
+                tagsChanged();
+            } else {
+                runSearch();
+            }
+        });
+        actions.append(add, fav, out);
+        box.append(head, holder, actions);
+        below.appendChild(box);
+        paint();
+        return box;
+    }
+
+    const itemPick = item => ({ key: `src:${saveKey(item)}`, item });
+    const entryPick = (entry, variant = null) => {
+        const picture = variant || (hasVariants(entry) ? entry.variants[0] : null);
+        const source = (picture || entry).source || entry.source;
+        return { key: source ? `src:${source}` : `pic:${(picture || entry).id}`, entry, variant: picture };
+    };
+    const selectionIndex = key => selection.findIndex(choice => choice.key === key);
+
+    function paintSelection() {
+        state.selection = selection;
+        ui.root.querySelectorAll('.stis-order').forEach(badge => {
+            const index = selectionIndex(badge.dataset.key);
+            badge.textContent = index >= 0 ? String(index + 1) : '';
+            badge.hidden = !selecting || index < 0;
+        });
+        ui.selectInfo.textContent = selection.length ? `${selection.length} selected, in story order` : 'Tap pictures in story order';
+        ui.selectSave.classList.toggle('stis-disabled', selection.length < 2);
+        ui.selectClear.hidden = !selection.length;
+        previewState?.paintSelect?.();
+    }
+
+    function toggleSelect(choice) {
+        const index = selectionIndex(choice.key);
+        if (index >= 0) {
+            selection.splice(index, 1);
+        } else if (selection.length >= 8) {
+            toastr.info('A sequence can have up to 8 pictures.', 'Image Search');
+            return;
+        } else {
+            selection.push(choice);
+        }
+        paintSelection();
+    }
+
+    function setSelecting(on) {
+        selecting = on;
+        ui.root.classList.toggle('stis-selecting', on);
+        ui.selectToggle.classList.toggle('stis-tab-on', on);
+        ui.selectBar.hidden = !on;
+        closePreview();
+        paintSelection();
+    }
+
+    function selectButton(choice) {
+        const button = el('div', 'menu_button stis-select-one');
+        const paint = () => {
+            const index = selectionIndex(choice.key);
+            button.textContent = index >= 0 ? `#${index + 1} selected` : 'Select';
+            button.classList.toggle('stis-select-on', index >= 0);
+        };
+        button.addEventListener('click', () => toggleSelect(choice));
+        previewState.paintSelect = paint;
+        paint();
+        return button;
+    }
+
+    function orderBadge(choice) {
+        const badge = el('span', 'stis-order');
+        badge.dataset.key = choice.key;
+        const index = selectionIndex(choice.key);
+        badge.textContent = index >= 0 ? String(index + 1) : '';
+        badge.hidden = !selecting || index < 0;
+        return badge;
+    }
+
+    function cellSaveState(item) {
+        const state = saveState(item);
+        if (state === 'queued' || state === 'saving' || state === 'failed') {
+            return state;
+        }
+        return state === 'done' || (library.loaded && findBySource(item.page)) ? 'done' : '';
+    }
+
+    function paintSave(button, item) {
+        const state = cellSaveState(item);
+        button.innerHTML = '';
+        const icon = state === 'done' ? 'fa-solid fa-bookmark' : state === 'failed' ? 'fa-solid fa-triangle-exclamation' : state ? 'fa-solid fa-spinner fa-spin' : 'fa-regular fa-bookmark';
+        button.appendChild(el('i', icon));
+        button.title = state === 'done' ? 'In the library' : state === 'failed' ? 'Saving failed, tap to try again' : state ? 'Saving to the library…' : 'Save to the library and keep browsing (not added to the chat)';
+        button.classList.toggle('stis-cell-saved', state === 'done');
+    }
+
+    function saveCellButton(item) {
+        const button = el('div', 'stis-cell-save');
+        ['pointerdown', 'pointerup', 'mousedown', 'touchstart'].forEach(name => button.addEventListener(name, event => event.stopPropagation(), { passive: true }));
+        button.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            const state = cellSaveState(item);
+            if (state === '' || state === 'failed') {
+                queueSave(item, [...tags]);
+            }
+            paintSave(button, item);
+        });
+        const key = saveKey(item);
+        if (!saveButtons.has(key)) {
+            saveButtons.set(key, []);
+        }
+        saveButtons.get(key).push({ button, item });
+        paintSave(button, item);
+        return button;
+    }
+
+    function updateLibraryTab() {
+        const waiting = pendingSaves();
+        ui.tabLibrary.textContent = `Library (${library.entries.length})${waiting ? ` · saving ${waiting}` : ''}`;
     }
 
     function showPreview(item, chosen = null) {
         const family = gridFamilies.get(familyKey(item));
         const current = chosen || item;
-        const { bar, img, link } = previewShell(current, current.page, item, 'item');
+        const { bar, img, link, below } = previewShell(current, current.page, item, 'item');
         previewState.variant = current;
         if (s.saveLocal) {
             prepareDownload(current).catch(() => {});
         }
         const stripHolder = el('div', 'stis-variant-holder');
-        ui.preview.insertBefore(stripHolder, bar);
+        bar.before(stripHolder);
         const drawStrip = () => {
             stripHolder.innerHTML = '';
             if (family && family.members.length > 1) {
@@ -3534,6 +4301,7 @@ async function openPicker(initialTags = null) {
             try {
                 const { entry, work } = await saveSet(family.members, [...tags]);
                 setButton.textContent = `Set saved (${entry.kind === 'set' ? entry.variants.length : 1})`;
+                updateLibraryTab();
                 work.then(ok => ok && toastr.success('The set is described and in the lorebook.', 'Image Search'));
             } catch (error) {
                 setButton.textContent = 'Save set';
@@ -3567,93 +4335,51 @@ async function openPicker(initialTags = null) {
             }, families.has(familyKey(item)) ? 0 : 350);
         }
         if (s.keepLibrary && s.saveLocal) {
-            const keep = el('div', 'menu_button', 'Save to library');
+            const keep = el('div', 'menu_button');
+            keep.title = 'Save it in the library without adding it to the chat; you can keep browsing';
+            const paintKeep = () => {
+                const state = saveState(current);
+                const found = library.loaded ? findBySource(current.page) : null;
+                keep.textContent = state === 'queued' || state === 'saving' ? 'Saving…' : found ? (found.entry.kind === 'set' ? 'In a saved set' : 'In library') : state === 'failed' ? 'Retry saving' : 'Save to library';
+            };
+            previewState.paintKeep = paintKeep;
+            paintKeep();
             loadLibrary().then(() => {
-                const found = findBySource(current.page);
-                if (found) {
-                    keep.textContent = found.entry.kind === 'set' ? 'In a saved set' : 'In library';
+                if (previewState?.paintKeep === paintKeep) {
+                    paintKeep();
                 }
             });
-            keep.addEventListener('click', async () => {
-                if (busy || keep.textContent !== 'Save to library') {
+            keep.addEventListener('click', () => {
+                if (keep.textContent !== 'Save to library' && keep.textContent !== 'Retry saving') {
                     return;
                 }
-                busy = true;
-                keep.textContent = 'Saving…';
-                const { entry } = await storeItem(current, [...tags]);
-                busy = false;
-                keep.textContent = entry ? 'In library' : 'Save to library';
+                queueSave(current, [...tags]);
+                paintKeep();
             });
             bar.append(keep, setButton);
+        }
+        if (selecting) {
+            bar.append(selectButton(itemPick(current)));
         }
         const use = el('div', 'menu_button stis-use', 'Use this');
         use.addEventListener('click', () => pick(current, use));
         bar.append(use);
         link.href = current.page || '#';
         img.alt = '';
-    }
-
-    function prepareEntryDescription(entry, variant = null) {
-        const url = variant?.url || entry.url;
-        if (entry.description) {
-            descriptions.set(url, describedVariant(entry, variant));
-        } else if (!descriptions.has(url)) {
-            if (entry.kind === 'set' && entry.variants.length > 1) {
-                const pending = { url, tags: entry.tags, text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
-                pending.promise = describeSet(entry)
-                    .then(() => {
-                        pending.text = describedVariant(entry, variant).text;
-                        return saveLibrary();
-                    })
-                    .catch(error => {
-                        pending.error = String(error?.message || error);
-                    })
-                    .finally(() => {
-                        pending.done = true;
-                    });
-                descriptions.set(url, pending);
-            } else {
-                startDescription(entry.url, entry.tags, (text, keywords, sections) => {
-                    entry.description = text;
-                    entry.keywords = keywords;
-                    entry.sections = sections || {};
-                    saveLibrary();
-                });
-            }
-        }
+        tagSection(current.tags, below);
     }
 
     async function storeItem(item, searchTags) {
-        if (s.keepLibrary) {
-            await loadLibrary();
-            const found = findBySource(item.page);
-            if (found) {
-                prepareEntryDescription(found.entry, found.variant);
-                return { url: found.variant?.url || found.entry.url, entry: found.entry };
-            }
+        const pending = saveJobs.get(saveKey(item));
+        if (pending && (pending.state === 'queued' || pending.state === 'saving')) {
+            await pending.promise;
         }
-        if (!s.saveLocal) {
-            return { url: item.img, entry: null };
+        const result = await storePicture(item, searchTags);
+        if (result.failed) {
+            console.warn('[Image Search] save failed', result.lines);
+            toastr.warning(`${result.error} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
         }
-        const { src, blob, lines } = await saveBest(item);
-        if (!src) {
-            console.warn('[Image Search] save failed', lines);
-            toastr.warning(`${lines[0] || 'Saving failed.'} Using the direct link instead, so the AI will not see this picture.`, 'Image Search');
-            return { url: item.img, entry: null };
-        }
-        const entry = s.keepLibrary ? await addToLibrary(item, src, searchTags) : null;
-        startDescription(src, item.tags, (text, keywords, sections) => {
-            if (entry) {
-                entry.description = text;
-                entry.keywords = keywords;
-                entry.sections = sections || {};
-                saveLibrary();
-            }
-        }, blob);
-        if (entry) {
-            saveLibrary();
-        }
-        return { url: src, entry };
+        return { url: result.url, entry: result.entry };
     }
 
     async function pick(item, button) {
@@ -3694,7 +4420,7 @@ async function openPicker(initialTags = null) {
         if (button) {
             button.textContent = 'Adding…';
         }
-        const chosen = variant || (entry.kind === 'set' ? entry.variants[0] : null);
+        const chosen = variant || (hasVariants(entry) ? entry.variants[0] : null);
         noteUse(entry, selectedLookName() || ctx().name2 || '');
         prepareEntryDescription(entry, chosen);
         saveLibrary();
@@ -3707,25 +4433,26 @@ async function openPicker(initialTags = null) {
     }
 
     function showEntry(entry, chosen = null) {
-        const isSet = entry.kind === 'set' && entry.variants.length > 1;
-        const current = chosen || (isSet ? entry.variants[0] : null);
-        const { bar } = previewShell(current?.url || entry.url, current?.source || entry.source, entry, 'entry');
+        const multi = isMulti(entry);
+        const sequence = multi && entry.kind === 'sequence';
+        const current = chosen || (multi ? entry.variants[0] : null);
+        const { bar, below } = previewShell(current?.url || entry.url, current?.source || entry.source, entry, 'entry');
         previewState.variant = current;
-        if (isSet) {
-            const strip = variantStrip(entry.variants, current, variant => showEntry(entry, variant));
-            ui.preview.insertBefore(strip, bar);
+        if (multi) {
+            bar.before(variantStrip(entry.variants, current, variant => showEntry(entry, variant), sequence));
         }
+        const index = multi ? Math.max(0, entry.variants.indexOf(current)) : 0;
         const info = el('div', 'stis-entry-info');
-        const isOther = isSet && current && current.id !== entry.variants[0].id;
         info.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
-        if (isOther) {
-            info.appendChild(el('div', 'stis-entry-text', `This version: ${current.diff || 'no difference noted yet.'}`));
+        if (multi && index > 0) {
+            info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
         }
-        const meta = [isSet ? `Set of ${entry.variants.length} versions` : '', entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
+        const meta = [kindLine, entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
-        ui.preview.insertBefore(info, bar);
+        bar.before(info);
         const redo = el('div', 'menu_button', 'Redo');
-        redo.title = 'Describe this picture again';
+        redo.title = sequence ? 'Describe the sequence again' : 'Describe this picture again';
         redo.addEventListener('click', async () => {
             if (redo.textContent !== 'Redo') {
                 return;
@@ -3741,32 +4468,37 @@ async function openPicker(initialTags = null) {
                 toastr.warning(`Could not describe the picture: ${error?.message || error}`, 'Image Search');
             }
         });
-        const remove = confirmButton(isSet ? 'Delete set' : 'Delete', isSet ? `Tap again to delete ${entry.variants.length} pictures` : 'Tap again to delete', async button => {
+        const removeLabel = sequence ? 'Delete sequence' : multi ? 'Delete set' : 'Delete';
+        const armedLabel = sequence ? 'Tap again to delete the sequence' : multi ? `Tap again to delete ${entry.variants.length} pictures` : 'Tap again to delete';
+        const remove = confirmButton(removeLabel, armedLabel, async button => {
             button.textContent = 'Deleting…';
             await deleteEntry(entry);
-            ui.preview.hidden = true;
-            previewState = null;
+            closePreview();
             renderLibrary();
         });
-        remove.title = 'Delete from the library, the lorebook and the disk';
+        remove.title = sequence ? 'Delete the sequence; pictures also saved on their own are kept' : 'Delete from the library, the lorebook and the disk';
         bar.append(redo, remove);
-        if (isSet && current) {
-            const removeOne = confirmButton('Delete version', 'Tap again to delete this version', async () => {
+        if (multi && current) {
+            const removeOne = confirmButton(sequence ? 'Remove picture' : 'Delete version', sequence ? 'Tap again to remove this picture' : 'Tap again to delete this version', async () => {
                 await removeVariant(entry, current);
                 if (!closed) {
                     if (library.entries.includes(entry)) {
                         showEntry(entry);
                     } else {
-                        ui.preview.hidden = true;
+                        closePreview();
                     }
                     renderLibrary();
                 }
             });
             bar.append(removeOne);
         }
+        if (selecting) {
+            bar.append(selectButton(entryPick(entry, current)));
+        }
         const use = el('div', 'menu_button stis-use', 'Use this');
         use.addEventListener('click', () => pickEntry(entry, use, current));
         bar.append(use);
+        tagSection(current?.tags?.length ? current.tags : entry.tags, below);
     }
 
     async function renderLibrary() {
@@ -3774,7 +4506,8 @@ async function openPicker(initialTags = null) {
         if (closed) {
             return;
         }
-        ui.tabLibrary.textContent = `Library (${library.entries.length})`;
+        updateLibraryTab();
+        const scroll = ui.libGrid.scrollTop;
         ui.libGrid.innerHTML = '';
         const query = [...wordsOf(ui.libSearch.value)];
         let ranked = rankEntries(library.entries, { text: recentText(2), tags, character: selectedLookName() || ctx().name2 || '' });
@@ -3800,18 +4533,32 @@ async function openPicker(initialTags = null) {
             img.onerror = () => cell.classList.add('stis-broken');
             cell.title = shortDescription(entry);
             cell.appendChild(img);
-            if (entry.kind === 'set' && entry.variants.length > 1) {
+            if (isMulti(entry)) {
                 const badge = el('span', 'stis-set-badge');
-                badge.appendChild(el('i', 'fa-solid fa-clone'));
+                badge.appendChild(el('i', entry.kind === 'sequence' ? 'fa-solid fa-film' : 'fa-solid fa-clone'));
                 badge.appendChild(document.createTextNode(` ${entry.variants.length}`));
+                badge.title = entry.kind === 'sequence' ? 'Sequence' : 'Set of versions';
                 cell.appendChild(badge);
             }
-            bindPress(cell, () => showEntry(entry), () => {
+            const choice = entryPick(entry);
+            cell.appendChild(orderBadge(choice));
+            bindPress(cell, () => {
+                if (selecting) {
+                    toggleSelect(choice);
+                } else {
+                    showEntry(entry);
+                }
+            }, () => {
+                if (selecting) {
+                    toggleSelect(choice);
+                    return;
+                }
                 cell.classList.add('stis-picking');
                 pickEntry(entry, null);
             });
             ui.libGrid.appendChild(cell);
         }
+        ui.libGrid.scrollTop = scroll;
     }
 
     function setView(next) {
@@ -3825,6 +4572,8 @@ async function openPicker(initialTags = null) {
         ui.who.hidden = lib || !ui.who.childElementCount;
         ui.debug.hidden = lib || !s.debug;
         ui.libraryView.hidden = !lib;
+        renderFavs();
+        renderSites();
         ui.tabSearch.classList.toggle('stis-tab-on', !lib);
         ui.tabLibrary.classList.toggle('stis-tab-on', lib);
         ui.preview.hidden = true;
@@ -3884,15 +4633,56 @@ async function openPicker(initialTags = null) {
     });
     loadLibrary().then(() => {
         if (!closed) {
-            ui.tabLibrary.textContent = `Library (${library.entries.length})`;
+            updateLibraryTab();
+            saveButtons.forEach(list => list.forEach(({ button, item }) => paintSave(button, item)));
         }
+    });
+    const onSaveChange = (key, state) => {
+        if (closed) {
+            return;
+        }
+        (saveButtons.get(key) || []).forEach(({ button, item }) => paintSave(button, item));
+        previewState?.paintKeep?.();
+        updateLibraryTab();
+        if (state === 'done' && !ui.libraryView.hidden && ui.preview.hidden) {
+            renderLibrary();
+        }
+    };
+    saveWatchers.add(onSaveChange);
+    ui.selectToggle.addEventListener('click', () => setSelecting(!selecting));
+    ui.selectDone.addEventListener('click', () => setSelecting(false));
+    ui.selectClear.addEventListener('click', () => {
+        selection = [];
+        paintSelection();
+    });
+    ui.selectSave.addEventListener('click', async () => {
+        if (selection.length < 2 || ui.selectSave.textContent !== 'Save as sequence') {
+            return;
+        }
+        ui.selectSave.textContent = 'Saving…';
+        try {
+            const { entry, work, failed } = await saveSequence(selection, [...tags]);
+            toastr.success(`Sequence of ${entry.variants.length} pictures saved${failed.length ? `, ${failed.length} could not be saved` : ''}. It is being described.`, 'Image Search');
+            work.then(ok => ok && toastr.success('The sequence is described and in the lorebook.', 'Image Search'));
+            selection = [];
+            if (!closed) {
+                updateLibraryTab();
+                if (!ui.libraryView.hidden) {
+                    renderLibrary();
+                }
+            }
+        } catch (error) {
+            toastr.warning(String(error?.message || error), 'Image Search');
+        }
+        ui.selectSave.textContent = 'Save as sequence';
+        paintSelection();
     });
 
     let touchX = null;
     let touchY = 0;
     ui.preview.addEventListener('touchstart', event => {
         const touch = event.changedTouches[0];
-        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info') ? null : touch.clientX;
+        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox') ? null : touch.clientX;
         touchY = touch.clientY;
     }, { passive: true });
     ui.preview.addEventListener('touchend', event => {
@@ -3943,7 +4733,7 @@ async function openPicker(initialTags = null) {
         completeItems.forEach((item, index) => {
             const option = el('div', 'stis-complete-item');
             option.classList.toggle('stis-complete-on', index === completeIndex);
-            option.appendChild(el('span', '', item.name));
+            option.appendChild(el('span', '', item.fav ? `★ ${item.name}` : item.name));
             if (item.count) {
                 option.appendChild(el('small', '', formatCount(item.count)));
             }
@@ -3966,11 +4756,13 @@ async function openPicker(initialTags = null) {
             return;
         }
         completeTimer = setTimeout(async () => {
+            const favorites = favoriteTags().filter(tag => tag.includes(prefix));
             const list = await completeTag(ui.site.value, prefix).catch(() => []);
             if (closed || normalizeTag(ui.input.value.split(',').pop()) !== prefix) {
                 return;
             }
-            completeItems = list.filter(item => !tags.includes(item.name));
+            const favItems = favorites.map(name => ({ name, count: list.find(item => item.name === name)?.count || knownCount(ui.site.value, name) || 0, fav: true }));
+            completeItems = [...favItems, ...list.filter(item => !favorites.includes(item.name))].filter(item => !tags.includes(item.name)).slice(0, 10);
             completeIndex = -1;
             renderComplete();
         }, 250);
@@ -4037,6 +4829,7 @@ async function openPicker(initialTags = null) {
     });
     ui.suggest.addEventListener('click', askAgain);
     ui.site.addEventListener('change', () => {
+        renderSites();
         renderChips();
         runSearch();
         refreshCounts();
@@ -4058,9 +4851,16 @@ async function openPicker(initialTags = null) {
             observer.disconnect();
             clearTimeout(searchTimer);
             clearTimeout(completeTimer);
+            saveWatchers.delete(onSaveChange);
             document.removeEventListener('keydown', onKey);
         },
     });
+    renderSites();
+    if (selection.length && !ui.selectToggle.hidden) {
+        setSelecting(true);
+    } else {
+        paintSelection();
+    }
     popup.show();
     observer.observe(ui.sentinel);
 
@@ -4186,8 +4986,12 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_prefetch"> <span>Prepare tags and pictures after each AI reply</span></label>
                 <div>Never suggest these tags (one per line, or tap <i class="fa-solid fa-ban"></i> on a tag in the picker)</div>
                 <textarea id="st_imagesearch_blacklist" class="text_pole"></textarea>
+                <div>Favorite tags (comma-separated; shown as a ★ row in the picker, tap one there to add it)</div>
+                <textarea id="st_imagesearch_favorites" class="text_pole"></textarea>
                 <div>Character looks (one per line, e.g. <code>Kaelen: !1boy, !muscular_male, bald, beard</code>; <code>!</code> marks tags a picture must have, the others only sort the results). You can also save the current tags with "Save as character look" in the picker.</div>
                 <textarea id="st_imagesearch_looks" class="text_pole"></textarea>
+                <div>Leave out pictures with these tags (comma-separated; sent to the site as -tag where it allows it, checked here otherwise)</div>
+                <textarea id="st_imagesearch_exclude" class="text_pole"></textarea>
                 <div>Allowed ratings</div>
                 <div class="st-imagesearch-row">
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
@@ -4234,8 +5038,6 @@ function buildSettings() {
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_proxy"> <span>Always route through SillyTavern proxy</span></label>
                     <div class="st-imagesearch-row"><span>Image fetcher URL (Cloudflare)</span><input type="text" id="st_imagesearch_fetcher_url" class="text_pole" placeholder="https://imgfetch.yourname.workers.dev"></div>
                     <div class="st-imagesearch-row"><span>Image fetcher key</span><input type="password" id="st_imagesearch_fetcher_key" class="text_pole"></div>
-                    <div>Extra excluded tags (one per line)</div>
-                    <textarea id="st_imagesearch_extra_excluded" class="text_pole"></textarea>
                     <div>Tag cleanup list (from repo)</div>
                     <textarea id="st_imagesearch_cleanup_view" class="text_pole" readonly></textarea>
                     <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
@@ -4317,7 +5119,13 @@ function buildSettings() {
     bind('st_imagesearch_proxy', 'useProxy', 'checked');
     bind('st_imagesearch_fetcher_url', 'fetcherUrl');
     bind('st_imagesearch_fetcher_key', 'fetcherKey');
-    bind('st_imagesearch_extra_excluded', 'extraExcluded');
+    bind('st_imagesearch_exclude', 'excludeTags');
+    const favBox = document.getElementById('st_imagesearch_favorites');
+    favBox.value = favoriteTags().join(', ');
+    favBox.addEventListener('input', () => {
+        s.favoriteTags = normalizeTagList(favBox.value);
+        save();
+    });
     showEngines();
     document.getElementById('st_imagesearch_prompt_reset').addEventListener('click', () => {
         s.tagPrompt = DEFAULT_TAG_PROMPT;
@@ -4341,8 +5149,10 @@ function buildSettings() {
     const pictureCount = () => library.entries.reduce((sum, entry) => sum + entryUrls(entry).length, 0);
     const showLibrary = async () => {
         await loadLibrary();
-        const sets = library.entries.filter(entry => entry.kind === 'set' && entry.variants.length > 1).length;
-        libCount.textContent = library.broken ? 'The picture library could not be read.' : `Library: ${pictureCount()} picture(s)${sets ? ` (${sets} set${sets === 1 ? '' : 's'})` : ''}`;
+        const sets = library.entries.filter(entry => entry.kind === 'set' && isMulti(entry)).length;
+        const sequences = library.entries.filter(entry => entry.kind === 'sequence' && isMulti(entry)).length;
+        const groups = [sets ? `${sets} set${sets === 1 ? '' : 's'}` : '', sequences ? `${sequences} sequence${sequences === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ');
+        libCount.textContent = library.broken ? 'The picture library could not be read.' : `Library: ${pictureCount()} picture(s)${groups ? ` (${groups})` : ''}`;
     };
     document.querySelector('#st_imagesearch_settings .inline-drawer-toggle')?.addEventListener('click', () => showLibrary());
     const redoButton = document.getElementById('st_imagesearch_redo_all');

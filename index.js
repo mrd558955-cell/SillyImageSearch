@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.19.2';
+const VERSION = '2.19.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -1722,6 +1722,11 @@ function blobToBase64(blob) {
     });
 }
 
+const ORIGINAL_ACCEPT = [
+    { 'Accept': 'image/gif,image/png,image/jpeg,image/*;q=0.8,video/*;q=0.7,*/*;q=0.5' },
+    { 'Accept': '*/*' },
+];
+
 const ACCEPT_VARIANTS = [
     { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Upgrade-Insecure-Requests': '1' },
     { 'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8' },
@@ -1772,7 +1777,7 @@ async function fetchImageBlob(downloadUrl, variant, route) {
     return { blob, format };
 }
 
-async function downloadImage(url) {
+async function downloadImage(url, variants = ACCEPT_VARIANTS) {
     const errors = [];
     const viaFetcher = fetcherLink(url);
     if (viaFetcher) {
@@ -1782,7 +1787,7 @@ async function downloadImage(url) {
             errors.push(`Cloudflare fetcher: ${error?.message || error}`);
         }
     }
-    for (const variant of ACCEPT_VARIANTS) {
+    for (const variant of variants) {
         try {
             return await fetchImageBlob(proxyUrl(url), variant, 'proxy');
         } catch (error) {
@@ -2865,9 +2870,9 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     return entry;
 }
 
-const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0, skipped: 0 };
+const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0, skipped: 0, videos: 0, stills: [], errors: [] };
 
-const ANIMATED_TAGS = new Set(['animated', 'animated_gif', 'gif', 'animated_png', 'animation']);
+const ANIMATED_TAGS = new Set(['animated', 'animated_gif', 'gif', 'animated_png', 'animation', 'video', 'webm', 'mp4', 'ugoira']);
 
 function stillGifs() {
     const found = [];
@@ -2903,17 +2908,37 @@ async function originalFile(ref) {
     const result = await request(engine.url(ref.origin, engine.tags([`id:${ref.id}`], every, true, []), extra, 0));
     const posts = engine.parse(result) || [];
     const post = posts.find(item => String(item.id) === ref.id) || (posts.length === 1 ? posts[0] : null);
-    const url = post ? engine.full(post, ref.origin) : '';
-    if (!url) {
+    if (!post) {
         throw new Error(`${ref.domain} did not return post ${ref.id}`);
+    }
+    const choices = [post.file_url, post.file?.url, post.view_url, post.representations?.full, engine.full(post, ref.origin)].map(url => absolute(url, ref.origin)).filter(Boolean);
+    const usable = choices.filter(url => !/\.zip(\?|$)/i.test(url));
+    const url = usable[0] || absolute(post.large_file_url, ref.origin) || absolute(post.sample?.url, ref.origin);
+    if (!url) {
+        throw new Error(`${ref.domain} gave no file for post ${ref.id} (it may need a login)`);
     }
     return url;
 }
 
 async function redownloadGif(picture) {
     const url = await originalFile(postRef(picture.source));
-    const file = await downloadImage(url);
+    let file = null;
+    if (isVideoUrl(url)) {
+        file = await convertVideoItem({ video: url });
+        redoState.videos++;
+    } else {
+        try {
+            file = await downloadImage(url, ORIGINAL_ACCEPT);
+        } catch (error) {
+            if (!/not a supported picture \(video\//.test(String(error?.message))) {
+                throw error;
+            }
+            file = await convertVideoItem({ video: url });
+            redoState.videos++;
+        }
+    }
     if (!(await isAnimated(file))) {
+        redoState.stills.push(`${url.split('/').pop()} (${file.format})`);
         return false;
     }
     const src = await uploadImage(file);
@@ -2937,7 +2962,7 @@ async function redownloadGifs(onProgress) {
     }
     await loadLibrary();
     const queue = stillGifs();
-    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, skipped: 0 });
+    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, skipped: 0, videos: 0, stills: [], errors: [] });
     onProgress?.();
     const replaced = [];
     try {
@@ -2954,6 +2979,7 @@ async function redownloadGifs(onProgress) {
                 }
             } catch (error) {
                 redoState.failed++;
+                redoState.errors.push(String(error?.message || error).slice(0, 120));
                 console.warn('[Image Search] could not download the animated version', picture.source, error);
             }
             redoState.done++;
@@ -2962,7 +2988,6 @@ async function redownloadGifs(onProgress) {
     } finally {
         redoState.running = false;
         await saveLibrary();
-        await deleteUnusedFiles(replaced);
         onProgress?.();
     }
     return replaced.length;
@@ -8401,7 +8426,7 @@ function buildSettings() {
             redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
         };
         const count = await redownloadGifs(progress);
-        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${count} GIF(s) replaced${redoState.skipped ? `, ${redoState.skipped} not animated on the site` : ''}${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${count} GIF(s) replaced${redoState.videos ? ` (${redoState.videos} made from a video)` : ''}${redoState.skipped ? `, ${redoState.skipped} not animated on the site: ${redoState.stills.slice(0, 3).join(', ')}` : ''}${redoState.failed ? `, ${redoState.failed} failed: ${[...new Set(redoState.errors)].slice(0, 2).join(' | ')}` : ''}.`;
         regif.textContent = gifLabel();
         redoStop.hidden = true;
         redoBar.hidden = true;

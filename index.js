@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.22.0';
+const VERSION = '2.22.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -94,6 +94,7 @@ const DEFAULTS = {
     lastRequired: [],
     lastSite: '',
     engines: {},
+    termLimits: {},
 };
 
 const RATINGS = ['general', 'sensitive', 'questionable', 'explicit'];
@@ -599,6 +600,7 @@ const ENGINES = {
         cap: 6,
         pageSize: 100,
         emptyMeansNoOrder: true,
+        fewTerms: 2,
         url: (origin, tags, extra, page) => `${origin}/api/danbooru/find_posts?limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
         tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, ...(noOrder ? [] : ['order:score_desc']), ...exclude.slice(0, 8).map(tag => `-${tag}`)],
         parse: result => (result.ok && /<posts[\s>]/i.test(String(result.text || '').slice(0, 2000)) ? xmlPosts(result.text, true) : null),
@@ -655,6 +657,14 @@ function xmlPosts(text, loose = false) {
         }
         return post;
     });
+}
+
+function pageText(text) {
+    const raw = String(text || '');
+    if (!/^\s*</.test(raw) || !/<(html|body|head|!doctype)/i.test(raw.slice(0, 500))) {
+        return raw;
+    }
+    return raw.replace(/<head[\s\S]*?<\/head>|<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim() || raw;
 }
 
 function siteAnswer(result) {
@@ -795,14 +805,24 @@ async function fetchPage(entry, engineName, required, page, wanted = required, n
     const s = settings();
     const engine = ENGINES[engineName];
     const origin = `https://${entry.domain}`;
-    const siteTags = required.slice(0, engine.cap);
-    const localTags = required.slice(engine.cap);
     const exclude = [...new Set([...negatives, ...excludedTags(wanted)])];
     let noOrder = noOrderSites.has(entry.domain);
-    for (let attempt = 0; attempt < 2; attempt++) {
-        const query = engine.tags(siteTags, s.ratings, noOrder, exclude);
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const limit = Number(s.termLimits?.[entry.domain]) || Infinity;
+        const siteTags = required.slice(0, Math.min(engine.cap, limit));
+        const localTags = required.slice(siteTags.length);
+        const query = engine.tags(siteTags, s.ratings, noOrder, exclude).slice(0, limit);
         const result = await request(engine.url(origin, query, entry.extra, page));
         const posts = engine.parse(result);
+        if (posts === null && result.status === 403) {
+            const said = pageText(result.text).match(/up to (\d+) tags/i);
+            const allowed = said ? Number(said[1]) : query.length > (engine.fewTerms || Infinity) ? engine.fewTerms : 0;
+            if (allowed > 0 && allowed < query.length) {
+                s.termLimits = { ...(s.termLimits || {}), [entry.domain]: allowed };
+                save();
+                continue;
+            }
+        }
         if (posts !== null && !posts.length && page === 0 && engine.emptyMeansNoOrder && !noOrder) {
             noOrder = true;
             noOrderSites.add(entry.domain);
@@ -814,7 +834,7 @@ async function fetchPage(entry, engineName, required, page, wanted = required, n
                 noOrderSites.add(entry.domain);
                 continue;
             }
-            throw new Error(`${entry.domain} answered ${result.status}: ${String(result.text).slice(0, 150)}`);
+            throw new Error(`${entry.domain} answered ${result.status}: ${pageText(result.text).slice(0, 150)}`);
         }
         const stats = { rating: 0, excluded: 0, local: 0, notImage: 0 };
         const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats, new Set(exclude));
@@ -8329,6 +8349,7 @@ function buildSettings() {
     });
     bind('st_imagesearch_sites', 'sites', 'value', () => {
         s.engines = {};
+        s.termLimits = {};
         clearTagCache();
         showEngines();
     });
@@ -8561,6 +8582,7 @@ function buildSettings() {
     });
     document.getElementById('st_imagesearch_redetect').addEventListener('click', () => {
         s.engines = {};
+        s.termLimits = {};
         clearTagCache();
         save();
         showEngines();

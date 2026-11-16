@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.19.1';
+const VERSION = '2.19.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2865,7 +2865,108 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     return entry;
 }
 
-const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0 };
+const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0, skipped: 0 };
+
+const ANIMATED_TAGS = new Set(['animated', 'animated_gif', 'gif', 'animated_png', 'animation']);
+
+function stillGifs() {
+    const found = [];
+    for (const entry of library.entries) {
+        const pictures = isMulti(entry) ? entry.variants.map(variant => ({ entry, variant, tags: variant.tags.length ? variant.tags : entry.tags, url: variant.url, source: variant.source || entry.source })) : [{ entry, variant: null, tags: entry.tags, url: entry.url, source: entry.source }];
+        for (const picture of pictures) {
+            if (!/\.gif(\?|$)/i.test(picture.url) && !(picture.entry.animated && !picture.variant) && picture.tags.some(tag => ANIMATED_TAGS.has(normalizeTag(tag))) && postRef(picture.source)) {
+                found.push(picture);
+            }
+        }
+    }
+    return found;
+}
+
+function postRef(source) {
+    try {
+        const url = new URL(source);
+        const id = url.searchParams.get('id') || (url.pathname.match(/\/(?:posts|post\/show|images)\/(\d+)/) || [])[1];
+        return /^\d+$/.test(String(id || '')) ? { domain: url.hostname, origin: url.origin, id: String(id) } : null;
+    } catch {
+        return null;
+    }
+}
+
+async function originalFile(ref) {
+    const engineName = settings().engines?.[ref.domain];
+    const engine = ENGINES[engineName];
+    if (!engine) {
+        throw new Error(`${ref.domain} is not detected yet: search it once first`);
+    }
+    const extra = siteEntries().find(entry => entry.domain === ref.domain)?.extra || '';
+    const every = Object.fromEntries(RATINGS.map(rating => [rating, true]));
+    const result = await request(engine.url(ref.origin, engine.tags([`id:${ref.id}`], every, true, []), extra, 0));
+    const posts = engine.parse(result) || [];
+    const post = posts.find(item => String(item.id) === ref.id) || (posts.length === 1 ? posts[0] : null);
+    const url = post ? engine.full(post, ref.origin) : '';
+    if (!url) {
+        throw new Error(`${ref.domain} did not return post ${ref.id}`);
+    }
+    return url;
+}
+
+async function redownloadGif(picture) {
+    const url = await originalFile(postRef(picture.source));
+    const file = await downloadImage(url);
+    if (!(await isAnimated(file))) {
+        return false;
+    }
+    const src = await uploadImage(file);
+    const old = picture.url;
+    if (picture.variant) {
+        picture.variant.url = src;
+        if (picture.entry.url === old) {
+            picture.entry.url = src;
+        }
+    } else {
+        picture.entry.url = src;
+    }
+    picture.entry.animated = true;
+    descriptions.delete(old);
+    return old;
+}
+
+async function redownloadGifs(onProgress) {
+    if (redoState.running) {
+        return;
+    }
+    await loadLibrary();
+    const queue = stillGifs();
+    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, skipped: 0 });
+    onProgress?.();
+    const replaced = [];
+    try {
+        for (const picture of queue) {
+            if (redoState.cancel) {
+                break;
+            }
+            try {
+                const old = await redownloadGif(picture);
+                if (old) {
+                    replaced.push(old);
+                } else {
+                    redoState.skipped++;
+                }
+            } catch (error) {
+                redoState.failed++;
+                console.warn('[Image Search] could not download the animated version', picture.source, error);
+            }
+            redoState.done++;
+            onProgress?.();
+        }
+    } finally {
+        redoState.running = false;
+        await saveLibrary();
+        await deleteUnusedFiles(replaced);
+        onProgress?.();
+    }
+    return replaced.length;
+}
 
 async function redoAll(onProgress, only = null) {
     if (redoState.running) {
@@ -7862,6 +7963,7 @@ function buildSettings() {
                     <div class="st-imagesearch-row">
                         <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
                         <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt">Redo out-of-date descriptions</div>
+                        <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
                         <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
                         <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop describing after the pictures being described now" hidden>Stop</div>
                     </div>
@@ -8234,6 +8336,7 @@ function buildSettings() {
         libCount.textContent = library.broken ? 'The picture library could not be read.' : `Library: ${pictureCount()} picture(s)${groups ? ` (${groups})` : ''}`;
         if (!redoState.running) {
             redoOld.textContent = oldLabel();
+            regif.textContent = gifLabel();
         }
     };
     document.querySelector('#st_imagesearch_settings .inline-drawer-toggle')?.addEventListener('click', () => showLibrary());
@@ -8286,6 +8389,34 @@ function buildSettings() {
         return true;
     };
     confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again`, () => runRedo(redoButton, redoLabel, null), () => canRedo());
+    const regif = document.getElementById('st_imagesearch_regif');
+    const gifLabel = () => `Re-download GIFs saved as stills (${stillGifs().length})`;
+    confirmClicks(regif, 'Re-download GIFs saved as stills', () => `Tap again to download ${stillGifs().length} animated GIF(s) again`, async () => {
+        regif.textContent = 'Downloading…';
+        redoStop.hidden = false;
+        redoStop.textContent = 'Stop';
+        redoBar.hidden = false;
+        const progress = () => {
+            libStatus.textContent = `Downloading ${redoState.done} / ${redoState.total}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
+            redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
+        };
+        const count = await redownloadGifs(progress);
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${count} GIF(s) replaced${redoState.skipped ? `, ${redoState.skipped} not animated on the site` : ''}${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
+        regif.textContent = gifLabel();
+        redoStop.hidden = true;
+        redoBar.hidden = true;
+        showLibrary();
+    }, async () => {
+        if (redoState.running) {
+            return false;
+        }
+        await loadLibrary();
+        if (!stillGifs().length) {
+            libStatus.textContent = 'No GIF in the library was saved as a still picture.';
+            return false;
+        }
+        return true;
+    });
     const oldList = () => library.entries.filter(describedOld);
     confirmClicks(redoOld, 'Redo out-of-date descriptions', () => `Tap again to describe ${oldList().length} out-of-date entr${oldList().length === 1 ? 'y' : 'ies'}`, () => runRedo(redoOld, oldLabel, oldList()), () => canRedo(oldList));
     const deleteButton = document.getElementById('st_imagesearch_delete_all');

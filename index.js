@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.20.0';
+const VERSION = '2.20.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -485,7 +485,7 @@ const ENGINES = {
                 return null;
             }
             if (result.data === null) {
-                return result.text.trim() === '' ? [] : null;
+                return result.text.trim() === '' ? [] : xmlPosts(result.text);
             }
             if (Array.isArray(result.data)) {
                 return result.data.length && typeof result.data[0] === 'object' && !('directory' in result.data[0] || 'file_url' in result.data[0]) ? null : result.data;
@@ -594,6 +594,30 @@ const ENGINES = {
     },
 };
 
+function xmlPosts(text) {
+    if (!/<posts[\s>]/i.test(String(text || '').slice(0, 2000)) || typeof DOMParser !== 'function') {
+        return null;
+    }
+    const doc = new DOMParser().parseFromString(String(text), 'text/xml');
+    if (doc.getElementsByTagName('parsererror').length) {
+        return null;
+    }
+    return [...doc.getElementsByTagName('post')].map(node => {
+        const post = Object.fromEntries([...node.attributes].map(attr => [attr.name, attr.value]));
+        for (const child of node.children) {
+            post[child.tagName] ??= child.textContent;
+        }
+        return post;
+    });
+}
+
+function siteAnswer(result) {
+    const text = String(result?.text || '');
+    const plain = text.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const cloudflare = /just a moment|cf-chl|cf_chl|challenge-platform|attention required|cloudflare/i.test(text);
+    return `${result?.status ?? '?'}${plain ? ` "${plain.slice(0, 70)}"` : ''}${cloudflare ? ' (a Cloudflare check, which stops SillyTavern\'s server)' : ''}`;
+}
+
 function engineFor(name, result) {
     if (name === 'danbooru' && result?.ok && result.data && !Array.isArray(result.data) && Array.isArray(result.data.posts)) {
         return 'e621';
@@ -661,6 +685,8 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
     return items;
 }
 
+const siteAnswers = {};
+
 async function detectEngine(entry, probeTags) {
     const s = settings();
     if (KNOWN_WEB.test(entry.domain)) {
@@ -670,6 +696,7 @@ async function detectEngine(entry, probeTags) {
     }
     const origin = `https://${entry.domain}`;
     const probe = probeTags.slice(0, 1);
+    const answers = [];
     for (const name of ENGINE_ORDER) {
         const engine = ENGINES[name];
         let result;
@@ -684,10 +711,13 @@ async function detectEngine(entry, probeTags) {
         const detected = engineFor(name, result);
         if (ENGINES[detected].parse(result) !== null) {
             s.engines[entry.domain] = detected;
+            delete siteAnswers[entry.domain];
             save();
             return detected;
         }
+        answers.push(siteAnswer(result));
     }
+    siteAnswers[entry.domain] = answers.find(answer => /Cloudflare/.test(answer)) || answers[0] || '';
     s.engines[entry.domain] = 'none';
     save();
     return 'none';
@@ -910,7 +940,7 @@ async function loadMore(browse) {
         const engineName = await engineOf(entry, browse.required.length ? browse.required : browse.tags);
         browse.engine = engineName;
         if (NOT_BOARD.has(engineName) || !ENGINES[engineName]) {
-            throw new Error(`${browse.domain} is not an image board this extension can search.`);
+            throw new Error(`${browse.domain} is not an image board this extension can search${siteAnswers[browse.domain] ? ` (it answered ${siteAnswers[browse.domain]})` : ''}.`);
         }
         const batch = [];
         let received = 0;

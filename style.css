@@ -850,3 +850,18 @@ video.stis-preview-img {
 .stis-lib-filters[hidden] {
     display: none;
 }
+
+.stis-sendcard-score {
+    cursor: pointer;
+}
+
+.stis-sendcard-looks {
+    white-space: pre-wrap;
+    font-size: 0.85em;
+    text-align: left;
+    opacity: 0.85;
+}
+
+.stis-sendcard-looks:empty {
+    display: none;
+}

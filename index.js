@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.12.0';
+const VERSION = '2.12.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3660,6 +3660,10 @@ function fitToList(values, allowed) {
     return out;
 }
 
+function isBackground(person) {
+    return person.background === true || /^(background|crowd|extra|minor|bystander)$/i.test(String(person.role || '').trim());
+}
+
 function cleanCard(card) {
     if (!card || typeof card !== 'object') {
         return null;
@@ -3667,8 +3671,8 @@ function cleanCard(card) {
     const text = value => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
     const people = (Array.isArray(card.people) ? card.people : [])
         .filter(person => person && typeof person === 'object')
-        .slice(0, 4)
-        .map(person => Object.fromEntries(CARD_FIELDS.map(field => {
+        .slice(0, 6)
+        .map(person => ({ ...(isBackground(person) ? { role: 'background' } : {}), ...Object.fromEntries(CARD_FIELDS.map(field => {
             let value = text(person[field]).toLowerCase();
             if (/^(none|n\/a|unknown|unclear|-|not shown|not visible)$/.test(value)) {
                 value = '';
@@ -3677,7 +3681,7 @@ function cleanCard(card) {
                 value = value.replace(new RegExp(`\\s*${field}$`), '');
             }
             return [field, value];
-        })))
+        })) }))
         .filter(person => CARD_FIELDS.some(field => person[field]));
     return {
         people,
@@ -3702,7 +3706,8 @@ function needsCard(entry) {
 function personText(person) {
     const head = [person.gender, person.species].filter(Boolean).join(' ') || 'person';
     const rest = [person.skin && `${person.skin} skin`, person.hair && `${person.hair} hair`, person.build, person.outfit, person.features].filter(Boolean).join(', ');
-    return rest ? `${head} (${rest})` : head;
+    const text = rest ? `${head} (${rest})` : head;
+    return person.role === 'background' ? `${text} in the background` : text;
 }
 
 function cardWho(card) {
@@ -3714,7 +3719,7 @@ function cardLine(card) {
 }
 
 function cardToText(card) {
-    const lines = card.people.map(person => `Person: ${CARD_FIELDS.filter(field => person[field]).map(field => `${field}: ${person[field]}`).join('; ')}`);
+    const lines = card.people.map(person => `Person: ${[...(person.role === 'background' ? ['role: background'] : []), ...CARD_FIELDS.filter(field => person[field]).map(field => `${field}: ${person[field]}`)].join('; ')}`);
     lines.push(`Pose: ${card.pose.join(', ')}`, `Mood: ${card.mood.join(', ')}`, `Place: ${card.place}`, `Framing: ${card.framing}`, `Moments: ${card.moments.join('; ')}`);
     return lines.join('\n');
 }
@@ -3732,7 +3737,7 @@ function textToCard(text) {
             const person = {};
             for (const part of value.split(';')) {
                 const pair = part.match(/^\s*(\w+)\s*:\s*(.*)$/);
-                if (pair && CARD_FIELDS.includes(pair[1].toLowerCase())) {
+                if (pair && (CARD_FIELDS.includes(pair[1].toLowerCase()) || pair[1].toLowerCase() === 'role')) {
                     person[pair[1].toLowerCase()] = pair[2].trim();
                 }
             }
@@ -3812,7 +3817,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: everyone clearly visible, at most 4. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…). skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…). skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -4093,49 +4098,84 @@ function overlaps(a, b) {
     return [...a].some(value => b.has(value));
 }
 
-function looksScore(entry, cast) {
-    const people = entry.card?.people || [];
-    if (!cast.length || !people.length) {
-        return 0;
-    }
-    const members = cast.map(traitsOf);
-    let total = 0;
-    let foreign = 0;
-    for (const person of people) {
-        const p = traitsOf(person);
-        let best = null;
-        for (const m of members) {
-            let score = 0;
-            let wrong = false;
-            if (p.gender && m.gender) {
-                wrong = wrong || p.gender !== m.gender;
-                score += 3;
-            }
-            if (p.species && m.species) {
-                wrong = wrong || p.species !== m.species;
-                score += 4;
-            }
-            if (p.skin.size && m.skin.size) {
-                score += overlaps(p.skin, m.skin) ? 2 : -4;
-            }
-            if (p.hair.size && m.hair.size) {
-                score += overlaps(p.hair, m.hair) ? 2 : -2;
-            }
-            if (!wrong && (best === null || score > best)) {
-                best = score;
-            }
-        }
-        if (best === null) {
-            foreign++;
+function signed(value) {
+    return value > 0 ? `+${value}` : value < 0 ? `−${-value}` : '0';
+}
+
+function compareLooks(person, member) {
+    const p = traitsOf(person);
+    const m = traitsOf(member);
+    const parts = [];
+    let score = 0;
+    let wrong = '';
+    if (p.gender && m.gender) {
+        if (p.gender === m.gender) {
+            score += 3;
+            parts.push('gender ✓ +3');
         } else {
-            total += best;
+            wrong = `gender ${person.gender || '?'} ≠ ${member.gender || '?'}`;
         }
     }
-    total -= foreign * 12;
-    if (foreign === people.length) {
-        total -= 12;
+    if (p.species && m.species) {
+        if (p.species === m.species) {
+            score += 4;
+            parts.push(`species ${p.species} ✓ +4`);
+        } else {
+            wrong = wrong || `species ${person.species} ≠ ${member.species}`;
+        }
     }
-    return total;
+    if (p.skin.size && m.skin.size) {
+        const same = overlaps(p.skin, m.skin);
+        score += same ? 2 : -4;
+        parts.push(same ? `skin ${person.skin} ✓ +2` : `skin ${person.skin} ≠ ${member.skin} −4`);
+    }
+    if (p.hair.size && m.hair.size) {
+        const same = overlaps(p.hair, m.hair);
+        score += same ? 2 : -2;
+        parts.push(same ? `hair ${person.hair} ✓ +2` : `hair ${person.hair} ≠ ${member.hair} −2`);
+    }
+    return { score, wrong, parts };
+}
+
+function looksDetail(entry, cast) {
+    const all = entry.card?.people || [];
+    const people = all.filter(person => person.role !== 'background');
+    const ignored = all.length - people.length;
+    const tail = ignored ? ` (${ignored} background ${ignored === 1 ? 'person' : 'people'} ignored)` : '';
+    if (!cast.length) {
+        return { score: 0, notes: ['No character looks are known, so looks do not count.'] };
+    }
+    if (!entry.card) {
+        return { score: 0, notes: ['No filing card yet, so looks do not count.'] };
+    }
+    if (!people.length) {
+        return { score: 0, notes: [`Nobody in the picture${tail}, so looks do not count.`] };
+    }
+    const notes = [];
+    const matched = [];
+    let score = 0;
+    for (const member of cast) {
+        const tried = people.map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member) }));
+        const fits = tried.filter(item => !item.wrong && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
+        const describe = item => `person ${item.index + 1} (${[item.person.gender, item.person.species].filter(Boolean).join(' ') || 'person'})`;
+        if (fits.length) {
+            const best = fits[0];
+            const points = matched.length ? Math.min(best.score, 3) : best.score;
+            matched.push(best.index);
+            score += points;
+            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${matched.length > 1 ? ' (extra character, at most +3)' : ''}`);
+        } else {
+            notes.push(`Nobody looks like ${member.name}: ${tried.map(item => `${describe(item)} ${item.wrong}`).join('; ')}`);
+        }
+    }
+    if (!matched.length) {
+        score = -24;
+        notes.push(`No character is in the picture → ${signed(score)}`);
+    }
+    if (tail) {
+        notes.push(tail.trim().replace(/^\(|\)$/g, ''));
+    }
+    return { score, notes };
 }
 
 function castFromNotes(notes) {
@@ -4157,8 +4197,14 @@ function castFromNotes(notes) {
     return [...byName.values()];
 }
 
+function characterNotes() {
+    const user = String(ctx().name1 || '').toLowerCase();
+    return appearanceNotes().filter(line => !user || !line.toLowerCase().startsWith(`${user} (`));
+}
+
 async function sceneCast() {
-    const notes = appearanceNotes();
+    const notes = characterNotes();
+    const user = String(ctx().name1 || '').toLowerCase();
     if (!notes.length) {
         return [];
     }
@@ -4183,7 +4229,7 @@ async function sceneCast() {
         const end = text.lastIndexOf(']');
         const list = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : [];
         const cast = (Array.isArray(list) ? list : [])
-            .filter(item => item && typeof item === 'object' && item.name)
+            .filter(item => item && typeof item === 'object' && item.name && String(item.name).toLowerCase() !== user)
             .slice(0, 8)
             .map(item => ({ name: String(item.name).slice(0, 60), ...Object.fromEntries(['gender', 'species', 'skin', 'hair'].map(field => [field, String(item[field] ?? '').toLowerCase().slice(0, 60)])) }));
         if (cast.length) {
@@ -4226,8 +4272,9 @@ async function rankedCandidates(message) {
         const position = order?.get(choice.entry);
         const keywords = Math.min(choice.score || 0, 24);
         const meaningPoints = position === undefined ? 0 : 36 * (1 - position / Math.max(order.size, 1));
-        const looks = looksScore(choice.entry, cast);
-        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, cast: cast.length > 0 };
+        const detail = looksDetail(choice.entry, cast);
+        const looks = detail.score;
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, cast: cast.length > 0, looksNotes: detail.notes };
         choice.total = keywords + meaningPoints + looks;
     }
     const sorted = [...choices].sort((a, b) => b.total - a.total);
@@ -4246,7 +4293,7 @@ function scoreLine(choice) {
         items.push('no meaning match');
     }
     if (parts.cast && choice.entry.card?.people?.length) {
-        items.push(`looks ${parts.looks > 0 ? '+' : ''}${parts.looks}`);
+        items.push(`looks ${signed(parts.looks)}`);
     } else if (!choice.entry.card) {
         items.push('no filing card');
     }
@@ -4269,7 +4316,7 @@ function cardBox(entry, onChange) {
         if (editing) {
             const area = el('textarea', 'text_pole stis-card-edit');
             area.value = card ? cardToText(card) : 'Person: gender: ; species: ; skin: ; hair: ; build: ; outfit: ; features: \nPose: \nMood: \nPlace: \nFraming: \nMoments: ';
-            const hint = el('small', 'stis-card-hint', `One Person line per person, fields: ${CARD_FIELDS.join(', ')} (separated by ;). Moments are separated by ;. Poses: ${listSetting(settings().poseList || DEFAULT_POSES).slice(0, 12).join(', ')}…`);
+            const hint = el('small', 'stis-card-hint', `One Person line per person, fields: ${CARD_FIELDS.join(', ')} (separated by ;). Add "role: background" to people who should not count for looks. Moments are separated by ;. Poses: ${listSetting(settings().poseList || DEFAULT_POSES).slice(0, 12).join(', ')}…`);
             const save = el('div', 'menu_button', 'Save card');
             const cancel = el('div', 'menu_button', 'Cancel');
             save.addEventListener('click', async () => {
@@ -4334,7 +4381,7 @@ function cardFacets(entry) {
         return entry.description ? ['card:none'] : [];
     }
     const keys = [];
-    entry.card.people.forEach(person => {
+    entry.card.people.filter(person => person.role !== 'background').forEach(person => {
         const who = [person.gender, person.species].filter(Boolean).join(' ');
         if (who) {
             keys.push(`who:${who}`);
@@ -4548,6 +4595,13 @@ function showPictureCard(session) {
     const text = el('div', 'stis-sendcard-text');
     const why = el('div', 'stis-sendcard-why');
     const score = el('small', 'stis-sendcard-score');
+    score.title = 'Tap to see how the looks score was counted';
+    const looksBox = el('div', 'stis-sendcard-looks');
+    let showLooks = false;
+    score.addEventListener('click', () => {
+        showLooks = !showLooks;
+        draw();
+    });
     const answer = el('div', 'stis-sendcard-answer');
     const grid = el('div', 'stis-sendcard-grid');
     grid.hidden = true;
@@ -4561,13 +4615,14 @@ function showPictureCard(session) {
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, ask, browse, search, cancel);
-    root.append(note, img, why, answer, text, score, grid, bar);
+    root.append(note, img, why, answer, text, score, looksBox, grid, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
-        score.textContent = scoreLine(choice);
+        score.textContent = scoreLine(choice) ? `${scoreLine(choice)} ${showLooks ? '▴' : '▾'}` : '';
+        looksBox.textContent = showLooks ? (choice.parts?.looksNotes || []).join('\n') : '';
         const reason = reasons.get(choice);
         why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
         const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';

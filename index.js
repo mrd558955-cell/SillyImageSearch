@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.23.0';
+const VERSION = '2.24.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -62,6 +62,11 @@ const DEFAULTS = {
     visionPrompt: DEFAULT_VISION_PROMPT,
     visionMaxTokens: 700,
     describeWaitSec: 15,
+    gifFrames: 3,
+    gifFrameSize: 768,
+    gifSheet: false,
+    huntTags: true,
+    huntIqdb: true,
     keepLibrary: true,
     aiShow: true,
     aiShowDepth: 2,
@@ -2259,8 +2264,8 @@ async function convertVideoItem(item, onProgress = null) {
     return { blob: made.blob, format: 'gif', frames: made.frames };
 }
 
-async function frameDataUrl(source, width, height) {
-    const scale = Math.min(1, 768 / Math.max(width, height));
+async function frameDataUrl(source, width, height, maxSide = 768) {
+    const scale = Math.min(1, maxSide / Math.max(width, height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(width * scale));
     canvas.height = Math.max(1, Math.round(height * scale));
@@ -2268,6 +2273,36 @@ async function frameDataUrl(source, width, height) {
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+async function frameSheet(images, maxSide = 768) {
+    const width = images[0].displayWidth || images[0].codedWidth || images[0].width || 1;
+    const height = images[0].displayHeight || images[0].codedHeight || images[0].height || 1;
+    const cols = Math.ceil(Math.sqrt(images.length));
+    const rows = Math.ceil(images.length / cols);
+    const gap = 4;
+    const scale = Math.min(1, maxSide / Math.max(width, height), 2048 / (cols * width), 2048 / (rows * height));
+    const tileWidth = Math.max(1, Math.round(width * scale));
+    const tileHeight = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cols * tileWidth + (cols - 1) * gap;
+    canvas.height = rows * tileHeight + (rows - 1) * gap;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const font = Math.max(12, Math.round(Math.min(tileWidth, tileHeight) / 8));
+    images.forEach((image, index) => {
+        const x = (index % cols) * (tileWidth + gap);
+        const y = Math.floor(index / cols) * (tileHeight + gap);
+        context.drawImage(image, x, y, tileWidth, tileHeight);
+        context.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        context.fillRect(x, y, font * (index >= 9 ? 2.1 : 1.5), font * 1.3);
+        context.fillStyle = '#ffffff';
+        context.font = `bold ${font}px sans-serif`;
+        context.textBaseline = 'top';
+        context.fillText(String(index + 1), x + font * 0.3, y + font * 0.15);
+    });
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
@@ -2299,12 +2334,31 @@ async function animationFrames(url, blob = null) {
         if (count < 2) {
             return null;
         }
+        const s = settings();
+        const wanted = Math.min(count, 16, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        const size = Math.min(2048, Math.max(128, Number(s.gifFrameSize) || 768));
+        const picks = wanted === 1 ? [0] : [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (count - 1) / (wanted - 1))))];
+        if (s.gifSheet && picks.length > 1) {
+            const images = [];
+            try {
+                for (const frameIndex of picks) {
+                    images.push((await decoder.decode({ frameIndex })).image);
+                }
+                const sheet = [await frameSheet(images, size)];
+                sheet.count = images.length;
+                sheet.sheet = true;
+                return sheet;
+            } finally {
+                images.forEach(image => image.close?.());
+            }
+        }
         const frames = [];
-        for (const frameIndex of [...new Set([0, Math.floor(count / 2), count - 1])]) {
+        for (const frameIndex of picks) {
             const { image } = await decoder.decode({ frameIndex });
-            frames.push(await frameDataUrl(image, image.displayWidth || image.codedWidth, image.displayHeight || image.codedHeight));
+            frames.push(await frameDataUrl(image, image.displayWidth || image.codedWidth, image.displayHeight || image.codedHeight, size));
             image.close?.();
         }
+        frames.count = frames.length;
         return frames;
     } finally {
         decoder.close?.();
@@ -2552,9 +2606,12 @@ async function requestDescription(url, tags, blob = null, locked = '') {
         console.warn('[Image Search] could not read the animation frames', error);
     }
     let raw = '';
-    if (frames?.length > 1) {
+    if (frames?.count > 1) {
+        const shown = frames.sheet
+            ? `You get one picture with ${frames.count} moments from it, numbered 1 to ${frames.count} (left to right, then top to bottom), evenly spread from the start to the end.`
+            : `You get ${frames.count} moments from it, in order, evenly spread from the start to the end.`;
         try {
-            raw = await ask(`This picture is a short animation (a GIF). You get ${frames.length} moments from it, in order: the start, the middle and the end. Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, frames);
+            raw = await ask(`This picture is a short animation (a GIF). ${shown} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, frames);
         } catch (error) {
             console.warn('[Image Search] the vision model refused several frames, using the first one', error);
         }
@@ -2563,7 +2620,7 @@ async function requestDescription(url, tags, blob = null, locked = '') {
         raw = await ask(prompt, [await imageDataUrl(url, blob)]);
     }
     const parsed = parseDescription(raw);
-    parsed.animated = Boolean(frames?.length > 1);
+    parsed.animated = Boolean(frames?.length);
     if (!parsed.text) {
         throw new Error('The vision model gave no description.');
     }
@@ -2574,13 +2631,16 @@ function readyDescription(url, tags, text) {
     return { url, tags: tags || [], text: text || '', error: '', started: Date.now(), ms: 0, done: true, promise: Promise.resolve() };
 }
 
-function startDescription(url, postTags, onDone, blob = null) {
+function startDescription(url, postTags, onDone, blob = null, tagsLater = null) {
     const s = settings();
     if (!s.describe) {
         return;
     }
     const entry = { url, tags: summaryTags(postTags), text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
-    entry.promise = requestDescription(url, entry.tags, blob)
+    entry.promise = (tagsLater ? tagsLater.then(tags => {
+        entry.tags = summaryTags(tags);
+    }).catch(() => {}) : Promise.resolve())
+        .then(() => requestDescription(url, entry.tags, blob))
         .then(({ text, keywords, sections }) => {
             entry.text = text;
             entry.keywords = keywords;
@@ -2636,6 +2696,7 @@ function cleanEntry(entry) {
         kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
         animated: Boolean(entry.animated),
         described: String(entry.described || ''),
+        borrowed: entry.borrowed && typeof entry.borrowed === 'object' && entry.borrowed.site ? { site: String(entry.borrowed.site), id: String(entry.borrowed.id || ''), page: String(entry.borrowed.page || ''), how: String(entry.borrowed.how || ''), alike: Number(entry.borrowed.alike) || 0, at: Number(entry.borrowed.at) || Date.now() } : null,
         lock: entry.lock && typeof entry.lock === 'object' && String(entry.lock.text || '').trim() ? { text: String(entry.lock.text), at: Number(entry.lock.at) || Date.now() } : null,
         card: cleanCard(entry.card),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
@@ -3015,20 +3076,28 @@ function postRef(source) {
     }
 }
 
-async function originalFile(ref) {
-    const engineName = settings().engines?.[ref.domain];
-    const engine = ENGINES[engineName];
+function everyRating() {
+    return Object.fromEntries(RATINGS.map(rating => [rating, true]));
+}
+
+async function sourcePost(ref) {
+    const domain = ref.domain.replace(/^www\./, '');
+    const engine = ENGINES[settings().engines?.[domain]];
     if (!engine) {
-        throw new Error(`${ref.domain} is not detected yet: search it once first`);
+        throw new Error(`${domain} is not detected yet: search it once first`);
     }
-    const extra = siteEntries().find(entry => entry.domain === ref.domain)?.extra || '';
-    const every = Object.fromEntries(RATINGS.map(rating => [rating, true]));
-    const result = await request(engine.url(ref.origin, engine.tags([`id:${ref.id}`], every, true, []), extra, 0));
+    const extra = siteEntries().find(entry => entry.domain === domain)?.extra || '';
+    const result = await request(engine.url(ref.origin, engine.tags([`id:${ref.id}`], everyRating(), true, []), extra, 0));
     const posts = engine.parse(result) || [];
     const post = posts.find(item => String(item.id) === ref.id) || (posts.length === 1 ? posts[0] : null);
     if (!post) {
-        throw new Error(`${ref.domain} did not return post ${ref.id}`);
+        throw new Error(`${domain} did not return post ${ref.id}`);
     }
+    return { post, engine };
+}
+
+async function originalFile(ref) {
+    const { post, engine } = await sourcePost(ref);
     const choices = [post.file_url, post.file?.url, post.view_url, post.representations?.full, engine.full(post, ref.origin)].map(url => absolute(url, ref.origin)).filter(Boolean);
     const usable = choices.filter(url => !/\.zip(\?|$)/i.test(url));
     const url = usable[0] || absolute(post.large_file_url, ref.origin) || absolute(post.sample?.url, ref.origin);
@@ -3036,6 +3105,300 @@ async function originalFile(ref) {
         throw new Error(`${ref.domain} gave no file for post ${ref.id} (it may need a login)`);
     }
     return url;
+}
+
+const FEW_TAGS = 10;
+const HUNT_WAIT = 25000;
+const HUNT_SKIP = new Set(['sound', 'webm', 'mp4', 'gif', 'tagme', 'artist_request', 'source_request', 'character_request', 'copyright_request']);
+
+function tagPoor(entry) {
+    return !isMulti(entry) && !entry.borrowed && entry.tags.length < FEW_TAGS;
+}
+
+function huntNames(entry) {
+    return [...new Set([...(entry.searchTags || []), ...entry.tags].map(normalizeTag))]
+        .filter(tag => tag && !HUNT_SKIP.has(tag) && !ANIMATED_TAGS.has(tag) && !/^-|[:*]/.test(tag))
+        .slice(0, 12);
+}
+
+function postRatio(post) {
+    const width = Number(post.width ?? post.image_width ?? post.file?.width ?? post.jpeg_width) || 0;
+    const height = Number(post.height ?? post.image_height ?? post.file?.height ?? post.jpeg_height) || 0;
+    return width && height ? width / height : 0;
+}
+
+async function pictureHash(source) {
+    const blob = source instanceof Blob ? source : String(source).startsWith('/') ? await (await fetch(source)).blob() : (await downloadImage(source)).blob;
+    const bitmap = await createImageBitmap(blob);
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 9;
+        canvas.height = 8;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, 9, 8);
+        context.drawImage(bitmap, 0, 0, 9, 8);
+        const data = context.getImageData(0, 0, 9, 8).data;
+        const gray = [];
+        for (let i = 0; i < data.length; i += 4) {
+            gray.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+        }
+        let bits = '';
+        for (let y = 0; y < 8; y++) {
+            for (let x = 0; x < 8; x++) {
+                bits += gray[y * 9 + x] > gray[y * 9 + x + 1] ? '1' : '0';
+            }
+        }
+        return { bits, ratio: bitmap.width / bitmap.height };
+    } finally {
+        bitmap.close?.();
+    }
+}
+
+function hashDistance(a, b) {
+    let distance = 0;
+    for (let i = 0; i < 64; i++) {
+        if (a[i] !== b[i]) {
+            distance++;
+        }
+    }
+    return distance;
+}
+
+async function huntSites(entry) {
+    const own = hostOf(entry.source) || entry.site;
+    const targets = [];
+    for (const site of siteEntries()) {
+        if (site.domain === own || KNOWN_WEB.test(site.domain)) {
+            continue;
+        }
+        const engineName = await engineOf(site, ['1girl']).catch(() => '');
+        if (ENGINES[engineName]) {
+            targets.push({ site, engineName, engine: ENGINES[engineName], origin: `https://${site.domain}` });
+        }
+    }
+    return targets;
+}
+
+async function sitePosts(target, terms, page = 0) {
+    const limit = Number(settings().termLimits?.[target.site.domain]) || Infinity;
+    const query = target.engine.tags(terms, everyRating(), true, []).slice(0, limit);
+    const result = await request(target.engine.url(target.origin, query, target.site.extra, page));
+    return target.engine.parse(result) || [];
+}
+
+function huntMatch(target, post, how, alike) {
+    return { domain: target.site.domain, id: String(post.id ?? ''), page: target.engine.postUrl(post, target.origin), tags: target.engine.postTags(post).map(normalizeTag), how, alike };
+}
+
+function sameFile(target, post, md5) {
+    return Boolean(md5) && String(target.engine.md5(post) || '').toLowerCase() === md5;
+}
+
+async function findByMd5(targets, md5) {
+    const results = await Promise.all(targets.filter(target => target.engineName !== 'philomena').map(async target => {
+        try {
+            const post = (await sitePosts(target, [`md5:${md5}`])).find(item => sameFile(target, item, md5));
+            return post ? huntMatch(target, post, 'same file', 100) : null;
+        } catch (error) {
+            console.debug(`[Image Search] md5 search failed on ${target.site.domain}`, error);
+            return null;
+        }
+    }));
+    return results.find(Boolean) || null;
+}
+
+async function closestThumb(pool, own, budget) {
+    const queue = pool.slice(0, Math.max(0, budget.left));
+    budget.left -= queue.length;
+    let best = null;
+    const worker = async () => {
+        while (queue.length && !(best && best.distance <= 2)) {
+            const candidate = queue.shift();
+            try {
+                const distance = hashDistance(own.bits, (await pictureHash(candidate.thumb)).bits);
+                if (!best || distance < best.distance) {
+                    best = { ...candidate, distance };
+                }
+            } catch (error) {
+                console.debug('[Image Search] could not compare a thumbnail', candidate.thumb, error);
+            }
+        }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return best && best.distance <= 8 ? best : null;
+}
+
+async function findByNames(targets, entry, own, md5) {
+    const names = huntNames(entry);
+    if (!names.length) {
+        return null;
+    }
+    const budget = { left: 80 };
+    const seen = new Set();
+    for (const target of targets) {
+        const domain = target.site.domain;
+        const spellings = [...new Set(names.flatMap(name => {
+            const parts = name.split('_');
+            return parts.length === 2 ? [name, `${parts[1]}_${parts[0]}`] : [name];
+        }))];
+        await lookupTags(domain, target.engineName, spellings).catch(() => {});
+        const counted = spellings.map(name => ({ name, count: knownCount(domain, name) }));
+        const usable = counted.some(item => item.count !== null) ? counted.filter(item => item.count > 0).sort((a, b) => a.count - b.count) : counted;
+        for (const { name } of usable.slice(0, 2)) {
+            const pool = [];
+            for (const terms of entry.animated ? [[name, 'animated'], [name]] : [[name]]) {
+                for (let page = 0; page < 2; page++) {
+                    let posts = [];
+                    try {
+                        posts = await sitePosts(target, terms, page);
+                    } catch (error) {
+                        console.debug(`[Image Search] name search failed on ${domain}`, error);
+                        break;
+                    }
+                    for (const post of posts) {
+                        if (sameFile(target, post, md5)) {
+                            return huntMatch(target, post, 'same file', 100);
+                        }
+                        const ratio = postRatio(post);
+                        const thumb = target.engine.thumb(post, target.origin);
+                        if (!thumb || seen.has(thumb) || (own.ratio && ratio && Math.abs(ratio - own.ratio) / own.ratio > 0.04)) {
+                            continue;
+                        }
+                        seen.add(thumb);
+                        pool.push({ target, post, thumb });
+                    }
+                    if (posts.length < target.engine.pageSize) {
+                        break;
+                    }
+                }
+            }
+            const best = await closestThumb(pool, own, budget);
+            if (best) {
+                return huntMatch(best.target, best.post, 'alike', Math.round((64 - best.distance) / 64 * 100));
+            }
+            if (budget.left <= 0) {
+                return null;
+            }
+        }
+    }
+    return null;
+}
+
+async function findOnIqdb(thumb, targets) {
+    const result = await request(`https://iqdb.org/?url=${encodeURIComponent(thumb)}`);
+    if (!result.ok || typeof DOMParser !== 'function') {
+        return null;
+    }
+    const doc = new DOMParser().parseFromString(String(result.text || ''), 'text/html');
+    const matches = [...doc.querySelectorAll('table')].map(table => {
+        const text = table.textContent || '';
+        const alike = Number((text.match(/(\d+)%\s*similarity/i) || [])[1]) || 0;
+        const link = table.querySelector('a[href]');
+        const image = table.querySelector('img');
+        return { href: absolute(link?.getAttribute('href') || '', 'https://iqdb.org'), alike, alt: image?.getAttribute('alt') || image?.getAttribute('title') || '', mine: /your image/i.test(text) };
+    }).filter(match => match.href && match.alike && !match.mine).sort((a, b) => b.alike - a.alike);
+    const best = matches.find(match => match.alike >= 90);
+    if (!best) {
+        return null;
+    }
+    const ref = postRef(best.href);
+    const target = ref && targets.find(item => item.site.domain === hostOf(best.href));
+    if (ref && target) {
+        try {
+            const { post } = await sourcePost(ref);
+            return huntMatch(target, post, 'alike (IQDB)', best.alike);
+        } catch (error) {
+            console.debug('[Image Search] could not read the IQDB match', best.href, error);
+        }
+    }
+    const tags = String((best.alt.match(/Tags:\s*(.*)$/i) || [])[1] || '').split(/\s+/).map(normalizeTag).filter(Boolean);
+    return tags.length ? { domain: hostOf(best.href), id: ref?.id || '', page: best.href, tags, how: 'alike (IQDB)', alike: best.alike } : null;
+}
+
+async function huntTags(entry, { item = null, blob = null } = {}) {
+    if (isMulti(entry)) {
+        return null;
+    }
+    const ref = postRef(entry.source);
+    let md5 = String(item?.md5 || '').toLowerCase();
+    let thumb = item?.thumb || '';
+    if ((!md5 || !thumb) && ref) {
+        try {
+            const { post, engine } = await sourcePost(ref);
+            md5 = md5 || String(engine.md5(post) || '').toLowerCase();
+            thumb = thumb || engine.thumb(post, ref.origin);
+        } catch (error) {
+            console.debug('[Image Search] could not read the source post', entry.source, error);
+        }
+    }
+    const targets = await huntSites(entry);
+    let match = targets.length && md5 ? await findByMd5(targets, md5) : null;
+    if (!match && targets.length) {
+        const own = await pictureHash(blob || entry.url).catch(error => {
+            console.debug('[Image Search] could not read the saved picture to compare it', error);
+            return null;
+        });
+        if (own) {
+            match = await findByNames(targets, entry, own, md5);
+        }
+    }
+    if (!match && settings().huntIqdb && thumb) {
+        match = await findOnIqdb(thumb, targets).catch(error => {
+            console.debug('[Image Search] IQDB search failed', error);
+            return null;
+        });
+    }
+    if (!match?.tags.length) {
+        return null;
+    }
+    entry.tags = summaryTags([...entry.tags, ...match.tags]);
+    entry.borrowed = { site: match.domain, id: match.id, page: match.page, how: match.how, alike: match.alike, at: Date.now() };
+    if (entry.card && !entry.card.edited) {
+        entry.card.basis = '';
+    }
+    return match;
+}
+
+function borrowedLine(entry) {
+    const from = entry.borrowed;
+    return from ? `Tags from ${from.site}${from.id ? ` #${from.id}` : ''} (${from.how === 'same file' ? 'same file' : `${from.alike}% alike${from.how.includes('IQDB') ? ', found by IQDB' : ''}`})` : '';
+}
+
+async function huntAll(onProgress) {
+    if (redoState.running) {
+        return 0;
+    }
+    await loadLibrary();
+    const queue = library.entries.filter(tagPoor);
+    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, found: 0 });
+    onProgress?.();
+    try {
+        for (const entry of queue) {
+            if (redoState.cancel) {
+                break;
+            }
+            try {
+                if (await huntTags(entry)) {
+                    redoState.found++;
+                    await redoEntry(entry, { save: false });
+                }
+            } catch (error) {
+                redoState.failed++;
+                console.warn('[Image Search] finding tags failed', entry.id, error);
+            }
+            redoState.done++;
+            if (redoState.done % 5 === 0) {
+                await saveLibrary();
+            }
+            onProgress?.();
+        }
+    } finally {
+        redoState.running = false;
+        await saveLibrary();
+        onProgress?.();
+    }
+    return redoState.found;
 }
 
 async function redownloadGif(picture) {
@@ -3341,6 +3704,15 @@ async function storePicture(item, searchTags, keep = settings().keepLibrary) {
     if (entry && blob) {
         entry.animated = await isAnimated({ blob, format: await sniffFormat(blob) }).catch(() => false);
     }
+    const hunt = entry && s.huntTags && tagPoor(entry) ? huntTags(entry, { item, blob }).catch(error => {
+        console.warn('[Image Search] finding tags elsewhere failed', error);
+        return null;
+    }) : null;
+    let huntLate = false;
+    const tagsLater = hunt ? Promise.race([hunt.then(() => 'found'), new Promise(resolve => setTimeout(() => resolve('late'), HUNT_WAIT))]).then(winner => {
+        huntLate = winner === 'late';
+        return entry.tags;
+    }) : null;
     startDescription(src, item.tags, (text, keywords, sections) => {
         if (entry) {
             entry.description = text;
@@ -3349,7 +3721,18 @@ async function storePicture(item, searchTags, keep = settings().keepLibrary) {
             entry.sections = sections || {};
             saveLibrary();
         }
-    }, blob);
+    }, blob, tagsLater);
+    hunt?.then(async match => {
+        if (!match) {
+            return;
+        }
+        await descriptions.get(src)?.promise;
+        if (huntLate && s.describe) {
+            await redoEntry(entry).catch(error => console.warn('[Image Search] could not describe the picture again with its new tags', error));
+        } else {
+            await saveLibrary();
+        }
+    });
     if (entry) {
         saveLibrary();
     }
@@ -7585,7 +7968,7 @@ async function openPicker(initialTags = null) {
             info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
         }
         const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
-        const meta = [kindLine, entry.lock ? 'Description locked' : '', entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        const meta = [kindLine, entry.lock ? 'Description locked' : '', borrowedLine(entry), entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
         info.appendChild(cardBox(entry, () => {
             if (!closed) {
@@ -7645,7 +8028,37 @@ async function openPicker(initialTags = null) {
             renderLibrary();
         });
         remove.title = sequence ? 'Delete the sequence; pictures also saved on their own are kept' : 'Delete from the library, the lorebook and the disk';
-        bar.append(redo, lock, remove);
+        bar.append(redo, lock);
+        if (!multi) {
+            const huntLabel = 'Find tags';
+            const hunt = el('div', 'menu_button', huntLabel);
+            hunt.title = 'Look for this picture on your other sites, take its tags, then describe and file it again';
+            hunt.addEventListener('click', async () => {
+                if (hunt.textContent !== huntLabel) {
+                    return;
+                }
+                hunt.textContent = 'Looking…';
+                try {
+                    const match = await huntTags(entry);
+                    if (!match) {
+                        hunt.textContent = huntLabel;
+                        toastr.info('This picture was not found on your other sites.', 'Image Search');
+                        return;
+                    }
+                    hunt.textContent = entry.lock ? 'Updating…' : 'Describing…';
+                    await redoEntry(entry);
+                    toastr.success(`${borrowedLine(entry)}. Described and filed again.`, 'Image Search');
+                    if (!closed && previewState?.target === entry) {
+                        showEntry(entry, current);
+                    }
+                } catch (error) {
+                    hunt.textContent = huntLabel;
+                    toastr.warning(`Could not finish: ${error?.message || error}`, 'Image Search');
+                }
+            });
+            bar.append(hunt);
+        }
+        bar.append(remove);
         if (multi && current) {
             const removeOne = confirmButton(sequence ? 'Remove picture' : 'Delete version', sequence ? 'Tap again to remove this picture' : 'Tap again to delete this version', async () => {
                 await removeVariant(entry, current);
@@ -8270,6 +8683,8 @@ function buildSettings() {
                 <select id="st_imagesearch_vision_profile" class="text_pole"></select>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep picked pictures in the library</span></label>
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites and take their tags before describing it</span></label>
+                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt_iqdb"> <span>If it is not found there, also ask IQDB (a free lookalike search)</span></label>
                 <small>Saved pictures are offered through the lorebook "${LOREBOOK}" (World Info): one entry per picture, triggered by its keywords, at most one picture per reply. Keep that lorebook turned on. You can edit keywords there; your edits are kept.</small>
                 <div class="st-imagesearch-library">
                     <div id="st_imagesearch_lib_count">Library</div>
@@ -8277,6 +8692,7 @@ function buildSettings() {
                         <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
                         <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt">Redo out-of-date descriptions</div>
                         <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
+                        <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
                         <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
                         <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop describing after the pictures being described now" hidden>Stop</div>
                     </div>
@@ -8342,6 +8758,9 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Frames of a GIF sent to the vision model (1 to 16, spread from start to end)</span><input type="number" min="1" max="16" id="st_imagesearch_gif_frames" class="text_pole"></div>
+                    <div class="st-imagesearch-row"><span>Size of each GIF frame, in pixels</span><input type="number" min="128" max="2048" id="st_imagesearch_gif_size" class="text_pole"></div>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>Send the GIF frames as one numbered sheet (one picture instead of several)</span></label>
                     <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> Show the send-with-picture button next to Send</label>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> Show me the chosen picture before sending</label>
@@ -8422,6 +8841,11 @@ function buildSettings() {
     bind('st_imagesearch_pickwindow', 'pickWindow', 'checked');
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
+    bind('st_imagesearch_gif_frames', 'gifFrames', 'number');
+    bind('st_imagesearch_gif_size', 'gifFrameSize', 'number');
+    bind('st_imagesearch_gif_sheet', 'gifSheet', 'checked');
+    bind('st_imagesearch_hunt', 'huntTags', 'checked');
+    bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
     document.getElementById('st_imagesearch_vision_reset').addEventListener('click', () => {
         s.visionPrompt = DEFAULT_VISION_PROMPT;
@@ -8652,6 +9076,7 @@ function buildSettings() {
         if (!redoState.running) {
             redoOld.textContent = oldLabel();
             regif.textContent = gifLabel();
+            huntButton.textContent = huntLabel();
         }
     };
     document.querySelector('#st_imagesearch_settings .inline-drawer-toggle')?.addEventListener('click', () => showLibrary());
@@ -8732,6 +9157,34 @@ function buildSettings() {
         await loadLibrary();
         if (!stillGifs().length) {
             libStatus.textContent = 'No GIF in the library was saved as a still picture.';
+            return false;
+        }
+        return true;
+    });
+    const huntButton = document.getElementById('st_imagesearch_hunt_all');
+    const huntLabel = () => `Find tags for pictures with few tags (${library.entries.filter(tagPoor).length})`;
+    confirmClicks(huntButton, 'Find tags for pictures with few tags', () => `Tap again to look for ${library.entries.filter(tagPoor).length} picture(s) on your other sites`, async () => {
+        huntButton.textContent = 'Looking…';
+        redoStop.hidden = false;
+        redoStop.textContent = 'Stop';
+        redoBar.hidden = false;
+        const progress = () => {
+            libStatus.textContent = `Looking ${redoState.done} / ${redoState.total}, tags found for ${redoState.found || 0}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
+            redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
+        };
+        const found = await huntAll(progress);
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: tags found for ${found} of ${redoState.done} picture(s)${found ? ', which were described and filed again' : ''}${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
+        huntButton.textContent = huntLabel();
+        redoStop.hidden = true;
+        redoBar.hidden = true;
+        showLibrary();
+    }, async () => {
+        if (redoState.running) {
+            return false;
+        }
+        await loadLibrary();
+        if (!library.entries.some(tagPoor)) {
+            libStatus.textContent = `No picture with fewer than ${FEW_TAGS} tags is waiting for tags.`;
             return false;
         }
         return true;

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.19.3';
+const VERSION = '2.20.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -712,13 +712,13 @@ function defaultRequired(tags) {
     return tags.slice(0, count);
 }
 
-async function fetchPage(entry, engineName, required, page, wanted = required) {
+async function fetchPage(entry, engineName, required, page, wanted = required, negatives = []) {
     const s = settings();
     const engine = ENGINES[engineName];
     const origin = `https://${entry.domain}`;
     const siteTags = required.slice(0, engine.cap);
     const localTags = required.slice(engine.cap);
-    const exclude = excludedTags(wanted);
+    const exclude = [...new Set([...negatives, ...excludedTags(wanted)])];
     let noOrder = noOrderSites.has(entry.domain);
     for (let attempt = 0; attempt < 2; attempt++) {
         const query = engine.tags(siteTags, s.ratings, noOrder, exclude);
@@ -804,29 +804,29 @@ async function fetchFamily(item) {
     return promise;
 }
 
-function createBrowse(domain, tags, required) {
+function createBrowse(domain, tags, required, negatives = []) {
     const req = tags.filter(tag => required.includes(tag));
-    const browse = { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [], subs: null, siteErrors: [], scope: searchScope(domain) };
+    const browse = { domain, tags: [...tags], required: req, preferred: tags.filter(tag => !req.includes(tag)), negatives: [...negatives], page: 0, items: [], seen: new Set(), done: false, loading: null, error: '', engine: '', pages: [], subs: null, siteErrors: [], scope: searchScope(domain, negatives) };
     if (domain === ALL_SITES) {
-        browse.subs = domainsFor(ALL_SITES).map(name => createBrowse(name, tags, required));
+        browse.subs = domainsFor(ALL_SITES).map(name => createBrowse(name, tags, required, negatives));
     }
     return browse;
 }
 
-function searchScope(domain) {
-    return `${domainsFor(domain).join(',')}|${excludedTags().join(',')}`;
+function searchScope(domain, negatives = []) {
+    return `${domainsFor(domain).join(',')}|${excludedTags().join(',')}|${negatives.join(',')}`;
 }
 
 function sameTags(a, b) {
     return a.length === b.length && a.every((tag, i) => tag === b[i]);
 }
 
-function sameSearch(browse, domain, tags, required) {
-    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain) && sameTags(browse.tags, tags) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+function sameSearch(browse, domain, tags, required, negatives = []) {
+    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain, negatives) && sameTags(browse.tags, tags) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
 }
 
-function sameRequired(browse, domain, tags, required) {
-    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
+function sameRequired(browse, domain, tags, required, negatives = []) {
+    return Boolean(browse) && browse.domain === domain && browse.scope === searchScope(domain, negatives) && sameTags(browse.required, tags.filter(tag => required.includes(tag)));
 }
 
 function rankItems(items, preferred) {
@@ -854,7 +854,7 @@ function rankItems(items, preferred) {
 }
 
 function rerankBrowse(old, tags, required) {
-    const next = createBrowse(old.domain, tags, required);
+    const next = createBrowse(old.domain, tags, required, old.negatives || []);
     Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages, siteErrors: old.siteErrors });
     if (old.subs) {
         next.subs = old.subs.map(sub => rerankBrowse(sub, tags, required));
@@ -917,7 +917,7 @@ async function loadMore(browse) {
         let calls = 0;
         while (!browse.done && received < RANK_WINDOW && calls < MAX_PAGE_CALLS) {
             calls++;
-            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page, [...browse.required, ...browse.preferred]);
+            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page, [...browse.required, ...browse.preferred], browse.negatives || []);
             if (debug) {
                 browse.pages.push(debug);
                 received += debug.received;
@@ -6156,7 +6156,7 @@ async function openPicker(initialTags = null) {
     ui.libraryView.append(ui.libSearch, ui.libFilters, ui.libGrid);
     ui.libraryView.hidden = true;
     ui.input.type = 'text';
-    ui.input.placeholder = 'add tag, Enter';
+    ui.input.placeholder = 'add tag (-tag to exclude), Enter';
     ui.suggest.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
     ui.suggest.title = 'Ask the tag model again';
     ui.search.innerHTML = '<i class="fa-solid fa-magnifying-glass"></i>';
@@ -6189,6 +6189,7 @@ async function openPicker(initialTags = null) {
 
     let tags = [];
     let required = new Set();
+    let negatives = [];
     let edited = false;
     let browse = null;
     let rendered = 0;
@@ -6326,6 +6327,19 @@ async function openPicker(initialTags = null) {
             });
             ui.chips.insertBefore(chip, ui.input);
         });
+        negatives.forEach(tag => {
+            const chip = el('span', 'stis-chip stis-neg');
+            chip.title = 'Excluded: pictures with this tag are left out of this search. Tap × to take it out.';
+            chip.appendChild(el('span', '', `−${tag}`));
+            const remove = el('i', 'fa-solid fa-xmark stis-chip-x');
+            remove.title = 'Stop excluding it';
+            remove.addEventListener('click', event => {
+                event.stopPropagation();
+                dropNegative(tag);
+            });
+            chip.appendChild(remove);
+            ui.chips.insertBefore(chip, ui.input);
+        });
         renderMenu();
         renderDebug();
         renderFavs();
@@ -6367,6 +6381,7 @@ async function openPicker(initialTags = null) {
             toggleFavorite(tag);
             renderChips();
         });
+        action('Exclude from this search', () => makeNegative(tag));
         action('Remove', () => removeTag(tag));
         action('Never suggest', () => {
             addToSuggestBlacklist(tag);
@@ -6397,7 +6412,7 @@ async function openPicker(initialTags = null) {
                 if (tags.includes(tag)) {
                     removeTag(tag);
                 } else {
-                    setTags([...tags, tag], true, requiredList());
+                    setTags([...tags, tag], true, [...requiredList(), tag]);
                     tagsChanged();
                 }
             });
@@ -6556,14 +6571,31 @@ async function openPicker(initialTags = null) {
     };
 
     const commitInput = () => {
-        const parts = ui.input.value.split(',').map(normalizeTag).filter(Boolean);
+        const raw = ui.input.value.split(',').map(part => part.trim()).filter(Boolean);
         ui.input.value = '';
-        if (!parts.length) {
+        const minus = raw.filter(part => part.startsWith('-')).map(part => normalizeTag(part.slice(1))).filter(Boolean);
+        const parts = raw.filter(part => !part.startsWith('-')).map(normalizeTag).filter(Boolean);
+        if (!parts.length && !minus.length) {
             return false;
         }
-        setTags([...tags, ...parts], true, requiredList());
+        if (minus.length) {
+            negatives = [...new Set([...negatives, ...minus])];
+            tags = tags.filter(tag => !minus.includes(tag));
+            minus.forEach(tag => required.delete(tag));
+        }
+        setTags([...tags, ...parts], true, [...requiredList(), ...parts]);
         tagsChanged();
         return true;
+    };
+
+    const makeNegative = tag => {
+        negatives = [...new Set([...negatives, tag])];
+        removeTag(tag);
+    };
+
+    const dropNegative = tag => {
+        negatives = negatives.filter(item => item !== tag);
+        tagsChanged();
     };
 
     const familyBadge = family => {
@@ -6712,18 +6744,18 @@ async function openPicker(initialTags = null) {
         }
         const domain = ui.site.value;
         const pre = currentPrefetch();
-        if (pre?.browse && !pre.browse.error && sameSearch(pre.browse, domain, tags, req)) {
+        if (pre?.browse && !pre.browse.error && sameSearch(pre.browse, domain, tags, req, negatives)) {
             useBrowse(pre.browse);
             return;
         }
-        if (browse && !browse.error && sameSearch(browse, domain, tags, req)) {
+        if (browse && !browse.error && sameSearch(browse, domain, tags, req, negatives)) {
             return;
         }
-        if (browse && !browse.error && !browse.loading && browse.items.length && sameRequired(browse, domain, tags, req)) {
+        if (browse && !browse.error && !browse.loading && browse.items.length && sameRequired(browse, domain, tags, req, negatives)) {
             useBrowse(rerankBrowse(browse, tags, req));
             return;
         }
-        useBrowse(createBrowse(domain, tags, req));
+        useBrowse(createBrowse(domain, tags, req, negatives));
     }
 
     const adoptSuggestion = pre => {
@@ -6945,7 +6977,7 @@ async function openPicker(initialTags = null) {
                 setView('search');
             }
             if (wanted.length) {
-                setTags([...tags, ...wanted], true, requiredList());
+                setTags([...tags, ...wanted], true, [...requiredList(), ...wanted]);
                 tagsChanged();
             }
         });
@@ -7666,9 +7698,13 @@ async function openPicker(initialTags = null) {
         ui.complete.innerHTML = '';
         ui.complete.hidden = true;
     };
+    const lastPart = () => {
+        const last = ui.input.value.split(',').pop().trim();
+        return { minus: last.startsWith('-'), prefix: normalizeTag(last.replace(/^-+/, '')) };
+    };
     const chooseCompletion = name => {
         const parts = ui.input.value.split(',');
-        parts[parts.length - 1] = name;
+        parts[parts.length - 1] = `${lastPart().minus ? '-' : ''}${name}`;
         ui.input.value = parts.join(',');
         hideComplete();
         commitInput();
@@ -7698,7 +7734,7 @@ async function openPicker(initialTags = null) {
     };
     const updateComplete = () => {
         clearTimeout(completeTimer);
-        const prefix = normalizeTag(ui.input.value.split(',').pop());
+        const { prefix } = lastPart();
         if (prefix.length < 2) {
             hideComplete();
             return;
@@ -7706,11 +7742,11 @@ async function openPicker(initialTags = null) {
         completeTimer = setTimeout(async () => {
             const favorites = favoriteTags().filter(tag => tag.includes(prefix));
             const list = await completeTag(ui.site.value, prefix).catch(() => []);
-            if (closed || normalizeTag(ui.input.value.split(',').pop()) !== prefix) {
+            if (closed || lastPart().prefix !== prefix) {
                 return;
             }
             const favItems = favorites.map(name => ({ name, count: list.find(item => item.name === name)?.count || knownCount(ui.site.value, name) || 0, fav: true }));
-            completeItems = [...favItems, ...list.filter(item => !favorites.includes(item.name))].filter(item => !tags.includes(item.name)).slice(0, 10);
+            completeItems = [...favItems, ...list.filter(item => !favorites.includes(item.name))].filter(item => !tags.includes(item.name) && !negatives.includes(item.name)).slice(0, 10);
             completeIndex = -1;
             renderComplete();
         }, 250);

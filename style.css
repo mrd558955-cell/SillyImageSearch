@@ -996,3 +996,10 @@ video.stis-preview-img {
 .stis-cat-delete {
     margin-top: 6px;
 }
+
+.stis-chip.stis-neg {
+    text-decoration: line-through;
+    border-style: dashed;
+    opacity: 0.85;
+    color: #e57373;
+}

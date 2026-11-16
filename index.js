@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.19.0';
+const VERSION = '2.19.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4849,7 +4849,7 @@ function visionHash() {
 }
 
 function describedOld(entry) {
-    return Boolean(entry.description) && entry.described !== visionHash();
+    return Boolean(entry.description) && !String(entry.description).trimStart().startsWith('Visual:');
 }
 
 function chatCharacters() {

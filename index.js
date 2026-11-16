@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.21.0';
+const VERSION = '2.22.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -14,7 +14,7 @@ const COUNT_TAGS = /^(\d+(girl|boy|other)s?|solo|male|female|multiple_.*|.*_focu
 const STOP_WORDS = new Set(['the', 'and', 'with', 'her', 'his', 'their', 'she', 'him', 'them', 'they', 'you', 'your', 'are', 'was', 'were', 'has', 'have', 'had', 'this', 'that', 'there', 'then', 'than', 'from', 'into', 'onto', 'over', 'under', 'out', 'for', 'not', 'but', 'its', 'who', 'what', 'when', 'where', 'which', 'while', 'some', 'very', 'just', 'like', 'one', 'two', 'picture', 'shows', 'showing', 'shown', 'image', 'wearing', 'looks', 'look', 'seems', 'standing', 'sitting', 'background']);
 const GENERIC_KEYWORDS = new Set(['girl', 'girls', 'boy', 'boys', 'man', 'men', 'woman', 'women', 'person', 'people', 'human', 'humans', 'guy', 'lady', 'smile', 'smiling', 'grin', 'hair', 'eyes', 'face', 'body', 'clothes', 'clothing', 'outfit', 'standing', 'sitting', 'looking', 'portrait', 'picture', 'image', 'character', 'solo', 'adult', 'young', 'pose', 'posing', 'background']);
 const LOCAL_IMAGE_MD = /!\[([^\]\n]*)\]\((\/user\/images\/imagesearch\/[^)\s]+)\)/g;
-const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena'];
+const ENGINE_ORDER = ['gelbooru', 'danbooru', 'moebooru', 'philomena', 'shimmie'];
 const NOT_BOARD = new Set(['web', 'web-unchecked', 'none']);
 const KNOWN_WEB = /(^|\.)(wikimedia\.org|wikipedia\.org|pexels\.com|unsplash\.com|artstation\.com|flickr\.com|deviantart\.com|pinterest\.[a-z.]+|pixabay\.com|imgur\.com|reddit\.com)$/;
 const DROP_TAGS = new Set(['night', 'day', 'daytime', 'nighttime', 'dawn', 'dusk', 'sunset', 'sunrise', 'evening', 'morning', 'afternoon', 'twilight', 'midnight', 'night_sky', 'starry_sky', 'indoors', 'outdoors', 'sunlight', 'moonlight', 'rain', 'snowing', 'cloudy_sky', 'blue_sky', 'scenery', 'forest', 'woods', 'city', 'cityscape', 'street', 'alley', 'beach', 'ocean', 'sea', 'river', 'lake', 'mountain', 'mountains', 'field', 'meadow', 'park', 'garden', 'desert', 'cave', 'village', 'town', 'school', 'classroom', 'library', 'bedroom', 'room', 'kitchen', 'bathroom', 'office', 'cafe', 'tavern', 'inn', 'shrine', 'temple', 'ruins', 'dungeon', 'castle', 'snow', 'grass', 'water', 'sky', 'outdoor', 'indoor', 'urban', 'city_street', 'rooftop', 'building', 'house', 'road', 'standing', 'sitting', 'walking', 'running', 'lying', 'kneeling', 'squatting', 'crouching', 'leaning', 'leaning_forward', 'jumping', 'fighting', 'holding', 'talking', 'walking_away', 'looking_at_viewer', 'looking_away', 'looking_back', 'looking_down', 'looking_up', 'arms_crossed', 'hands_on_hips', 'from_side', 'from_behind', 'from_above', 'from_below', 'full_body', 'upper_body', 'cowboy_shot', 'portrait', 'close-up']);
@@ -452,7 +452,7 @@ function absolute(url, origin) {
 
 function isGifUrl(url) {
     try {
-        return /\.gif$/i.test(new URL(url).pathname);
+        return /\.gif$/i.test(filePath(url));
     } catch {
         return false;
     }
@@ -460,7 +460,7 @@ function isGifUrl(url) {
 
 function isStillImage(url) {
     try {
-        return /\.(jpe?g|png|webp|gif|avif)$/i.test(new URL(url).pathname);
+        return /\.(jpe?g|png|webp|gif|avif)$/i.test(filePath(url));
     } catch {
         return false;
     }
@@ -595,15 +595,58 @@ const ENGINES = {
         },
         postTags: post => tagList(post.tags).map(tag => tag.replace(/\s+/g, '_')),
     },
+    shimmie: {
+        cap: 6,
+        pageSize: 100,
+        emptyMeansNoOrder: true,
+        url: (origin, tags, extra, page) => `${origin}/api/danbooru/find_posts?limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
+        tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, ...(noOrder ? [] : ['order:score_desc']), ...exclude.slice(0, 8).map(tag => `-${tag}`)],
+        parse: result => (result.ok && /<posts[\s>]/i.test(String(result.text || '').slice(0, 2000)) ? xmlPosts(result.text, true) : null),
+        image: (post, origin) => withFileHint(absolute(post.file_url, origin), post.file_name),
+        full: (post, origin) => withFileHint(absolute(post.file_url, origin), post.file_name),
+        thumb: (post, origin) => absolute(post.preview_url, origin),
+        postUrl: (post, origin) => `${origin}/post/view/${post.id}`,
+        parentId: () => '',
+        hasChildren: () => false,
+        md5: post => String(post.md5 || ''),
+        family: () => [],
+        siteUrl: (origin, tags) => `${origin}/post/list/${encodeURIComponent(tags.join(' ') || '*')}/1`,
+        rating: post => ({ s: 'general', safe: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
+        postTags: post => tagList(post.tags),
+    },
 };
 
-function xmlPosts(text) {
+function withFileHint(url, name) {
+    if (!url || !/\.\w{2,5}$/.test(String(name || ''))) {
+        return url;
+    }
+    try {
+        const parsed = new URL(url);
+        if (/\.\w{2,5}$/.test(parsed.pathname)) {
+            return url;
+        }
+        parsed.hash = `file${String(name).match(/\.\w{2,5}$/)[0].toLowerCase()}`;
+        return parsed.href;
+    } catch {
+        return url;
+    }
+}
+
+function filePath(url) {
+    const parsed = new URL(url);
+    return /\.\w{2,5}$/.test(parsed.pathname) ? parsed.pathname : parsed.hash || parsed.pathname;
+}
+
+function xmlPosts(text, loose = false) {
     if (!/<posts[\s>]/i.test(String(text || '').slice(0, 2000)) || typeof DOMParser !== 'function') {
         return null;
     }
-    const doc = new DOMParser().parseFromString(String(text), 'text/xml');
+    let doc = new DOMParser().parseFromString(String(text), 'text/xml');
     if (doc.getElementsByTagName('parsererror').length) {
-        return null;
+        if (!loose) {
+            return null;
+        }
+        doc = new DOMParser().parseFromString(String(text), 'text/html');
     }
     return [...doc.getElementsByTagName('post')].map(node => {
         const post = Object.fromEntries([...node.attributes].map(attr => [attr.name, attr.value]));
@@ -760,6 +803,11 @@ async function fetchPage(entry, engineName, required, page, wanted = required, n
         const query = engine.tags(siteTags, s.ratings, noOrder, exclude);
         const result = await request(engine.url(origin, query, entry.extra, page));
         const posts = engine.parse(result);
+        if (posts !== null && !posts.length && page === 0 && engine.emptyMeansNoOrder && !noOrder) {
+            noOrder = true;
+            noOrderSites.add(entry.domain);
+            continue;
+        }
         if (posts === null) {
             if (engineName === 'danbooru' && !noOrder) {
                 noOrder = true;
@@ -1840,7 +1888,7 @@ const VIDEO_URL = /\.(webm|mp4|m4v|mov)$/i;
 
 function isVideoUrl(url) {
     try {
-        return VIDEO_URL.test(new URL(url).pathname);
+        return VIDEO_URL.test(filePath(url));
     } catch {
         return false;
     }
@@ -2926,7 +2974,7 @@ function stillGifs() {
 function postRef(source) {
     try {
         const url = new URL(source);
-        const id = url.searchParams.get('id') || (url.pathname.match(/\/(?:posts|post\/show|images)\/(\d+)/) || [])[1];
+        const id = url.searchParams.get('id') || (url.pathname.match(/\/(?:posts|post\/show|post\/view|images)\/(\d+)/) || [])[1];
         return /^\d+$/.test(String(id || '')) ? { domain: url.hostname, origin: url.origin, id: String(id) } : null;
     } catch {
         return null;
@@ -8125,7 +8173,7 @@ function buildSettings() {
                 <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_enabled"> <span>Enabled</span></label>
                 <div>Image boards (one per line)</div>
                 <textarea id="st_imagesearch_sites" class="text_pole"></textarea>
-                <small>Booru sites only (Gelbooru, Danbooru, e621, Moebooru, Philomena). If a site needs a login key, add it after the domain, e.g. <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
+                <small>Booru sites only (Gelbooru, Danbooru, e621, Moebooru, Philomena, Shimmie such as rule34.paheal.net). If a site needs a login key, add it after the domain, e.g. <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
                 <div>Tag profile (connection profile used to suggest tags)</div>
                 <select id="st_imagesearch_profile" class="text_pole"></select>
                 <small id="st_imagesearch_profile_note"></small>

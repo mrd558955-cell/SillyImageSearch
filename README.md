@@ -6,7 +6,7 @@ Click the images icon next to the chat box (or the wand menu, or `/imgsearch tag
 
 1. In API Connections, pick a fast model that does not think (e.g. NanoGPT `deepseek/deepseek-v4.1-flash`), save it as a connection profile called `Tags`, then switch back to your main profile.
 2. In the Image Search settings, choose `Tags` as the tag profile.
-3. List image boards, one per line (e.g. `safebooru.org`, `danbooru.donmai.us`).
+3. List image boards, one per line (e.g. `safebooru.org`, `danbooru.donmai.us`). Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (through their Danbooru-style address, e.g. `rule34.paheal.net`) are found on their own.
 4. For the AI to see picked pictures: keep "Save picked pictures" and "Attach saved pictures" on, turn on "Send inline media" in the Chat Completion settings, and use a main model that accepts images.
 
 Saving pictures needs `enableCorsProxy: true` in `config.yaml`, or the Cloudflare image fetcher.

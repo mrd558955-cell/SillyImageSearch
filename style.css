@@ -719,21 +719,8 @@ video.stis-preview-img {
     background: #000;
 }
 
-.stis-sendcard-answer {
-    font-size: 0.9em;
-    text-align: left;
-    padding: 4px 8px;
-    border-left: 3px solid var(--SmartThemeQuoteColor);
-}
 
-.stis-sendcard-answer:empty {
-    display: none;
-}
 
-.stis-why-not {
-    min-width: 2.2em;
-    font-weight: bold;
-}
 
 .stis-sendcard-grid {
     display: grid;

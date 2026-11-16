@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.14.0';
+const VERSION = '2.15.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4823,7 +4823,6 @@ function cardFacets(entry) {
     return [...new Set(keys)];
 }
 
-const PICK_COUNT = 5;
 const sendState = { pending: null, busy: false };
 
 function chatPictures() {
@@ -4918,23 +4917,6 @@ function pickContext(message) {
     return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
 }
 
-async function askWhyNot(session, best, choice) {
-    const s = settings();
-    const service = ctx().ConnectionManagerRequestService;
-    if (!service || !s.tagProfile) {
-        throw new Error('no tag profile is chosen in the Image Search settings');
-    }
-    const seen = session.shortlist.has(choice);
-    const rank = session.ranks.get(choice) || '?';
-    const reason = session.reasons.get(best);
-    const unseen = seen ? '' : `\nYou were not shown picture B before: in the search it was only number ${rank}, and you saw the first ${session.shortlist.size}.`;
-    const prompt = `${pickContext(session.message)}\n\nFor the reply to the newest message you chose this picture:\nA. ${choiceLine(best)}${reason ? `\nYour reason: ${reason}` : ''}\n\nThe user is looking at this one instead:\nB. ${choiceLine(choice)}${unseen}\n\nIn at most 3 short sentences, say why B is a worse fit than A, judging looks first and then what happens. If B fits better than A, say so plainly.`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 250, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
-    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/\s+/g, ' ').trim();
-    const prefix = seen ? '' : `The AI never saw this one: it was number ${rank} in the search and only the first ${session.shortlist.size} are sent. ${scoreLine(choice) ? `${scoreLine(choice)}. ` : ''}`;
-    return `${prefix}${text || 'The AI gave no answer.'}`;
-}
-
 async function askPicturePick(message, candidates) {
     const s = settings();
     const c = ctx();
@@ -4943,48 +4925,46 @@ async function askPicturePick(message, candidates) {
         return null;
     }
     const shortlist = candidates.slice(0, shortlistSize());
-    const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nReply with your ${Math.min(PICK_COUNT, shortlist.length)} best pictures, all different, best first, one per line, like this:\n#7 - why it fits: who it shows and what happens, in at most 15 words\nIf none of the pictures fits at all, reply with: #0 - why`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 450, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nRank all ${shortlist.length} pictures, best first, one per line, each with a short reason for its place (who it shows, what happens, what fits or does not), in at most 12 words, like this:\n#7 - Mira knocked down, right looks, follows the shove\n#12 - right looks, but she is standing calmly\nIf none of the pictures really fits, start with this line and still rank them all: #0 - why nothing fits`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 120 + 40 * shortlist.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const picks = [];
-    for (const raw of text.split('\n')) {
-        const line = raw.replace(/\*\*/g, '').replace(/^\s*(?:[-*•]+|\d+[.)])\s+(?=(?:picture\s*)?#?\d)/i, '');
-        if (/\d/.test(line) && /^[\s#\d,;.]+$/.test(line)) {
-            const numbers = line.match(/\d+/g).map(Number);
-            if (numbers[0] === 0 && !picks.length) {
-                return { choices: [], none: '' };
-            }
-            for (const number of numbers) {
-                const choice = shortlist[number - 1];
-                if (choice && !picks.some(pick => pick.choice === choice)) {
-                    picks.push({ choice, why: '' });
-                }
-            }
-            continue;
-        }
-        const match = line.match(/^\s*(?:[-*#]+\s*)?(?:picture\s*)?#?(\d+)(?:\s*[.):\-–—*]+\s*|\s+|$)(.*)$/i);
-        if (!match) {
-            continue;
-        }
-        const number = Number(match[1]);
-        const why = match[2].replace(/^(why it fits|because)\s*[:\-–—]?\s*/i, '').trim().slice(0, 200);
-        if (number === 0 && !picks.length) {
-            return { choices: [], none: why };
+    let none = null;
+    const take = (number, why) => {
+        if (number === 0) {
+            none ??= why;
+            return;
         }
         const choice = shortlist[number - 1];
         if (choice && !picks.some(pick => pick.choice === choice)) {
             picks.push({ choice, why });
         }
-        if (picks.length >= PICK_COUNT) {
-            break;
+    };
+    for (const raw of text.split('\n')) {
+        const line = raw.replace(/\*\*/g, '').replace(/^\s*(?:[-*•]+|\d+[.)])\s+(?=(?:picture\s*)?#?\d)/i, '');
+        if (/\d/.test(line) && /^[\s#\d,;.]+$/.test(line)) {
+            line.match(/\d+/g).map(Number).forEach(number => take(number, ''));
+            continue;
+        }
+        const match = line.match(/^\s*(?:[-*#]+\s*)?(?:picture\s*)?#?(\d+)(?:\s*[.):\-–—*]+\s*|\s+|$)(.*)$/i);
+        if (match) {
+            take(Number(match[1]), match[2].replace(/^(why it fits|why|because)\s*[:\-–—]?\s*/i, '').trim().slice(0, 200));
         }
     }
-    if (!picks.length) {
+    if (!picks.length && none === null) {
         const numbers = [...text.matchAll(/\d+/g)].map(match => Number(match[0])).filter(number => number >= 1 && number <= shortlist.length);
-        return numbers.length ? { choices: [...new Set(numbers)].slice(0, PICK_COUNT).map(number => shortlist[number - 1]), reasons: new Map() } : null;
+        if (!numbers.length) {
+            return null;
+        }
+        [...new Set(numbers)].forEach(number => take(number, ''));
     }
-    const chosen = picks.slice(0, PICK_COUNT);
-    return { choices: chosen.map(pick => pick.choice), reasons: new Map(chosen.filter(pick => pick.why).map(pick => [pick.choice, pick.why])), picked: new Set(chosen.map(pick => pick.choice)) };
+    return {
+        choices: picks.map(pick => pick.choice),
+        reasons: new Map(picks.filter(pick => pick.why).map(pick => [pick.choice, pick.why])),
+        picked: new Set(picks.map(pick => pick.choice)),
+        noneFits: none !== null,
+        none: none || '',
+    };
 }
 
 function forceInstruction(choice) {
@@ -5016,9 +4996,8 @@ function forcePicture(choice) {
 function showPictureCard(session) {
     const c = ctx();
     const { options, reasons, picked, noneFits, noneWhy } = session;
-    const best = options.find(choice => picked.has(choice)) || null;
+    const aiOrder = new Map(options.filter(choice => picked.has(choice)).map((choice, position) => [choice, position + 1]));
     let index = 0;
-    let asking = null;
     const root = el('div', 'stis-sendcard');
     const note = el('small', 'stis-sendcard-note');
     const img = el('img', 'stis-sendcard-img');
@@ -5033,21 +5012,18 @@ function showPictureCard(session) {
         showLooks = !showLooks;
         draw();
     });
-    const answer = el('div', 'stis-sendcard-answer');
     const grid = el('div', 'stis-sendcard-grid');
     grid.hidden = true;
     const bar = el('div', 'stis-sendcard-bar');
     const send = el('div', 'menu_button stis-use', 'Send');
     const another = el('div', 'menu_button', 'Another');
-    const ask = el('div', 'menu_button stis-why-not', '?');
-    ask.title = 'Ask the AI why it did not pick this one';
     const browse = el('div', 'menu_button', 'Library');
     browse.title = 'Choose any picture from the library';
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
-    bar.append(send, another, ask, browse, search, cancel);
+    bar.append(send, another, browse, search, cancel);
     const sheets = el('div', 'stis-sendcard-sheets');
-    root.append(note, img, why, answer, text, score, looksBox, sheets, grid, bar);
+    root.append(note, img, why, text, score, looksBox, sheets, grid, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
@@ -5062,11 +5038,18 @@ function showPictureCard(session) {
         }
         sheets.hidden = !showLooks;
         const reason = reasons.get(choice);
-        why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
-        const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';
-        note.textContent = noneFits ? 'Nothing in the library really fits this message. Closest pictures:' : `Choice ${index + 1} of ${options.length}${seen}`;
-        answer.textContent = asking === choice ? 'Asking the AI…' : session.answers.get(choice) || '';
-        ask.hidden = !best || choice === best;
+        const place = aiOrder.get(choice);
+        if (place) {
+            why.textContent = `AI #${place} of ${session.shortlist.size}${reason ? `: ${reason}` : '.'}`;
+        } else if (!picked.size) {
+            why.textContent = '';
+        } else if (session.shortlist.has(choice)) {
+            why.textContent = 'The AI left this one out of its ranking.';
+        } else {
+            why.textContent = `The AI did not see this one: it was #${session.ranks.get(choice) || '?'} in the search, and the AI sees the first ${session.shortlist.size}.`;
+        }
+        const head = noneFits ? `The AI found nothing that really fits${noneWhy ? `: ${noneWhy.replace(/[.!?]*$/, '.')}` : '.'} Its ranking anyway. ` : '';
+        note.textContent = `${head}Choice ${index + 1} of ${options.length}`;
         another.classList.toggle('stis-disabled', index >= options.length - 1);
     };
     send.addEventListener('click', async () => {
@@ -5079,21 +5062,6 @@ function showPictureCard(session) {
             index++;
             draw();
         }
-    });
-    ask.addEventListener('click', async () => {
-        const choice = options[index];
-        if (asking || !best || choice === best) {
-            return;
-        }
-        asking = choice;
-        draw();
-        try {
-            session.answers.set(choice, await askWhyNot(session, best, choice));
-        } catch (error) {
-            session.answers.set(choice, `Could not ask the AI: ${error?.message || error}`);
-        }
-        asking = null;
-        draw();
     });
     browse.addEventListener('click', () => {
         grid.hidden = !grid.hidden;
@@ -5155,7 +5123,7 @@ async function sendWithPicture() {
             console.warn('[Image Search] picture choice failed, using the closest match', error);
             toastr.warning(`The AI could not choose (${String(error?.message || error).slice(0, 120)}). Showing the closest pictures by keywords.`, 'Image Search');
         }
-        noneFits = Boolean(picked) && !picked.choices.length;
+        noneFits = Boolean(picked?.noneFits);
         reasons = picked?.reasons || new Map();
         aiPicked = picked?.picked || new Set(picked?.choices || []);
         noneWhy = picked?.none || '';
@@ -5172,7 +5140,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard({ message, cast, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks, answers: new Map() });
+        showPictureCard({ message, cast, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks });
     } else {
         forcePicture(options[0]);
     }

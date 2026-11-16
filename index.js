@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.12.2';
+const VERSION = '2.12.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4282,8 +4282,10 @@ async function rankedCandidates(message) {
         return choices;
     }
     let order = null;
+    let meaningFailed = false;
     const [rank, cast] = await Promise.all([
-        meaningRank(meaningQuery(message || recentText(1)), 80).catch(error => {
+        meaningRank(meaningQuery(message || recentText(1)), Infinity).catch(error => {
+            meaningFailed = true;
             if (!meaning.warned) {
                 meaning.warned = true;
                 toastr.warning(`Search by meaning did not work (${String(error?.message || error).slice(0, 140)}). Using keywords only.`, 'Image Search');
@@ -4296,14 +4298,31 @@ async function rankedCandidates(message) {
     for (const choice of choices) {
         const position = order?.get(choice.entry);
         const keywords = Math.min(choice.score || 0, 24);
-        const meaningPoints = position === undefined ? 0 : 36 * (1 - position / Math.max(order.size, 1));
+        const meaningPoints = position === undefined ? 0 : Math.round(36 * (1 - position / Math.max(order.size, 1)));
         const detail = looksDetail(choice.entry, cast);
         const looks = detail.score;
-        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, cast: cast.length > 0, looksNotes: detail.notes };
-        choice.total = keywords + meaningPoints + looks;
+        const shownPoints = choice.fresh ? 0 : -12;
+        let meaningNote;
+        if (!meaningSource()) {
+            meaningNote = 'Meaning: search by meaning is off, so it does not count.';
+        } else if (meaningFailed) {
+            meaningNote = 'Meaning: the search did not work this time, so it does not count.';
+        } else if (position !== undefined) {
+            meaningNote = `Meaning: #${position + 1} of ${order.size} closest to the newest message → ${signed(meaningPoints)} (the closest gets +36, the farthest 0)`;
+        } else if (!choice.entry.card) {
+            meaningNote = 'Meaning: no filing card yet, so it is not in the search index → 0';
+        } else {
+            meaningNote = 'Meaning: not in the search index yet (it updates in the background) → 0';
+        }
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with the story and the character's looks → ${signed(keywords)} (at most +24)`, ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : [])] };
+        choice.total = keywords + meaningPoints + looks + shownPoints;
     }
     const sorted = [...choices].sort((a, b) => b.total - a.total);
-    return [...sorted.filter(choice => choice.fresh), ...sorted.filter(choice => !choice.fresh)];
+    const seen = shortlistSize();
+    sorted.forEach((choice, index) => {
+        choice.parts.notes.push(`Total ${signed(Math.round(choice.total))} → #${index + 1} of ${sorted.length}; the AI compares the first ${Math.min(seen, sorted.length)}`);
+    });
+    return sorted;
 }
 
 function scoreLine(choice) {
@@ -4315,7 +4334,7 @@ function scoreLine(choice) {
     if (parts.meaning) {
         items.push(`meaning #${parts.meaning} of ${parts.of}`);
     } else if (parts.of) {
-        items.push('no meaning match');
+        items.push(choice.entry.card ? 'not in the search index' : 'no meaning match');
     }
     if (parts.cast && choice.entry.card?.people?.length) {
         items.push(`looks ${signed(parts.looks)}`);
@@ -4620,7 +4639,7 @@ function showPictureCard(session) {
     const text = el('div', 'stis-sendcard-text');
     const why = el('div', 'stis-sendcard-why');
     const score = el('small', 'stis-sendcard-score');
-    score.title = 'Tap to see how the looks score was counted';
+    score.title = 'Tap to see how this picture was ranked';
     const looksBox = el('div', 'stis-sendcard-looks');
     let showLooks = false;
     score.addEventListener('click', () => {
@@ -4647,7 +4666,7 @@ function showPictureCard(session) {
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
         score.textContent = scoreLine(choice) ? `${scoreLine(choice)} ${showLooks ? '▴' : '▾'}` : '';
-        looksBox.textContent = showLooks ? (choice.parts?.looksNotes || []).join('\n') : '';
+        looksBox.textContent = showLooks ? (choice.parts?.notes || []).join('\n') : '';
         const reason = reasons.get(choice);
         why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
         const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';

@@ -863,3 +863,63 @@ video.stis-preview-img {
 .stis-sendcard-sheets[hidden] {
     display: none;
 }
+
+.stis-progress {
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10000;
+    width: min(92vw, 420px);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 8px;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.stis-progress-text {
+    grid-column: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.stis-progress .stis-progress-track {
+    grid-column: 1;
+}
+
+.stis-progress-close {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    cursor: pointer;
+    opacity: 0.7;
+    padding: 4px;
+}
+
+.stis-progress-track {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--SmartThemeBorderColor);
+    overflow: hidden;
+}
+
+.stis-progress-track[hidden] {
+    display: none;
+}
+
+.stis-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--SmartThemeQuoteColor);
+    transition: width 0.4s ease;
+}
+
+.stis-progress-done .stis-progress-fill {
+    background: #4caf50;
+}

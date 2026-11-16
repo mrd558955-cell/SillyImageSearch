@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.16.0';
+const VERSION = '2.16.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3631,7 +3631,7 @@ const ADULT_AGES = new Set(['young adult', 'adult', 'middle-aged', 'old']);
 const BUSTS = ['small', 'medium', 'large', 'very large'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
-const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, error: '', warned: false };
+const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, made: 0, error: '', warned: false, started: 0, stage: '', bar: false, dismissed: false };
 const meaning = { synced: false, syncing: null, error: '', count: 0, key: '', warned: false, hashes: new Set() };
 
 function hashText(text) {
@@ -3868,11 +3868,17 @@ async function fileCards({ only = null, loud = false } = {}) {
         } else if (pending.length) {
             filing.total = pending.length;
             filing.done = 0;
+            filing.made = 0;
             filing.error = '';
+            filing.started = Date.now();
+            filing.stage = 'cards';
             const big = !only && pending.length >= CARD_BATCH;
+            filing.bar = big || loud;
+            filing.dismissed = false;
             if (big || loud) {
                 toastr.info(`Making filing cards for ${pending.length} picture(s), so the AI can find the right one faster…`, 'Image Search');
             }
+            paintCardStatus();
             let made = 0;
             for (let i = 0; i < pending.length; i += CARD_BATCH) {
                 const batch = pending.slice(i, i + CARD_BATCH);
@@ -3894,6 +3900,7 @@ async function fileCards({ only = null, loud = false } = {}) {
                     }
                 });
                 filing.done += batch.length;
+                filing.made = made;
                 paintCardStatus();
                 if (cards.size) {
                     await saveLibrary({ skipSync: true, skipFiling: true });
@@ -3907,12 +3914,70 @@ async function fileCards({ only = null, loud = false } = {}) {
                 toastr.warning(`Filing cards could not be made: ${filing.error}`, 'Image Search');
             }
         }
+        filing.stage = 'index';
+        paintCardStatus();
         await syncMeaning();
     })().finally(() => {
         filing.running = null;
+        const shown = filing.bar;
+        filing.stage = shown ? 'done' : '';
         paintCardStatus();
+        if (shown) {
+            setTimeout(() => {
+                if (!filing.running) {
+                    filing.bar = false;
+                    filing.stage = '';
+                    paintCardStatus();
+                }
+            }, 4000);
+        }
     });
     return filing.running;
+}
+
+function filingProgress() {
+    const total = filing.total || 0;
+    const batches = Math.ceil(total / CARD_BATCH);
+    const done = Math.ceil(filing.done / CARD_BATCH);
+    if (filing.stage === 'done') {
+        return { fraction: 1, text: `Filing cards done: ${filing.made} of ${total} made${meaning.error ? ` · search index: ${meaning.error}` : ''}` };
+    }
+    if (filing.stage === 'index') {
+        return { fraction: 1, text: `Filing cards: ${filing.made} of ${total} made · updating the search index…` };
+    }
+    let left = '';
+    if (done > 0 && done < batches) {
+        const seconds = Math.round((Date.now() - filing.started) / done * (batches - done) / 1000);
+        left = seconds < 10 ? ' · almost done' : ` · about ${seconds >= 90 ? `${Math.round(seconds / 60)} min` : `${seconds} s`} left`;
+    }
+    return { fraction: total ? filing.done / total : 0, text: `Filing cards: ${filing.done} of ${total} pictures (request ${Math.min(done + 1, batches)} of ${batches})${left}` };
+}
+
+function paintFilingBar() {
+    let bar = document.getElementById('stis_filing_bar');
+    if (!filing.bar || filing.dismissed || !filing.stage) {
+        bar?.remove();
+        return;
+    }
+    if (!bar) {
+        bar = el('div', 'stis-progress');
+        bar.id = 'stis_filing_bar';
+        const label = el('small', 'stis-progress-text');
+        const track = el('div', 'stis-progress-track');
+        track.appendChild(el('div', 'stis-progress-fill'));
+        const close = el('span', 'stis-progress-close fa-solid fa-xmark');
+        close.title = 'Hide (it keeps going; progress is also in the settings)';
+        close.addEventListener('click', () => {
+            filing.dismissed = true;
+            paintFilingBar();
+        });
+        bar.append(label, track, close);
+        document.body.appendChild(bar);
+    }
+    const { fraction, text } = filingProgress();
+    bar.querySelector('.stis-progress-text').textContent = text;
+    bar.querySelector('.stis-progress-fill').style.width = `${Math.round(fraction * 100)}%`;
+    bar.classList.toggle('stis-progress-done', filing.stage === 'done');
 }
 
 function meaningSource() {
@@ -4021,6 +4086,17 @@ async function meaningRank(text, limit = 80) {
 }
 
 function paintCardStatus() {
+    paintFilingBar();
+    const settingsBar = document.getElementById('st_imagesearch_card_progress');
+    if (settingsBar) {
+        const active = Boolean(filing.running && filing.total);
+        settingsBar.hidden = !active;
+        if (active) {
+            const { fraction, text } = filingProgress();
+            settingsBar.querySelector('.stis-progress-fill').style.width = `${Math.round(fraction * 100)}%`;
+            settingsBar.title = text;
+        }
+    }
     const node = document.getElementById('st_imagesearch_card_status');
     if (!node) {
         return;
@@ -4029,7 +4105,7 @@ function paintCardStatus() {
     const carded = described.filter(entry => entry.card).length;
     const parts = [`Filing cards: ${carded} of ${described.length} described picture(s)`];
     if (filing.running && filing.total) {
-        parts.push(`making ${filing.done} / ${filing.total}…`);
+        parts.push(filingProgress().text.replace(/^Filing cards: /, 'making: '));
     } else if (filing.error) {
         parts.push(filing.error);
     }
@@ -7427,6 +7503,7 @@ function buildSettings() {
                         <div id="st_imagesearch_cards_redo" class="menu_button" title="Make every filing card again, except the ones you edited">Redo all cards</div>
                         <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
                     </div>
+                    <div id="st_imagesearch_card_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
                     <small id="st_imagesearch_card_status"></small>
                     <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div></div>
                     <div id="st_imagesearch_sheets"></div>

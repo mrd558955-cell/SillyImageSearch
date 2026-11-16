@@ -935,3 +935,7 @@ video.stis-preview-img {
 .stis-sendopts-hint {
     opacity: 0.75;
 }
+
+#st_imagesearch_settings [hidden] {
+    display: none !important;
+}

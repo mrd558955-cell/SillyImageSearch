@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.17.3';
+const VERSION = '2.18.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3631,7 +3631,7 @@ const SHEET_VERSION = 4;
 const AGES = ['child', 'teen', 'young adult', 'adult', 'middle-aged', 'old'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
-const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, made: 0, error: '', warned: false, started: 0, stage: '', bar: false, dismissed: false };
+const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, made: 0, error: '', warned: false, started: 0, stage: '', bar: false, dismissed: false, cancel: false, stopped: false };
 const meaning = { synced: false, syncing: null, error: '', count: 0, key: '', warned: false, hashes: new Set() };
 
 function hashText(text) {
@@ -3840,12 +3840,29 @@ async function requestCards(batch) {
 
 function scheduleFiling(ms = 4000) {
     clearTimeout(filing.timer);
+    if (filing.stopped) {
+        return;
+    }
     filing.timer = setTimeout(() => {
         fileCards().catch(error => console.warn('[Image Search] filing cards failed', error));
     }, ms);
 }
 
+function stopFiling() {
+    filing.stopped = true;
+    clearTimeout(filing.timer);
+    if (filing.running) {
+        filing.cancel = true;
+        paintCardStatus();
+    }
+}
+
 async function fileCards({ only = null, loud = false } = {}) {
+    if (only || loud) {
+        filing.stopped = false;
+    } else if (filing.stopped) {
+        return;
+    }
     if (filing.running) {
         await filing.running;
         if (!only && !loud) {
@@ -3853,6 +3870,7 @@ async function fileCards({ only = null, loud = false } = {}) {
         }
     }
     const s = settings();
+    filing.cancel = false;
     filing.running = (async () => {
         await loadLibrary();
         if (library.broken) {
@@ -3879,7 +3897,7 @@ async function fileCards({ only = null, loud = false } = {}) {
             }
             paintCardStatus();
             let made = 0;
-            for (let i = 0; i < pending.length; i += CARD_BATCH) {
+            for (let i = 0; i < pending.length && !filing.cancel; i += CARD_BATCH) {
                 const batch = pending.slice(i, i + CARD_BATCH);
                 let cards = new Map();
                 try {
@@ -3905,8 +3923,10 @@ async function fileCards({ only = null, loud = false } = {}) {
                     await saveLibrary({ skipSync: true, skipFiling: true });
                 }
             }
-            const missed = pending.length - made;
-            if (big || loud) {
+            const missed = filing.done - made;
+            if (filing.cancel) {
+                toastr.info(`Filing stopped: ${made} card(s) made. "Make missing cards" goes on from there.`, 'Image Search');
+            } else if (big || loud) {
                 toastr[missed ? 'warning' : 'success'](missed ? `Filing cards made for ${made} picture(s); ${missed} could not be filed${filing.error ? ` (${filing.error})` : ''}. They are tried again later.` : `Filing cards made for ${made} picture(s).`, 'Image Search');
             } else if (missed && !filing.warned && filing.error) {
                 filing.warned = true;
@@ -4086,6 +4106,11 @@ async function meaningRank(text, limit = 80) {
 
 function paintCardStatus() {
     paintFilingBar();
+    const stop = document.getElementById('st_imagesearch_cards_stop');
+    if (stop) {
+        stop.hidden = !(filing.running && filing.total);
+        stop.textContent = filing.cancel ? 'Stopping…' : 'Stop';
+    }
     const settingsBar = document.getElementById('st_imagesearch_card_progress');
     if (settingsBar) {
         const active = Boolean(filing.running && filing.total);
@@ -7517,7 +7542,9 @@ function buildSettings() {
                     <div class="st-imagesearch-row">
                         <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
                         <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
+                        <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop describing after the pictures being described now" hidden>Stop</div>
                     </div>
+                    <div id="st_imagesearch_redo_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
                     <small id="st_imagesearch_lib_status"></small>
                     <hr>
                     <div>Finding pictures</div>
@@ -7530,6 +7557,7 @@ function buildSettings() {
                         <div id="st_imagesearch_cards_run" class="menu_button" title="Make the filing cards that are missing or out of date now">Make missing cards</div>
                         <div id="st_imagesearch_cards_redo" class="menu_button" title="Make every filing card again, except the ones you edited">Redo all cards</div>
                         <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
+                        <div id="st_imagesearch_cards_stop" class="menu_button" title="Stop making filing cards after the request that is running" hidden>Stop</div>
                     </div>
                     <div id="st_imagesearch_card_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
                     <small id="st_imagesearch_card_status"></small>
@@ -7716,6 +7744,7 @@ function buildSettings() {
         }
         return !filing.running && library.entries.some(entry => entry.description);
     });
+    document.getElementById('st_imagesearch_cards_stop').addEventListener('click', () => stopFiling());
     document.getElementById('st_imagesearch_meaning_rebuild').addEventListener('click', async () => {
         if (!meaningSource()) {
             toastr.info('Search by meaning is off.', 'Image Search');
@@ -7773,21 +7802,33 @@ function buildSettings() {
     };
     document.querySelector('#st_imagesearch_settings .inline-drawer-toggle')?.addEventListener('click', () => showLibrary());
     const redoButton = document.getElementById('st_imagesearch_redo_all');
+    const redoStop = document.getElementById('st_imagesearch_redo_stop');
+    const redoBar = document.getElementById('st_imagesearch_redo_progress');
+    redoStop.addEventListener('click', () => {
+        if (redoState.running) {
+            redoState.cancel = true;
+            redoStop.textContent = 'Stopping…';
+        }
+    });
     const redoLabel = 'Redo all descriptions';
     confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again`, async () => {
-        redoButton.textContent = 'Cancel';
+        redoButton.textContent = 'Describing…';
+        redoStop.hidden = false;
+        redoStop.textContent = 'Stop';
+        redoBar.hidden = false;
         const progress = () => {
             libStatus.textContent = `Describing ${redoState.done} / ${redoState.total}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
+            redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
         };
         await redoAll(progress);
         const described = redoState.done - redoState.failed;
         libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
         redoButton.textContent = redoLabel;
+        redoStop.hidden = true;
+        redoBar.hidden = true;
         showLibrary();
     }, async () => {
         if (redoState.running) {
-            redoState.cancel = true;
-            redoButton.textContent = 'Stopping…';
             return false;
         }
         await loadLibrary();

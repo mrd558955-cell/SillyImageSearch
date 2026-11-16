@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.12.3';
+const VERSION = '2.13.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -74,6 +74,7 @@ const DEFAULTS = {
     meaningSource: 'nanogpt',
     meaningModel: '',
     pickShortlist: 30,
+    firstPass: 50,
     castCache: {},
     includeVideos: true,
     gifSeconds: 6,
@@ -3622,7 +3623,8 @@ function onWorldInfoActivated(entries) {
 }
 
 const CARD_BATCH = 10;
-const CARD_FIELDS = ['gender', 'species', 'skin', 'hair', 'build', 'outfit', 'features'];
+const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'build', 'outfit', 'features'];
+const AGES = ['young', 'adult', 'middle-aged', 'old'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
 const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, error: '', warned: false };
@@ -3817,7 +3819,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: young, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -4107,8 +4109,29 @@ function hairColors(value) {
     return out;
 }
 
+function ageOf(value) {
+    const text = String(value || '').toLowerCase();
+    const years = Number((text.match(/\b(\d{1,3})\b/) || [])[1]);
+    if (years) {
+        return years < 25 ? 'young' : years < 40 ? 'adult' : years < 60 ? 'middle-aged' : 'old';
+    }
+    if (/\b(middle[- ]aged|middle age|forties|fifties)\b/.test(text)) {
+        return 'middle-aged';
+    }
+    if (/\b(old|elderly|aged|senior|ancient|wrinkled|grandm\w*|grandf\w*)\b/.test(text)) {
+        return 'old';
+    }
+    if (/\b(young|youthful|teen\w*|college|student)\b/.test(text)) {
+        return 'young';
+    }
+    if (/\b(adult|grown|mature|thirties)\b/.test(text)) {
+        return 'adult';
+    }
+    return '';
+}
+
 function traitsOf(person) {
-    return { gender: genderOf(person.gender), species: baseSpecies(person.species), extras: overlaysOf(person.species, person.features, person.skin), skin: skinColors(person.skin), hair: hairColors(person.hair) };
+    return { gender: genderOf(person.gender), age: ageOf(person.age), species: baseSpecies(person.species), extras: overlaysOf(person.species, person.features, person.skin), skin: skinColors(person.skin), hair: hairColors(person.hair) };
 }
 
 function overlaps(a, b) {
@@ -4132,6 +4155,12 @@ function compareLooks(person, member) {
         } else {
             wrong = `gender ${person.gender || '?'} ≠ ${member.gender || '?'}`;
         }
+    }
+    if (p.age && m.age) {
+        const gap = Math.abs(AGES.indexOf(p.age) - AGES.indexOf(m.age));
+        const points = gap === 0 ? 4 : gap === 1 ? 0 : -4;
+        score += points;
+        parts.push(gap === 0 ? `age ${p.age} ✓ +4` : `age ${p.age} ≠ ${m.age} ${signed(points)}`);
     }
     if (p.species && m.species) {
         if (p.species === m.species) {
@@ -4180,6 +4209,8 @@ function looksDetail(entry, cast) {
     const matched = [];
     let score = 0;
     for (const member of cast) {
+        const known = ['gender', 'age', 'species', 'skin', 'hair'].filter(field => member[field]).map(field => `${field} ${member[field]}`).join(', ');
+        notes.push(`${member.name} is known as: ${known || 'nothing (no looks written for this character)'}`);
         const tried = people.map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member) }));
         const fits = tried.filter(item => !item.wrong && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
         const describe = item => `person ${item.index + 1} (${[item.person.gender, item.person.species].filter(Boolean).join(' ') || 'person'})`;
@@ -4203,6 +4234,12 @@ function looksDetail(entry, cast) {
     return { score, notes };
 }
 
+function pronounGender(text) {
+    const she = (String(text).match(/\b(she|her|hers|herself)\b/g) || []).length;
+    const he = (String(text).match(/\b(he|him|his|himself)\b/g) || []).length;
+    return she > he ? 'woman' : he > she ? 'man' : '';
+}
+
 function castFromNotes(notes) {
     const byName = new Map();
     for (const line of notes) {
@@ -4211,8 +4248,9 @@ function castFromNotes(notes) {
             continue;
         }
         const text = match[2].toLowerCase().replace(/_/g, ' ');
-        const person = byName.get(match[1]) || { name: match[1], gender: '', species: '', skin: '', hair: '' };
-        person.gender ||= genderOf(text.replace(/\b(she|her|he|his)\b/g, '')) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : '';
+        const person = byName.get(match[1]) || { name: match[1], gender: '', age: '', species: '', skin: '', hair: '' };
+        person.gender ||= genderOf(text) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : pronounGender(text);
+        person.age ||= ageOf((text.match(/\b(\d{1,3}) ?(?:years?|yo|y\.o\.)\b|\b(?:middle[- ]aged|elderly|old|young|youthful|mature|adult)\b/) || [])[0] || '');
         const species = SPECIES.find(([pattern, name]) => name !== 'human' && pattern.test(text));
         person.species ||= species ? species[1] : '';
         person.skin ||= (text.match(/\b([a-z]+) skin(?:ned)?\b/) || [])[1] || '';
@@ -4234,7 +4272,7 @@ async function sceneCast() {
         return [];
     }
     const s = settings();
-    const key = String(hashText(notes.join('\n')));
+    const key = String(hashText(`cast2\n${notes.join('\n')}`));
     if (!s.castCache || typeof s.castCache !== 'object') {
         s.castCache = {};
     }
@@ -4247,7 +4285,7 @@ async function sceneCast() {
         return fallback;
     }
     try {
-        const prompt = `Below is how the characters of a roleplay look. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black"}]\ngender is woman, man, girl, boy or unclear. Use "" for anything that is not said.\n\n${notes.join('\n')}`;
+        const prompt = `Below is how the characters of a roleplay look. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black"}]\ngender is woman or man: work it out from the words used for the character (she, her, he, his) when it is not said outright. age is how old they look: young, adult, middle-aged or old. Use "" for anything that cannot be told.\n\n${notes.join('\n')}`;
         const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 300, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
         const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
         const start = text.indexOf('[');
@@ -4256,7 +4294,15 @@ async function sceneCast() {
         const cast = (Array.isArray(list) ? list : [])
             .filter(item => item && typeof item === 'object' && item.name && String(item.name).toLowerCase() !== user)
             .slice(0, 8)
-            .map(item => ({ name: String(item.name).slice(0, 60), ...Object.fromEntries(['gender', 'species', 'skin', 'hair'].map(field => [field, String(item[field] ?? '').toLowerCase().slice(0, 60)])) }));
+            .map(item => ({ name: String(item.name).slice(0, 60), ...Object.fromEntries(['gender', 'age', 'species', 'skin', 'hair'].map(field => [field, String(item[field] ?? '').toLowerCase().slice(0, 60)])) }));
+        cast.forEach(person => {
+            const guess = fallback.find(item => item.name.toLowerCase() === person.name.toLowerCase());
+            if (guess) {
+                ['gender', 'age', 'species', 'skin', 'hair'].forEach(field => {
+                    person[field] ||= guess[field];
+                });
+            }
+        });
         if (cast.length) {
             const keys = Object.keys(s.castCache);
             keys.slice(0, Math.max(0, keys.length - 19)).forEach(old => delete s.castCache[old]);
@@ -4298,7 +4344,7 @@ async function rankedCandidates(message) {
     for (const choice of choices) {
         const position = order?.get(choice.entry);
         const keywords = Math.min(choice.score || 0, 24);
-        const meaningPoints = position === undefined ? 0 : Math.round(36 * (1 - position / Math.max(order.size, 1)));
+        const meaningPoints = position === undefined ? 0 : Math.round(18 * (1 - position / Math.max(order.size, 1)));
         const detail = looksDetail(choice.entry, cast);
         const looks = detail.score;
         const shownPoints = choice.fresh ? 0 : -12;
@@ -4308,21 +4354,37 @@ async function rankedCandidates(message) {
         } else if (meaningFailed) {
             meaningNote = 'Meaning: the search did not work this time, so it does not count.';
         } else if (position !== undefined) {
-            meaningNote = `Meaning: #${position + 1} of ${order.size} closest to the newest message → ${signed(meaningPoints)} (the closest gets +36, the farthest 0)`;
+            meaningNote = `Meaning: #${position + 1} of ${order.size} closest to the newest message → ${signed(meaningPoints)} (the closest gets +18, the farthest 0)`;
         } else if (!choice.entry.card) {
             meaningNote = 'Meaning: no filing card yet, so it is not in the search index → 0';
         } else {
             meaningNote = 'Meaning: not in the search index yet (it updates in the background) → 0';
         }
         choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with the story and the character's looks → ${signed(keywords)} (at most +24)`, ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : [])] };
-        choice.total = keywords + meaningPoints + looks + shownPoints;
+        choice.parts.meaningNote = choice.parts.notes.shift();
+        choice.first = keywords + looks + shownPoints;
+        choice.total = choice.first + meaningPoints;
     }
-    const sorted = [...choices].sort((a, b) => b.total - a.total);
+    const keep = firstPassSize();
+    const first = [...choices].sort((a, b) => b.first - a.first);
+    first.forEach((choice, index) => {
+        choice.parts.notes.push(`1. Looks and keywords: ${signed(Math.round(choice.first))} → #${index + 1} of ${first.length}; the first ${Math.min(keep, first.length)} go on`);
+    });
+    const kept = first.slice(0, keep).sort((a, b) => b.total - a.total || b.first - a.first);
+    const sorted = [...kept, ...first.slice(keep)];
     const seen = shortlistSize();
     sorted.forEach((choice, index) => {
-        choice.parts.notes.push(`Total ${signed(Math.round(choice.total))} → #${index + 1} of ${sorted.length}; the AI compares the first ${Math.min(seen, sorted.length)}`);
+        if (index < kept.length) {
+            choice.parts.notes.push(`2. ${choice.parts.meaningNote}`, `Total ${signed(Math.round(choice.total))} → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
+        } else {
+            choice.parts.notes.push(`2. Not ranked by meaning (left out by the first step) → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
+        }
     });
     return sorted;
+}
+
+function firstPassSize() {
+    return Math.max(shortlistSize(), Math.min(500, Number(settings().firstPass) || 50));
 }
 
 function scoreLine(choice) {
@@ -6974,6 +7036,7 @@ function buildSettings() {
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_filing"> <span>Make a filing card for each picture (who, pose, mood, place, story moments), so the AI can find the right one</span></label>
                     <div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div>
                     <div class="st-imagesearch-row"><span>Embedding model (empty = default)</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div>
+                    <div class="st-imagesearch-row"><span>Pictures kept by looks and keywords, before ranking by meaning</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Pictures the AI compares when choosing</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div>
                     <div class="st-imagesearch-row">
                         <div id="st_imagesearch_cards_run" class="menu_button" title="Make the filing cards that are missing or out of date now">Make missing cards</div>
@@ -7113,6 +7176,7 @@ function buildSettings() {
     bind('st_imagesearch_meaning', 'meaningSource', 'value', meaningChanged);
     bind('st_imagesearch_meaning_model', 'meaningModel', 'value', meaningChanged);
     bind('st_imagesearch_pick_shortlist', 'pickShortlist', 'number');
+    bind('st_imagesearch_first_pass', 'firstPass', 'number');
     bind('st_imagesearch_poses', 'poseList');
     bind('st_imagesearch_moods', 'moodList');
     document.getElementById('st_imagesearch_lists_reset').addEventListener('click', () => {

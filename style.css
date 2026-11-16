@@ -11,10 +11,44 @@
     margin: 4px 0;
 }
 
+#st_imagesearch_settings .st-imagesearch-row > span {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 #st_imagesearch_settings .st-imagesearch-row input[type="text"],
-#st_imagesearch_settings .st-imagesearch-row input[type="password"],
-#st_imagesearch_settings .st-imagesearch-row input[type="number"] {
+#st_imagesearch_settings .st-imagesearch-row input[type="password"] {
     flex: 1;
+}
+
+#st_imagesearch_settings .st-imagesearch-row input[type="number"] {
+    flex: 0 0 6.5em;
+    width: 6.5em;
+    min-width: 6.5em;
+    min-height: 2.2em;
+    font-size: 1em;
+    text-align: center;
+}
+
+#st_imagesearch_settings .stis-range-row {
+    flex-wrap: wrap;
+}
+
+#st_imagesearch_settings .stis-range-row > span {
+    flex: 1 1 100%;
+}
+
+#st_imagesearch_settings .stis-range-row input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 8em;
+    height: 2em;
+}
+
+#st_imagesearch_settings .stis-range-value {
+    flex: 0 0 auto;
+    min-width: 5.5em;
+    text-align: center;
+    font-size: 1.1em;
 }
 
 #st_imagesearch_button {
@@ -1014,4 +1048,12 @@ video.stis-preview-img {
     background: rgba(0, 0, 0, 0.6);
     color: #fff;
     pointer-events: none;
+}
+
+.stis-sendcard-fix {
+    display: block;
+    margin: 4px 0;
+    font-size: 0.9em;
+    text-decoration: underline;
+    cursor: pointer;
 }

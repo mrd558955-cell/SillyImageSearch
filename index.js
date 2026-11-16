@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.24.0';
+const VERSION = '2.24.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -5955,6 +5955,14 @@ function cardBox(entry, onChange) {
     return box;
 }
 
+function entryAnimated(entry) {
+    return Boolean(entry.animated) || entryUrls(entry).some(url => /\.gif(\?|$)/i.test(url));
+}
+
+function entryFacets(entry) {
+    return [...cardFacets(entry), ...(entryAnimated(entry) ? ['file:animated'] : [])];
+}
+
 function cardFacets(entry) {
     if (!entry.card) {
         return entry.description ? ['card:none'] : [];
@@ -6178,6 +6186,15 @@ function showPictureCard(session) {
     });
     const grid = el('div', 'stis-sendcard-grid');
     grid.hidden = true;
+    const fix = el('a', 'stis-sendcard-fix', 'Something wrong? Cancel and open this picture in the library');
+    fix.href = '#';
+    fix.title = 'Cancel this send and open the picture in the library, to fix its description, filing card or tags';
+    fix.addEventListener('click', async event => {
+        event.preventDefault();
+        const choice = options[index];
+        await popup.completeCancelled();
+        openPicker(null, { entryId: choice.entry.id, variantId: choice.variant?.id || '' });
+    });
     const bar = el('div', 'stis-sendcard-bar');
     const send = el('div', 'menu_button stis-use', 'Send');
     const another = el('div', 'menu_button', 'Another');
@@ -6187,7 +6204,7 @@ function showPictureCard(session) {
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, browse, search, cancel);
     const sheets = el('div', 'stis-sendcard-sheets');
-    root.append(note, img, why, text, score, looksBox, sheets, grid, bar);
+    root.append(note, img, why, text, score, looksBox, sheets, grid, fix, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
@@ -6695,7 +6712,7 @@ function bindPress(cell, onTap, onLong) {
     });
 }
 
-async function openPicker(initialTags = null) {
+async function openPicker(initialTags = null, focus = null) {
     const s = settings();
     const c = ctx();
     if (!s.enabled || state.pickerOpen) {
@@ -8085,7 +8102,7 @@ async function openPicker(initialTags = null) {
     function renderLibFilters() {
         ui.libFilters.innerHTML = '';
         const counts = new Map();
-        library.entries.forEach(entry => cardFacets(entry).forEach(key => counts.set(key, (counts.get(key) || 0) + 1)));
+        library.entries.forEach(entry => entryFacets(entry).forEach(key => counts.set(key, (counts.get(key) || 0) + 1)));
         [...libFilter].filter(key => !counts.has(key)).forEach(key => libFilter.delete(key));
         const more = el('details', 'stis-lib-more');
         more.open = libMoreOpen;
@@ -8093,7 +8110,7 @@ async function openPicker(initialTags = null) {
             libMoreOpen = more.open;
         });
         more.appendChild(el('summary', '', 'More filters'));
-        const groups = [['pose', 'Pose', ui.libFilters], ['mood', 'Mood', ui.libFilters], ...categories().map(category => [category.id, category.label, more])];
+        const groups = [['file', 'Type', ui.libFilters], ['pose', 'Pose', ui.libFilters], ['mood', 'Mood', ui.libFilters], ...categories().map(category => [category.id, category.label, more])];
         for (const [group, label, parent] of groups) {
             const keys = [...counts.keys()].filter(key => key.startsWith(`${group}:`)).sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
             if (!keys.length) {
@@ -8152,7 +8169,7 @@ async function openPicker(initialTags = null) {
         }
         if (libFilter.size) {
             ranked = ranked.filter(({ entry }) => {
-                const facets = cardFacets(entry);
+                const facets = entryFacets(entry);
                 return [...libFilter].every(key => facets.includes(key));
             });
         }
@@ -8513,6 +8530,17 @@ async function openPicker(initialTags = null) {
     popup.show();
     observer.observe(ui.sentinel);
 
+    if (focus?.entryId) {
+        setTags(s.lastTags || [], false, s.lastRequired?.length || !s.lastTags?.length ? s.lastRequired : null);
+        renderWho();
+        setView('library');
+        await loadLibrary();
+        const entry = library.entries.find(item => item.id === focus.entryId || item.variants.some(variant => variant.id === focus.entryId));
+        if (entry && !closed) {
+            showEntry(entry, entry.variants.find(variant => variant.id === focus.variantId) || null);
+        }
+        return;
+    }
     if (Array.isArray(initialTags) && initialTags.length) {
         setTags(initialTags, true);
         renderWho();
@@ -8758,8 +8786,8 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
                     <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Frames of a GIF sent to the vision model (1 to 16, spread from start to end)</span><input type="number" min="1" max="16" id="st_imagesearch_gif_frames" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Size of each GIF frame, in pixels</span><input type="number" min="128" max="2048" id="st_imagesearch_gif_size" class="text_pole"></div>
+                    <div class="st-imagesearch-row stis-range-row"><span>Frames of a GIF sent to the vision model, spread from start to end</span><input type="range" min="1" max="16" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div>
+                    <div class="st-imagesearch-row"><span>Size of each GIF frame</span><select id="st_imagesearch_gif_size" class="text_pole"><option value="384">384 px (cheapest)</option><option value="512">512 px</option><option value="768">768 px (default)</option><option value="1024">1024 px</option><option value="1536">1536 px</option><option value="2048">2048 px (most detail)</option></select></div>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>Send the GIF frames as one numbered sheet (one picture instead of several)</span></label>
                     <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> Show the send-with-picture button next to Send</label>
@@ -8841,8 +8869,18 @@ function buildSettings() {
     bind('st_imagesearch_pickwindow', 'pickWindow', 'checked');
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
-    bind('st_imagesearch_gif_frames', 'gifFrames', 'number');
+    const framesValue = document.getElementById('st_imagesearch_gif_frames_value');
+    const showFrames = () => {
+        const count = Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        framesValue.textContent = `${count} frame${count === 1 ? '' : 's'}`;
+    };
+    bind('st_imagesearch_gif_frames', 'gifFrames', 'number', showFrames);
+    document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3))));
+    showFrames();
     bind('st_imagesearch_gif_size', 'gifFrameSize', 'number');
+    if (!document.getElementById('st_imagesearch_gif_size').value) {
+        document.getElementById('st_imagesearch_gif_size').value = '768';
+    }
     bind('st_imagesearch_gif_sheet', 'gifSheet', 'checked');
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');

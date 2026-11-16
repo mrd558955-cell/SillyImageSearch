@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.24.2';
+const VERSION = '2.25.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -689,6 +689,42 @@ function engineFor(name, result) {
     return name;
 }
 
+const hostHealth = new Map();
+
+function noteHost(url, ok) {
+    const host = hostOf(url);
+    if (!host) {
+        return;
+    }
+    const health = hostHealth.get(host) || { miss: 0, hit: 0 };
+    health[ok ? 'hit' : 'miss']++;
+    hostHealth.set(host, health);
+}
+
+function hostBlocked(url) {
+    const health = hostHealth.get(hostOf(url));
+    return Boolean(health && health.miss >= 3 && health.miss > health.hit * 3);
+}
+
+function gelbooruMirror(md5, original) {
+    const key = String(md5 || '').toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(key)) {
+        return null;
+    }
+    let ext = '';
+    try {
+        ext = (filePath(original).match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
+    } catch {
+        ext = '';
+    }
+    const dir = `${key.slice(0, 2)}/${key.slice(2, 4)}`;
+    return {
+        thumb: `https://img3.gelbooru.com/thumbnails/${dir}/thumbnail_${key}.jpg`,
+        sample: `https://img3.gelbooru.com/samples/${dir}/sample_${key}.jpg`,
+        full: ext ? `https://img3.gelbooru.com/images/${dir}/${key}.${ext}` : '',
+    };
+}
+
 function postsToItems(engineName, posts, origin, ratings, localTags, stats, exclude = new Set(excludedTags())) {
     const engine = ENGINES[engineName];
     const items = [];
@@ -730,6 +766,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
         const anim = video ? '' : [original, full, img].find(url => url && isGifUrl(url)) || '';
         const postId = String(post.id ?? '');
         const parentId = engine.parentId(post);
+        const mirror = /(^|\.)gelbooru\.com$/.test(hostOf(origin)) ? null : gelbooruMirror(engine.md5(post), original);
         items.push({
             img,
             thumb: thumb || img,
@@ -744,6 +781,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
             hasChildren: engine.hasChildren(post),
             md5: engine.md5(post),
             root: parentId || postId,
+            mirror,
         });
     }
     return items;
@@ -1059,7 +1097,7 @@ function warmThumbs(items) {
     items.slice(0, BATCH).forEach(item => {
         const img = new Image();
         img.referrerPolicy = 'no-referrer';
-        img.src = item.thumb;
+        img.src = hostBlocked(item.thumb) && item.mirror ? item.mirror.thumb : item.thumb;
     });
 }
 
@@ -2436,13 +2474,25 @@ function prepareDownload(item) {
     }
     const promise = (async () => {
         const errors = [];
+        const blocked = hostBlocked(item.thumb || item.img);
+        const mirrorFirst = list => (blocked ? [...list].reverse() : list);
         if (item.video) {
             let notice = null;
             const slow = setTimeout(() => {
                 notice = toastr.info('Making a GIF from the video…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
             }, 600);
             try {
-                return await convertVideoItem(item);
+                const videos = mirrorFirst([item.video, item.mirror?.full && isVideoUrl(item.mirror.full) ? item.mirror.full : ''].filter(Boolean));
+                for (const [position, video] of videos.entries()) {
+                    try {
+                        return await convertVideoItem(video === item.video ? item : { ...item, video });
+                    } catch (error) {
+                        if (position === videos.length - 1) {
+                            throw error;
+                        }
+                        errors.push(`${video}: ${error?.message || error}`);
+                    }
+                }
             } finally {
                 clearTimeout(slow);
                 if (notice) {
@@ -2450,17 +2500,20 @@ function prepareDownload(item) {
                 }
             }
         }
-        if (item.anim) {
+        for (const anim of mirrorFirst([item.anim, item.anim && item.mirror?.full && /\.gif$/i.test(item.mirror.full) ? item.mirror.full : ''].filter(Boolean))) {
             try {
-                const picture = await downloadImage(item.anim);
+                const picture = await downloadImage(anim);
                 if (await isAnimated(picture) && picture.blob.size <= MAX_ANIMATED_BYTES) {
                     return picture;
                 }
+                break;
             } catch (error) {
-                errors.push(`${item.anim}: ${error?.message || error}`);
+                errors.push(`${anim}: ${error?.message || error}`);
             }
         }
-        for (const url of [item.img, ...(item.alts || [])]) {
+        const own = [item.img, ...(item.alts || [])];
+        const mirror = item.mirror ? [item.mirror.sample, !item.anim && item.mirror.full && !isVideoUrl(item.mirror.full) ? item.mirror.full : ''].filter(Boolean) : [];
+        for (const url of blocked ? [...mirror, ...own] : [...own, ...mirror]) {
             try {
                 return await shrinkImage(await downloadImage(url));
             } catch (error) {
@@ -6713,14 +6766,21 @@ function retryThumbs(host) {
 }
 
 function setThumbSource(img, item) {
-    const sources = [item.thumb, fetcherLink(item.thumb), proxyUrl(item.thumb)].filter(Boolean);
+    const mirror = item.mirror?.thumb ? [item.mirror.thumb] : [];
+    const sources = [...(hostBlocked(item.thumb) ? [...mirror, item.thumb] : [item.thumb, ...mirror]), fetcherLink(item.thumb), proxyUrl(item.thumb)].filter(Boolean);
     let index = 0;
     img.referrerPolicy = 'no-referrer';
     img.onload = () => {
         img.onload = null;
+        if (sources[index] === item.thumb) {
+            noteHost(item.thumb, true);
+        }
         noteThumb(item, img, true);
     };
     img.onerror = () => {
+        if (sources[index] === item.thumb) {
+            noteHost(item.thumb, false);
+        }
         index++;
         if (index < sources.length) {
             img.src = sources[index];
@@ -6735,7 +6795,10 @@ function setThumbSource(img, item) {
 }
 
 function setPreviewSource(img, item) {
-    const sources = [item.anim, item.img, fetcherLink(item.img), proxyUrl(item.img), item.thumb].filter(Boolean);
+    const own = [item.anim, item.img];
+    const mirror = item.mirror ? [/\.gif$/i.test(item.mirror.full) || !item.anim ? item.mirror.full : '', item.mirror.sample] : [];
+    const first = hostBlocked(item.thumb || item.img) ? [...mirror, ...own] : [...own, ...mirror];
+    const sources = [...new Set([...first, fetcherLink(item.img), proxyUrl(item.img), item.thumb, item.mirror?.thumb].filter(Boolean))];
     let index = 0;
     img.referrerPolicy = 'no-referrer';
     img.onerror = () => {

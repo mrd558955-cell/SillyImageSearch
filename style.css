@@ -865,3 +865,14 @@ video.stis-preview-img {
 .stis-sendcard-looks:empty {
     display: none;
 }
+
+.stis-sendcard-sheets {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+}
+
+.stis-sendcard-sheets[hidden] {
+    display: none;
+}

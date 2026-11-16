@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.13.0';
+const VERSION = '2.14.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -75,7 +75,7 @@ const DEFAULTS = {
     meaningModel: '',
     pickShortlist: 30,
     firstPass: 50,
-    castCache: {},
+    lookSheets: {},
     includeVideos: true,
     gifSeconds: 6,
     gifWidth: 480,
@@ -3623,7 +3623,8 @@ function onWorldInfoActivated(entries) {
 }
 
 const CARD_BATCH = 10;
-const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'build', 'outfit', 'features'];
+const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'eyes', 'build', 'outfit', 'features'];
+const CARD_VERSION = 2;
 const AGES = ['young', 'adult', 'middle-aged', 'old'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
@@ -3682,6 +3683,9 @@ function cleanCard(card) {
             if (field === 'skin' || field === 'hair') {
                 value = value.replace(new RegExp(`\\s*${field}$`), '');
             }
+            if (field === 'eyes') {
+                value = value.replace(/\s*eyes?$/, '');
+            }
             return [field, value];
         })) }))
         .filter(person => CARD_FIELDS.some(field => person[field]));
@@ -3694,6 +3698,7 @@ function cleanCard(card) {
         moments: asList(card.moments, ';').map(item => item.toLowerCase().slice(0, 80)).slice(0, 6),
         basis: String(card.basis || ''),
         edited: Boolean(card.edited),
+        v: Number(card.v) || 1,
     };
 }
 
@@ -3702,12 +3707,12 @@ function cardBasis(entry) {
 }
 
 function needsCard(entry) {
-    return Boolean(entry.description) && (!entry.card || (!entry.card.edited && entry.card.basis !== cardBasis(entry)));
+    return Boolean(entry.description) && (!entry.card || (!entry.card.edited && (entry.card.basis !== cardBasis(entry) || (entry.card.v || 1) < CARD_VERSION)));
 }
 
 function personText(person) {
     const head = [person.gender, person.species].filter(Boolean).join(' ') || 'person';
-    const rest = [person.skin && `${person.skin} skin`, person.hair && `${person.hair} hair`, person.build, person.outfit, person.features].filter(Boolean).join(', ');
+    const rest = [person.age, person.skin && `${person.skin} skin`, person.hair && `${person.hair} hair`, person.eyes && `${person.eyes} eyes`, person.build, person.outfit, person.features].filter(Boolean).join(', ');
     const text = rest ? `${head} (${rest})` : head;
     return person.role === 'background' ? `${text} in the background` : text;
 }
@@ -3819,7 +3824,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: young, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: young, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin is the colour, hair is colour and length (long silver), eyes is the colour, build is height and body type (tall, short, slim, athletic, muscular, curvy, heavy), outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -3871,7 +3876,7 @@ async function fileCards({ only = null, loud = false } = {}) {
                 batch.forEach((entry, index) => {
                     const card = cards.get(index + 1);
                     if (card) {
-                        entry.card = { ...card, basis: cardBasis(entry), edited: false };
+                        entry.card = { ...card, basis: cardBasis(entry), edited: false, v: CARD_VERSION };
                         filing.failed.delete(entry.id);
                         made++;
                     } else {
@@ -4130,10 +4135,6 @@ function ageOf(value) {
     return '';
 }
 
-function traitsOf(person) {
-    return { gender: genderOf(person.gender), age: ageOf(person.age), species: baseSpecies(person.species), extras: overlaysOf(person.species, person.features, person.skin), skin: skinColors(person.skin), hair: hairColors(person.hair) };
-}
-
 function overlaps(a, b) {
     return [...a].some(value => b.has(value));
 }
@@ -4142,53 +4143,249 @@ function signed(value) {
     return value > 0 ? `+${value}` : value < 0 ? `−${-value}` : '0';
 }
 
+const HAIR_LENGTHS = ['short', 'medium', 'long', 'very long'];
+const HEIGHTS = ['short', 'average', 'tall'];
+const CLOSE_BUILDS = new Set(['slim|athletic', 'athletic|muscular', 'muscular|heavy', 'curvy|heavy', 'athletic|curvy']);
+const FEATURES = [
+    [/\bhorns?\b|\bhorned\b/, 'horns'],
+    [/\btails?\b/, 'tail'],
+    [/\btusks?\b/, 'tusks'],
+    [/\bwings?\b|\bwinged\b/, 'wings'],
+    [/\b(pointy|pointed|elf|elven|elfin) ears?\b/, 'pointed ears'],
+    [/\b(cat|fox|wolf|dog|animal|bunny|rabbit|bear|mouse) ears?\b|\bkemonomimi\b/, 'animal ears'],
+    [/\bscars?\b|\bscarred\b/, 'scar'],
+    [/\b(glasses|spectacles|eyeglasses|monocle)\b/, 'glasses'],
+    [/\btattoos?\b|\btattooed\b/, 'tattoos'],
+    [/\bfreckles?\b|\bfreckled\b/, 'freckles'],
+    [/\bfangs?\b/, 'fangs'],
+    [/\bhalo\b/, 'halo'],
+    [/\beye ?patch\b/, 'eyepatch'],
+    [/\bbeard(ed)?\b/, 'beard'],
+    [/\bmustache|moustache\b/, 'mustache'],
+    [/\bpiercings?\b|\bpierced\b/, 'piercings'],
+    [/\bheterochromia\b/, 'heterochromia'],
+    [/\b(extra|four|multiple|six) arms\b/, 'extra arms'],
+    [/\bscales\b|\bscaly\b/, 'scales'],
+    [/\bfur\b|\bfurry\b/, 'fur'],
+    [/\bclaws\b/, 'claws'],
+    [/\b(mechanical|prosthetic|robotic) (arm|leg|limb)s?\b/, 'prosthetic limb'],
+];
+const OUTFIT_WORDS = /\b(armou?r|plate|dress|gown|kimono|yukata|uniform|robes?|cloak|cape|suit|bikini|swimsuit|jacket|hoodie|coat|shirt|blouse|skirt|jeans|pants|shorts|maid|nun|school|tunic|leather|lingerie|apron|corset|hakama|toga|sweater|vest|trench|scarf|hat|hood|boots|gloves|bodysuit|leotard|qipao|cheongsam|sari|overalls|fur)\b/g;
+const sheetFailed = new Set();
+let lastCast = [];
+
+function hairLengthOf(value) {
+    const text = String(value || '').toLowerCase();
+    if (/\b(very long|floor[- ]length|knee[- ]length|waist[- ]length|hip[- ]length|absurdly long)\b/.test(text)) {
+        return 'very long';
+    }
+    if (/\blong\b/.test(text)) {
+        return 'long';
+    }
+    if (/\b(medium|shoulder[- ]length|shoulder|bob|chin[- ]length)\b/.test(text)) {
+        return 'medium';
+    }
+    if (/\b(short|pixie|buzz|buzzed|cropped|crew|shaved|bald)\b/.test(text)) {
+        return 'short';
+    }
+    return '';
+}
+
+function eyeColors(value) {
+    const out = new Set();
+    for (const word of String(value || '').toLowerCase().split(/[^a-z]+/)) {
+        const name = { gold: 'amber', golden: 'amber', yellow: 'amber', amber: 'amber', gray: 'grey', grey: 'grey', silver: 'grey', crimson: 'red', scarlet: 'red', red: 'red', violet: 'purple', purple: 'purple', hazel: 'brown', brown: 'brown', black: 'black', blue: 'blue', azure: 'blue', green: 'green', emerald: 'green', pink: 'pink', white: 'white', orange: 'orange' }[word];
+        if (name) {
+            out.add(name);
+        }
+    }
+    return out;
+}
+
+function heightOf(value) {
+    const text = String(value || '').toLowerCase();
+    if (/\b(tall|towering|giant|huge|lanky)\b/.test(text)) {
+        return 'tall';
+    }
+    if (/\b(short|petite|small|tiny|little|diminutive)\b/.test(text)) {
+        return 'short';
+    }
+    if (/\b(average height|medium height|average)\b/.test(text)) {
+        return 'average';
+    }
+    return '';
+}
+
+function bodyOf(value) {
+    const out = new Set();
+    const text = String(value || '').toLowerCase();
+    if (/\b(slim|slender|thin|skinny|lithe|willowy|petite|lean|wiry|delicate|frail)\b/.test(text)) {
+        out.add('slim');
+    }
+    if (/\b(athletic|fit|toned|sporty|agile)\b/.test(text)) {
+        out.add('athletic');
+    }
+    if (/\b(muscular|buff|brawny|ripped|burly|strong|powerful|bulky|broad[- ]shouldered|stocky)\b/.test(text)) {
+        out.add('muscular');
+    }
+    if (/\b(curvy|voluptuous|busty|hourglass|thick|shapely|full[- ]figured|curvaceous)\b/.test(text)) {
+        out.add('curvy');
+    }
+    if (/\b(chubby|plump|fat|heavy|heavyset|rotund|portly|large|big)\b/.test(text)) {
+        out.add('heavy');
+    }
+    return out;
+}
+
+function featuresOf(...values) {
+    const text = values.map(value => String(value || '').toLowerCase()).join(' ');
+    return new Set(FEATURES.filter(([pattern]) => pattern.test(text)).map(([, name]) => name));
+}
+
+function outfitWords(value) {
+    return new Set((String(value || '').toLowerCase().match(OUTFIT_WORDS) || []).map(word => word.replace(/^armour$/, 'armor').replace(/^robes$/, 'robe')));
+}
+
+function traitsOf(person) {
+    return {
+        gender: genderOf(person.gender),
+        age: ageOf(person.age),
+        species: baseSpecies(person.species),
+        extras: overlaysOf(person.species, person.features, person.skin),
+        skin: skinColors(person.skin),
+        hair: hairColors(person.hair),
+        length: hairLengthOf(person.hair),
+        eyes: eyeColors(person.eyes),
+        height: heightOf(person.build),
+        body: bodyOf(person.build),
+        features: featuresOf(person.features, person.outfit, person.species),
+        outfit: outfitWords(person.outfit),
+    };
+}
+
 function compareLooks(person, member) {
     const p = traitsOf(person);
     const m = traitsOf(member);
     const parts = [];
     let score = 0;
     let wrong = '';
-    if (p.gender && m.gender) {
-        if (p.gender === m.gender) {
-            score += 3;
-            parts.push('gender ✓ +3');
+    const add = (points, text) => {
+        score += points;
+        parts.push(`${text} ${signed(points)}`);
+    };
+    const missing = label => add(-1, `${label}: not on the picture's card`);
+    const shown = set => [...set].join('/');
+    if (m.gender) {
+        if (!p.gender) {
+            missing('gender');
+        } else if (p.gender === m.gender) {
+            add(4, `gender ${person.gender} ✓`);
         } else {
-            wrong = `gender ${person.gender || '?'} ≠ ${member.gender || '?'}`;
+            wrong = `gender ${person.gender} ≠ ${member.gender}`;
         }
     }
-    if (p.age && m.age) {
-        const gap = Math.abs(AGES.indexOf(p.age) - AGES.indexOf(m.age));
-        const points = gap === 0 ? 4 : gap === 1 ? 0 : -4;
-        score += points;
-        parts.push(gap === 0 ? `age ${p.age} ✓ +4` : `age ${p.age} ≠ ${m.age} ${signed(points)}`);
-    }
-    if (p.species && m.species) {
-        if (p.species === m.species) {
-            score += 4;
-            parts.push(`species ${p.species} ✓ +4`);
+    if (m.species) {
+        if (!p.species) {
+            missing('species');
+        } else if (p.species === m.species) {
+            add(4, `species ${p.species} ✓`);
         } else {
             wrong = wrong || `species ${p.species} ≠ ${m.species}`;
         }
     }
-    if (p.skin.size && m.skin.size) {
-        const same = overlaps(p.skin, m.skin);
-        score += same ? 2 : -4;
-        parts.push(same ? `skin ${person.skin} ✓ +2` : `skin ${person.skin} ≠ ${member.skin} −4`);
+    if (m.age) {
+        if (!p.age) {
+            missing('age');
+        } else {
+            const gap = Math.abs(AGES.indexOf(p.age) - AGES.indexOf(m.age));
+            add(gap === 0 ? 5 : gap === 1 ? 0 : -5, gap === 0 ? `age ${p.age} ✓` : `age ${p.age} ≠ ${m.age}${gap === 1 ? ' (close)' : ''}`);
+        }
     }
-    if (p.hair.size && m.hair.size) {
-        const same = overlaps(p.hair, m.hair);
-        score += same ? 2 : -2;
-        parts.push(same ? `hair ${person.hair} ✓ +2` : `hair ${person.hair} ≠ ${member.hair} −2`);
+    if (m.hair.size) {
+        if (!p.hair.size) {
+            missing('hair colour');
+        } else {
+            const same = overlaps(p.hair, m.hair);
+            add(same ? 4 : -4, same ? `hair ${shown(p.hair)} ✓` : `hair ${shown(p.hair)} ≠ ${shown(m.hair)}`);
+        }
+    }
+    if (m.length) {
+        if (!p.length) {
+            missing('hair length');
+        } else {
+            const gap = Math.abs(HAIR_LENGTHS.indexOf(p.length) - HAIR_LENGTHS.indexOf(m.length));
+            add(gap === 0 ? 2 : gap === 1 ? 0 : -2, gap === 0 ? `hair length ${p.length} ✓` : `hair length ${p.length} ≠ ${m.length}${gap === 1 ? ' (close)' : ''}`);
+        }
+    }
+    if (m.body.size) {
+        if (!p.body.size) {
+            missing('build');
+        } else if (overlaps(p.body, m.body)) {
+            add(4, `build ${shown(p.body)} ✓`);
+        } else {
+            const close = [...p.body].some(a => [...m.body].some(b => CLOSE_BUILDS.has(`${a}|${b}`) || CLOSE_BUILDS.has(`${b}|${a}`)));
+            add(close ? 0 : -4, `build ${shown(p.body)} ≠ ${shown(m.body)}${close ? ' (close)' : ''}`);
+        }
+    }
+    if (m.height) {
+        if (!p.height) {
+            missing('height');
+        } else {
+            const gap = Math.abs(HEIGHTS.indexOf(p.height) - HEIGHTS.indexOf(m.height));
+            add(gap === 0 ? 2 : gap === 1 ? 0 : -2, gap === 0 ? `height ${p.height} ✓` : `height ${p.height} ≠ ${m.height}${gap === 1 ? ' (close)' : ''}`);
+        }
+    }
+    if (m.skin.size) {
+        if (!p.skin.size) {
+            missing('skin');
+        } else {
+            const same = overlaps(p.skin, m.skin);
+            add(same ? 3 : -3, same ? `skin ${shown(p.skin)} ✓` : `skin ${shown(p.skin)} ≠ ${shown(m.skin)}`);
+        }
+    }
+    if (m.eyes.size) {
+        if (!p.eyes.size) {
+            missing('eyes');
+        } else {
+            const same = overlaps(p.eyes, m.eyes);
+            add(same ? 2 : -2, same ? `eyes ${shown(p.eyes)} ✓` : `eyes ${shown(p.eyes)} ≠ ${shown(m.eyes)}`);
+        }
+    }
+    for (const feature of m.features) {
+        add(p.features.has(feature) ? 3 : -1, p.features.has(feature) ? `${feature} ✓` : `${feature}: not shown`);
     }
     for (const extra of m.extras) {
         if (p.extras.has(extra)) {
-            score += 3;
-            parts.push(`${extra} ✓ +3`);
+            add(3, `${extra} ✓`);
         } else {
-            parts.push(`${extra} not shown 0`);
+            parts.push(`${extra}: not shown 0`);
+        }
+    }
+    if (m.outfit.size && p.outfit.size) {
+        const same = [...p.outfit].filter(word => m.outfit.has(word));
+        if (same.length) {
+            add(2, `outfit ${same.join('/')} ✓`);
+        } else {
+            parts.push('outfit different 0 (clothes change)');
         }
     }
     return { score, wrong, parts };
+}
+
+function knownLine(member) {
+    const m = traitsOf(member);
+    const known = [];
+    const unknown = [];
+    const note = (label, value) => (value ? known.push(`${label} ${value}`) : unknown.push(label));
+    note('gender', m.gender && member.gender);
+    note('age', m.age);
+    note('species', [m.species, ...m.extras].filter(Boolean).join(' '));
+    note('hair', [m.length, [...m.hair].join('/')].filter(Boolean).join(' '));
+    note('build', [m.height, [...m.body].join('/')].filter(Boolean).join(' '));
+    note('skin', [...m.skin].join('/'));
+    note('eyes', [...m.eyes].join('/'));
+    note('features', [...m.features].join(', '));
+    return `${member.name} is known as: ${known.join(', ') || 'nothing'}${unknown.length ? `; not known: ${unknown.join(', ')}` : ''}`;
 }
 
 function looksDetail(entry, cast) {
@@ -4209,23 +4406,22 @@ function looksDetail(entry, cast) {
     const matched = [];
     let score = 0;
     for (const member of cast) {
-        const known = ['gender', 'age', 'species', 'skin', 'hair'].filter(field => member[field]).map(field => `${field} ${member[field]}`).join(', ');
-        notes.push(`${member.name} is known as: ${known || 'nothing (no looks written for this character)'}`);
+        notes.push(knownLine(member));
         const tried = people.map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member) }));
         const fits = tried.filter(item => !item.wrong && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
         const describe = item => `person ${item.index + 1} (${[item.person.gender, item.person.species].filter(Boolean).join(' ') || 'person'})`;
         if (fits.length) {
             const best = fits[0];
-            const points = matched.length ? Math.min(best.score, 3) : best.score;
+            const points = matched.length ? Math.min(best.score, 5) : best.score;
             matched.push(best.index);
             score += points;
-            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${matched.length > 1 ? ' (extra character, at most +3)' : ''}`);
+            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${matched.length > 1 ? ' (extra character, at most +5)' : ''}`);
         } else {
             notes.push(`Nobody looks like ${member.name}: ${tried.map(item => `${describe(item)} ${item.wrong}`).join('; ')}`);
         }
     }
     if (!matched.length) {
-        score = -24;
+        score = -20;
         notes.push(`No character is in the picture → ${signed(score)}`);
     }
     if (tail) {
@@ -4240,80 +4436,207 @@ function pronounGender(text) {
     return she > he ? 'woman' : he > she ? 'man' : '';
 }
 
-function castFromNotes(notes) {
-    const byName = new Map();
-    for (const line of notes) {
-        const match = line.match(/^(.+?) \((?:character card|persona|saved look)\): (.*)$/);
-        if (!match) {
-            continue;
-        }
-        const text = match[2].toLowerCase().replace(/_/g, ' ');
-        const person = byName.get(match[1]) || { name: match[1], gender: '', age: '', species: '', skin: '', hair: '' };
-        person.gender ||= genderOf(text) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : pronounGender(text);
-        person.age ||= ageOf((text.match(/\b(\d{1,3}) ?(?:years?|yo|y\.o\.)\b|\b(?:middle[- ]aged|elderly|old|young|youthful|mature|adult)\b/) || [])[0] || '');
-        const species = SPECIES.find(([pattern, name]) => name !== 'human' && pattern.test(text));
-        person.species ||= species ? species[1] : '';
-        person.skin ||= (text.match(/\b([a-z]+) skin(?:ned)?\b/) || [])[1] || '';
-        person.hair ||= (text.match(/\b([a-z]+) hair\b/) || [])[1] || '';
-        byName.set(match[1], person);
+function wordsBefore(text, noun) {
+    const joined = text.match(new RegExp(`\\b([a-z]+)-${noun}\\b`));
+    if (joined) {
+        return joined[1];
     }
-    return [...byName.values()];
+    const match = text.match(new RegExp(`((?:[a-z-]+[ ,]+){0,3})${noun}\\b`));
+    if (!match) {
+        return '';
+    }
+    const kept = [];
+    for (const word of match[1].split(/[ ,]+/).filter(Boolean).reverse()) {
+        if (/^(with|and|has|have|her|his|their|a|an|the|of|is|in|its|she|he|own|my|your|wears|wearing|got|very|pair)$/.test(word)) {
+            break;
+        }
+        kept.unshift(word);
+    }
+    return kept.join(' ');
 }
 
-function characterNotes() {
-    const user = String(ctx().name1 || '').toLowerCase();
-    return appearanceNotes().filter(line => !user || !line.toLowerCase().startsWith(`${user} (`));
+function sheetFromText(name, source) {
+    const text = String(source || '').toLowerCase().replace(/_/g, ' ');
+    const grab = pattern => (text.match(pattern) || [])[0] || '';
+    const species = SPECIES.find(([pattern, label]) => label !== 'human' && pattern.test(text));
+    const person = {
+        gender: genderOf(text) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : pronounGender(text),
+        age: ageOf(grab(/\b(\d{1,3}) ?(?:years?|yo|y\.o\.)\b|\b(?:middle[- ]aged|elderly|old|young|youthful|mature|adult)\b/)),
+        species: [species ? species[1] : '', ...overlaysOf(text)].filter(Boolean).join(' '),
+        skin: wordsBefore(text, 'skin(?:ned)?'),
+        hair: wordsBefore(text, 'hair(?:ed)?'),
+        eyes: wordsBefore(text, 'eye[sd]?'),
+        build: [...bodyOf(text), heightOf(text)].filter(Boolean).join(' '),
+        outfit: '',
+        features: [...featuresOf(text)].join(', '),
+    };
+    return { name, ...(cleanCard({ people: [person] })?.people[0] || {}) };
 }
 
-async function sceneCast() {
-    const notes = characterNotes();
-    const user = String(ctx().name1 || '').toLowerCase();
-    if (!notes.length) {
+function chatCharacters() {
+    const c = ctx();
+    const characters = Array.isArray(c.characters) ? c.characters : [];
+    if (c.groupId) {
+        const group = (c.groups || []).find(g => String(g?.id) === String(c.groupId));
+        return (group?.members || []).map(avatar => characters.find(ch => ch?.avatar === avatar)).filter(Boolean).slice(0, 4);
+    }
+    if (c.characterId !== undefined && c.characterId !== null && characters[c.characterId]) {
+        return [characters[c.characterId]];
+    }
+    return [];
+}
+
+function sceneMembers() {
+    const c = ctx();
+    const user = String(c.name1 || '').toLowerCase();
+    const looks = parseLooks();
+    const members = [];
+    const savedFor = name => looks.filter(look => look.name.toLowerCase() === String(name).toLowerCase()).map(look => `Saved look: ${look.tags.join(', ').replace(/_/g, ' ')}`);
+    for (const character of chatCharacters()) {
+        const card = fillNames(character.description || character.data?.description || '', character.name).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 4000);
+        const source = [card, ...savedFor(character.name)].filter(Boolean).join('\n');
+        if (source) {
+            members.push({ key: `char:${character.avatar || character.name}`, name: character.name, source });
+        }
+    }
+    const extra = [c.name2, ...mentionedLooks(looks).map(look => look.name)].filter(name => name && name.toLowerCase() !== user && !members.some(member => member.name.toLowerCase() === name.toLowerCase()));
+    for (const name of [...new Set(extra)].slice(0, 3)) {
+        const source = savedFor(name).join('\n');
+        if (source) {
+            members.push({ key: `look:${name.toLowerCase()}`, name, source });
+        }
+    }
+    return members.map(member => ({ ...member, basis: String(hashText(member.source)) }));
+}
+
+async function requestSheets(members) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "long black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks, scar on the cheek"}]\n- gender: woman or man; work it out from she/her or he/his when it is not said outright.\n- age: how old they look: young, adult, middle-aged or old.\n- hair: colour and length. eyes: colour.\n- build: height and body type (tall, short, slim, athletic, muscular, curvy, heavy).\n- features: what stands out (horns, tail, tusks, wings, pointed or animal ears, scars, glasses, tattoos, freckles). Being a ghost, undead or a vampire goes in features.\n- Use "" for anything that is not written.\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 200 + 220 * members.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
+    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    const list = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : [];
+    const people = new Map();
+    for (const item of Array.isArray(list) ? list : []) {
+        if (item && typeof item === 'object' && item.name) {
+            const person = cleanCard({ people: [item] })?.people[0];
+            if (person) {
+                people.set(String(item.name).toLowerCase(), person);
+            }
+        }
+    }
+    return people;
+}
+
+async function lookSheets({ ask = true } = {}) {
+    const members = sceneMembers();
+    if (!members.length) {
         return [];
     }
     const s = settings();
-    const key = String(hashText(`cast2\n${notes.join('\n')}`));
-    if (!s.castCache || typeof s.castCache !== 'object') {
-        s.castCache = {};
+    if (!s.lookSheets || typeof s.lookSheets !== 'object') {
+        s.lookSheets = {};
     }
-    if (Array.isArray(s.castCache[key])) {
-        return s.castCache[key];
-    }
-    const fallback = castFromNotes(notes);
+    const current = member => {
+        const sheet = s.lookSheets[member.key];
+        return sheet && (sheet.edited || sheet.basis === member.basis) ? sheet : null;
+    };
+    const missing = members.filter(member => !current(member) && !sheetFailed.has(member.basis));
     const service = ctx().ConnectionManagerRequestService;
-    if (!service || !s.tagProfile) {
-        return fallback;
-    }
-    try {
-        const prompt = `Below is how the characters of a roleplay look. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black"}]\ngender is woman or man: work it out from the words used for the character (she, her, he, his) when it is not said outright. age is how old they look: young, adult, middle-aged or old. Use "" for anything that cannot be told.\n\n${notes.join('\n')}`;
-        const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 300, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
-        const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
-        const start = text.indexOf('[');
-        const end = text.lastIndexOf(']');
-        const list = start >= 0 && end > start ? JSON.parse(text.slice(start, end + 1)) : [];
-        const cast = (Array.isArray(list) ? list : [])
-            .filter(item => item && typeof item === 'object' && item.name && String(item.name).toLowerCase() !== user)
-            .slice(0, 8)
-            .map(item => ({ name: String(item.name).slice(0, 60), ...Object.fromEntries(['gender', 'age', 'species', 'skin', 'hair'].map(field => [field, String(item[field] ?? '').toLowerCase().slice(0, 60)])) }));
-        cast.forEach(person => {
-            const guess = fallback.find(item => item.name.toLowerCase() === person.name.toLowerCase());
-            if (guess) {
-                ['gender', 'age', 'species', 'skin', 'hair'].forEach(field => {
-                    person[field] ||= guess[field];
-                });
+    if (ask && missing.length && service && s.tagProfile) {
+        try {
+            const people = await requestSheets(missing);
+            for (const member of missing) {
+                const person = people.get(member.name.toLowerCase()) || (missing.length === 1 && people.size === 1 ? [...people.values()][0] : null);
+                if (person) {
+                    s.lookSheets[member.key] = { name: member.name, person, basis: member.basis, edited: false };
+                } else {
+                    sheetFailed.add(member.basis);
+                }
             }
-        });
-        if (cast.length) {
-            const keys = Object.keys(s.castCache);
-            keys.slice(0, Math.max(0, keys.length - 19)).forEach(old => delete s.castCache[old]);
-            s.castCache[key] = cast;
             save();
-            return cast;
+        } catch (error) {
+            missing.forEach(member => sheetFailed.add(member.basis));
+            console.warn('[Image Search] could not fill the look sheets', error);
         }
-    } catch (error) {
-        console.warn('[Image Search] could not read how the characters look', error);
     }
-    return fallback;
+    return members.map(member => {
+        const sheet = current(member);
+        return sheet ? { name: member.name, key: member.key, ...sheet.person, edited: Boolean(sheet.edited) } : { ...sheetFromText(member.name, member.source), key: member.key, guessed: true };
+    });
+}
+
+function sheetLine(member) {
+    return `Person: ${CARD_FIELDS.filter(field => member[field]).map(field => `${field}: ${member[field]}`).join('; ')}`;
+}
+
+function sheetBox(member, onSave) {
+    const box = el('div', 'stis-card stis-sheet');
+    let editing = false;
+    const draw = () => {
+        box.innerHTML = '';
+        const s = settings();
+        box.appendChild(el('small', 'stis-card-head', `How ${member.name} looks${member.edited ? ' (edited by you)' : member.guessed ? ' (guessed from the card text, the AI could not read it)' : ''}`));
+        if (editing) {
+            const area = el('textarea', 'text_pole stis-card-edit');
+            area.value = sheetLine(member);
+            const hint = el('small', 'stis-card-hint', `Fields: ${CARD_FIELDS.join(', ')}, separated by ;. Hair is colour and length, build is height and body type.`);
+            const saveButton = el('div', 'menu_button', 'Save');
+            const cancel = el('div', 'menu_button', 'Cancel');
+            saveButton.addEventListener('click', () => {
+                const person = textToCard(area.value)?.people[0];
+                if (!person) {
+                    return;
+                }
+                const basis = sceneMembers().find(item => item.key === member.key)?.basis || '';
+                s.lookSheets = s.lookSheets || {};
+                s.lookSheets[member.key] = { name: member.name, person, basis, edited: true };
+                save();
+                Object.keys(member).filter(key => CARD_FIELDS.includes(key)).forEach(key => delete member[key]);
+                Object.assign(member, person, { edited: true, guessed: false });
+                editing = false;
+                draw();
+                onSave?.();
+            });
+            cancel.addEventListener('click', () => {
+                editing = false;
+                draw();
+            });
+            const row = el('div', 'stis-card-bar');
+            row.append(saveButton, cancel);
+            box.append(area, hint, row);
+            return;
+        }
+        box.appendChild(el('div', 'stis-card-text', sheetLine(member).replace(/^Person: /, '').replace(/; /g, '\n')));
+        const row = el('div', 'stis-card-bar');
+        const edit = el('div', 'menu_button', 'Edit');
+        edit.addEventListener('click', () => {
+            editing = true;
+            draw();
+        });
+        const again = el('div', 'menu_button', 'Read the card again');
+        again.title = 'Ask the tag model to fill this sheet again from the character card';
+        again.addEventListener('click', async () => {
+            if (s.lookSheets) {
+                delete s.lookSheets[member.key];
+            }
+            sheetFailed.clear();
+            again.textContent = 'Reading…';
+            const fresh = (await lookSheets()).find(item => item.key === member.key);
+            if (fresh) {
+                Object.keys(member).filter(key => CARD_FIELDS.includes(key)).forEach(key => delete member[key]);
+                Object.assign(member, fresh, { edited: false });
+            }
+            draw();
+            onSave?.();
+        });
+        row.append(edit, again);
+        box.appendChild(row);
+    };
+    draw();
+    return box;
 }
 
 function meaningQuery(message) {
@@ -4338,8 +4661,9 @@ async function rankedCandidates(message) {
             }
             return null;
         }),
-        sceneCast().catch(() => []),
+        lookSheets().catch(() => []),
     ]);
+    lastCast = cast;
     order = rank;
     for (const choice of choices) {
         const position = order?.get(choice.entry);
@@ -4380,6 +4704,7 @@ async function rankedCandidates(message) {
             choice.parts.notes.push(`2. Not ranked by meaning (left out by the first step) → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
         }
     });
+    sorted.cast = cast;
     return sorted;
 }
 
@@ -4430,7 +4755,7 @@ function cardBox(entry, onChange) {
                 if (!next) {
                     return;
                 }
-                entry.card = { ...next, basis: cardBasis(entry), edited: true };
+                entry.card = { ...next, basis: cardBasis(entry), edited: true, v: CARD_VERSION };
                 editing = false;
                 draw();
                 await saveLibrary({ skipSync: true, skipFiling: true });
@@ -4589,7 +4914,7 @@ function storyLines(count = 4) {
 function pickContext(message) {
     const c = ctx();
     const user = c.name1 || 'The user';
-    const looks = appearanceNotes();
+    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${personText(member)}`), ...appearanceNotes()];
     return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
 }
 
@@ -4721,7 +5046,8 @@ function showPictureCard(session) {
     const search = el('div', 'menu_button', 'Search the sites');
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, ask, browse, search, cancel);
-    root.append(note, img, why, answer, text, score, looksBox, grid, bar);
+    const sheets = el('div', 'stis-sendcard-sheets');
+    root.append(note, img, why, answer, text, score, looksBox, sheets, grid, bar);
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
     const draw = () => {
         const choice = options[index];
@@ -4729,6 +5055,12 @@ function showPictureCard(session) {
         text.textContent = choiceLine(choice);
         score.textContent = scoreLine(choice) ? `${scoreLine(choice)} ${showLooks ? '▴' : '▾'}` : '';
         looksBox.textContent = showLooks ? (choice.parts?.notes || []).join('\n') : '';
+        if (showLooks && !sheets.childElementCount) {
+            (session.cast || []).forEach(member => sheets.appendChild(sheetBox(member, () => {
+                note.textContent = 'Saved. The new look counts from the next picture send.';
+            })));
+        }
+        sheets.hidden = !showLooks;
         const reason = reasons.get(choice);
         why.textContent = reason ? `Why: ${reason}` : noneFits && noneWhy ? `The AI found nothing that fits: ${noneWhy}` : picked.has(choice) ? `Pick ${index + 1} of the AI.` : picked.size ? 'Not picked by the AI.' : '';
         const seen = session.shortlist.has(choice) ? '' : ' · the AI did not see this one';
@@ -4808,6 +5140,7 @@ async function sendWithPicture() {
     let noneWhy = '';
     let shortlist = new Set();
     let ranks = new Map();
+    let cast = [];
     try {
         await loadLibrary();
         const candidates = await rankedCandidates(message);
@@ -4830,6 +5163,7 @@ async function sendWithPicture() {
         options = [...first, ...candidates.filter(choice => !first.includes(choice))];
         shortlist = new Set(candidates.slice(0, shortlistSize()));
         ranks = new Map(candidates.map((choice, position) => [choice, position + 1]));
+        cast = candidates.cast || [];
     } finally {
         toastr.clear?.(notice);
         sendState.busy = false;
@@ -4838,7 +5172,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard({ message, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks, answers: new Map() });
+        showPictureCard({ message, cast, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks, answers: new Map() });
     } else {
         forcePicture(options[0]);
     }
@@ -7044,6 +7378,8 @@ function buildSettings() {
                         <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
                     </div>
                     <small id="st_imagesearch_card_status"></small>
+                    <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div></div>
+                    <div id="st_imagesearch_sheets"></div>
                     <details>
                         <summary>Pose and mood lists</summary>
                         <div>Poses the filing cards use</div>
@@ -7179,6 +7515,17 @@ function buildSettings() {
     bind('st_imagesearch_first_pass', 'firstPass', 'number');
     bind('st_imagesearch_poses', 'poseList');
     bind('st_imagesearch_moods', 'moodList');
+    document.getElementById('st_imagesearch_sheets_show').addEventListener('click', async () => {
+        const box = document.getElementById('st_imagesearch_sheets');
+        box.innerHTML = '';
+        box.appendChild(el('small', '', 'Reading…'));
+        const cast = await lookSheets();
+        box.innerHTML = '';
+        if (!cast.length) {
+            box.appendChild(el('small', '', 'No character in this chat has looks written (character card or saved look).'));
+        }
+        cast.forEach(member => box.appendChild(sheetBox(member)));
+    });
     document.getElementById('st_imagesearch_lists_reset').addEventListener('click', () => {
         s.poseList = DEFAULT_POSES;
         s.moodList = DEFAULT_MOODS;

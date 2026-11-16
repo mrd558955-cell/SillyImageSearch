@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.15.0';
+const VERSION = '2.16.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3623,9 +3623,12 @@ function onWorldInfoActivated(entries) {
 }
 
 const CARD_BATCH = 10;
-const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'eyes', 'build', 'outfit', 'features'];
-const CARD_VERSION = 2;
-const AGES = ['young', 'adult', 'middle-aged', 'old'];
+const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'eyes', 'build', 'bust', 'outfit', 'features'];
+const CARD_VERSION = 3;
+const SHEET_VERSION = 2;
+const AGES = ['child', 'teen', 'young adult', 'adult', 'middle-aged', 'old'];
+const ADULT_AGES = new Set(['young adult', 'adult', 'middle-aged', 'old']);
+const BUSTS = ['small', 'medium', 'large', 'very large'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
 const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, error: '', warned: false };
@@ -3688,6 +3691,7 @@ function cleanCard(card) {
             }
             return [field, value];
         })) }))
+        .map(person => (person.age && !ADULT_AGES.has(ageOf(person.age)) ? { ...person, bust: '' } : person))
         .filter(person => CARD_FIELDS.some(field => person[field]));
     return {
         people,
@@ -3721,8 +3725,14 @@ function cardWho(card) {
     return card.people.length ? card.people.map(personText).join(' + ') : 'nobody';
 }
 
+function judgeWho(person) {
+    const hair = [...hairColors(person.hair)].join('/');
+    return personText({ ...person, hair, outfit: '' });
+}
+
 function cardLine(card) {
-    return [`Who: ${cardWho(card)}`, card.pose.length ? `Pose: ${card.pose.join(', ')}` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}` : '', card.place ? `Place: ${card.place}` : ''].filter(Boolean).join(' | ');
+    const people = card.people.filter(person => person.role !== 'background');
+    return [`Who: ${people.length ? people.map(judgeWho).join(' + ') : 'nobody'}`, card.pose.length ? `Pose: ${card.pose.join(', ')}` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}` : ''].filter(Boolean).join(' | ');
 }
 
 function cardToText(card) {
@@ -3824,7 +3834,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: young, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin is the colour, hair is colour and length (long silver), eyes is the colour, build is height and body type (tall, short, slim, athletic, muscular, curvy, heavy), outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "short black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: child, teen, young adult, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin is the colour, hair is the colour, eyes is the colour, build is height and body type (tall, short, slim, athletic, muscular, curvy, heavy), bust is small, medium, large or very large and only for women who look adult (leave it "" for anyone else), outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "bust": "medium", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -4118,7 +4128,7 @@ function ageOf(value) {
     const text = String(value || '').toLowerCase();
     const years = Number((text.match(/\b(\d{1,3})\b/) || [])[1]);
     if (years) {
-        return years < 25 ? 'young' : years < 40 ? 'adult' : years < 60 ? 'middle-aged' : 'old';
+        return years < 13 ? 'child' : years < 18 ? 'teen' : years < 26 ? 'young adult' : years < 40 ? 'adult' : years < 60 ? 'middle-aged' : 'old';
     }
     if (/\b(middle[- ]aged|middle age|forties|fifties)\b/.test(text)) {
         return 'middle-aged';
@@ -4126,8 +4136,14 @@ function ageOf(value) {
     if (/\b(old|elderly|aged|senior|ancient|wrinkled|grandm\w*|grandf\w*)\b/.test(text)) {
         return 'old';
     }
-    if (/\b(young|youthful|teen\w*|college|student)\b/.test(text)) {
-        return 'young';
+    if (/\b(child|kid|little girl|little boy|preteen|elementary)\b/.test(text)) {
+        return 'child';
+    }
+    if (/\b(teen\w*|adolescent|high ?school\w*)\b/.test(text)) {
+        return 'teen';
+    }
+    if (/\b(young adult|young|youthful|college|twenties|early twenties)\b/.test(text)) {
+        return 'young adult';
     }
     if (/\b(adult|grown|mature|thirties)\b/.test(text)) {
         return 'adult';
@@ -4143,7 +4159,7 @@ function signed(value) {
     return value > 0 ? `+${value}` : value < 0 ? `−${-value}` : '0';
 }
 
-const HAIR_LENGTHS = ['short', 'medium', 'long', 'very long'];
+const CLOSE_COLORS = new Set(['black|brown', 'brown|red', 'brown|blonde', 'blonde|white', 'blonde|orange', 'red|orange', 'red|pink', 'pink|purple', 'purple|blue', 'blue|green', 'amber|brown', 'blue|grey', 'green|brown', 'white|grey', 'black|grey', 'pink|white']);
 const HEIGHTS = ['short', 'average', 'tall'];
 const CLOSE_BUILDS = new Set(['slim|athletic', 'athletic|muscular', 'muscular|heavy', 'curvy|heavy', 'athletic|curvy']);
 const FEATURES = [
@@ -4174,19 +4190,23 @@ const OUTFIT_WORDS = /\b(armou?r|plate|dress|gown|kimono|yukata|uniform|robes?|c
 const sheetFailed = new Set();
 let lastCast = [];
 
-function hairLengthOf(value) {
+function closeColors(a, b) {
+    return [...a].some(x => [...b].some(y => CLOSE_COLORS.has(`${x}|${y}`) || CLOSE_COLORS.has(`${y}|${x}`)));
+}
+
+function bustOf(value) {
     const text = String(value || '').toLowerCase();
-    if (/\b(very long|floor[- ]length|knee[- ]length|waist[- ]length|hip[- ]length|absurdly long)\b/.test(text)) {
-        return 'very long';
+    if (/\b(very large|huge|enormous|gigantic|massive)\b/.test(text)) {
+        return 'very large';
     }
-    if (/\blong\b/.test(text)) {
-        return 'long';
+    if (/\b(large|big|busty|ample|full)\b/.test(text)) {
+        return 'large';
     }
-    if (/\b(medium|shoulder[- ]length|shoulder|bob|chin[- ]length)\b/.test(text)) {
+    if (/\b(medium|average|modest)\b/.test(text)) {
         return 'medium';
     }
-    if (/\b(short|pixie|buzz|buzzed|cropped|crew|shaved|bald)\b/.test(text)) {
-        return 'short';
+    if (/\b(small|flat|petite|tiny)\b/.test(text)) {
+        return 'small';
     }
     return '';
 }
@@ -4254,7 +4274,7 @@ function traitsOf(person) {
         extras: overlaysOf(person.species, person.features, person.skin),
         skin: skinColors(person.skin),
         hair: hairColors(person.hair),
-        length: hairLengthOf(person.hair),
+        bust: bustOf(person.bust),
         eyes: eyeColors(person.eyes),
         height: heightOf(person.build),
         body: bodyOf(person.build),
@@ -4304,17 +4324,11 @@ function compareLooks(person, member) {
     if (m.hair.size) {
         if (!p.hair.size) {
             missing('hair colour');
+        } else if (overlaps(p.hair, m.hair)) {
+            add(4, `hair ${shown(p.hair)} ✓`);
         } else {
-            const same = overlaps(p.hair, m.hair);
-            add(same ? 4 : -4, same ? `hair ${shown(p.hair)} ✓` : `hair ${shown(p.hair)} ≠ ${shown(m.hair)}`);
-        }
-    }
-    if (m.length) {
-        if (!p.length) {
-            missing('hair length');
-        } else {
-            const gap = Math.abs(HAIR_LENGTHS.indexOf(p.length) - HAIR_LENGTHS.indexOf(m.length));
-            add(gap === 0 ? 2 : gap === 1 ? 0 : -2, gap === 0 ? `hair length ${p.length} ✓` : `hair length ${p.length} ≠ ${m.length}${gap === 1 ? ' (close)' : ''}`);
+            const close = closeColors(p.hair, m.hair);
+            add(close ? -1 : -4, `hair ${shown(p.hair)} ≠ ${shown(m.hair)}${close ? ' (close colours)' : ''}`);
         }
     }
     if (m.body.size) {
@@ -4346,9 +4360,20 @@ function compareLooks(person, member) {
     if (m.eyes.size) {
         if (!p.eyes.size) {
             missing('eyes');
+        } else if (overlaps(p.eyes, m.eyes)) {
+            add(2, `eyes ${shown(p.eyes)} ✓`);
         } else {
-            const same = overlaps(p.eyes, m.eyes);
-            add(same ? 2 : -2, same ? `eyes ${shown(p.eyes)} ✓` : `eyes ${shown(p.eyes)} ≠ ${shown(m.eyes)}`);
+            const close = closeColors(p.eyes, m.eyes);
+            add(close ? 0 : -2, `eyes ${shown(p.eyes)} ≠ ${shown(m.eyes)}${close ? ' (close colours)' : ''}`);
+        }
+    }
+    const adults = ADULT_AGES.has(m.age) && (!p.age || ADULT_AGES.has(p.age));
+    if (m.bust && adults) {
+        if (!p.bust) {
+            missing('bust');
+        } else {
+            const gap = Math.abs(BUSTS.indexOf(p.bust) - BUSTS.indexOf(m.bust));
+            add(gap === 0 ? 3 : gap === 1 ? 0 : -3, gap === 0 ? `bust ${p.bust} ✓` : `bust ${p.bust} ≠ ${m.bust}${gap === 1 ? ' (close)' : ''}`);
         }
     }
     for (const feature of m.features) {
@@ -4380,8 +4405,11 @@ function knownLine(member) {
     note('gender', m.gender && member.gender);
     note('age', m.age);
     note('species', [m.species, ...m.extras].filter(Boolean).join(' '));
-    note('hair', [m.length, [...m.hair].join('/')].filter(Boolean).join(' '));
+    note('hair', [...m.hair].join('/'));
     note('build', [m.height, [...m.body].join('/')].filter(Boolean).join(' '));
+    if (!m.age || ADULT_AGES.has(m.age)) {
+        note('bust', m.bust);
+    }
     note('skin', [...m.skin].join('/'));
     note('eyes', [...m.eyes].join('/'));
     note('features', [...m.features].join(', '));
@@ -4461,7 +4489,7 @@ function sheetFromText(name, source) {
     const species = SPECIES.find(([pattern, label]) => label !== 'human' && pattern.test(text));
     const person = {
         gender: genderOf(text) === 'f' ? 'woman' : genderOf(text) === 'm' ? 'man' : pronounGender(text),
-        age: ageOf(grab(/\b(\d{1,3}) ?(?:years?|yo|y\.o\.)\b|\b(?:middle[- ]aged|elderly|old|young|youthful|mature|adult)\b/)),
+        age: ageOf(grab(/\b(\d{1,3}) ?(?:years?|yo|y\.o\.)\b|\b(?:middle[- ]aged|elderly|old|young adult|young|youthful|mature|adult|teen\w*|adolescent|child|kid)\b/)),
         species: [species ? species[1] : '', ...overlaysOf(text)].filter(Boolean).join(' '),
         skin: wordsBefore(text, 'skin(?:ned)?'),
         hair: wordsBefore(text, 'hair(?:ed)?'),
@@ -4512,7 +4540,7 @@ function sceneMembers() {
 async function requestSheets(members) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
-    const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "long black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks, scar on the cheek"}]\n- gender: woman or man; work it out from she/her or he/his when it is not said outright.\n- age: how old they look: young, adult, middle-aged or old.\n- hair: colour and length. eyes: colour.\n- build: height and body type (tall, short, slim, athletic, muscular, curvy, heavy).\n- features: what stands out (horns, tail, tusks, wings, pointed or animal ears, scars, glasses, tattoos, freckles). Being a ghost, undead or a vampire goes in features.\n- Use "" for anything that is not written.\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
+    const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "bust": "medium", "outfit": "leather armor", "features": "tusks, scar on the cheek"}]\n- gender: woman or man; work it out from she/her or he/his when it is not said outright.\n- age: how old they look: child, teen, young adult, adult, middle-aged or old.\n- hair: colour. eyes: colour.\n- build: height and body type (tall, short, slim, athletic, muscular, curvy, heavy).\n- bust: small, medium, large or very large, only for women who look adult; "" for anyone else.\n- features: what stands out (horns, tail, tusks, wings, pointed or animal ears, scars, glasses, tattoos, freckles). Being a ghost, undead or a vampire goes in features.\n- Use "" for anything that is not written.\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 200 + 220 * members.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
     const start = text.indexOf('[');
@@ -4541,7 +4569,7 @@ async function lookSheets({ ask = true } = {}) {
     }
     const current = member => {
         const sheet = s.lookSheets[member.key];
-        return sheet && (sheet.edited || sheet.basis === member.basis) ? sheet : null;
+        return sheet && (sheet.edited || (sheet.basis === member.basis && (sheet.v || 1) >= SHEET_VERSION)) ? sheet : null;
     };
     const missing = members.filter(member => !current(member) && !sheetFailed.has(member.basis));
     const service = ctx().ConnectionManagerRequestService;
@@ -4551,7 +4579,7 @@ async function lookSheets({ ask = true } = {}) {
             for (const member of missing) {
                 const person = people.get(member.name.toLowerCase()) || (missing.length === 1 && people.size === 1 ? [...people.values()][0] : null);
                 if (person) {
-                    s.lookSheets[member.key] = { name: member.name, person, basis: member.basis, edited: false };
+                    s.lookSheets[member.key] = { name: member.name, person, basis: member.basis, edited: false, v: SHEET_VERSION };
                 } else {
                     sheetFailed.add(member.basis);
                 }
@@ -4582,7 +4610,7 @@ function sheetBox(member, onSave) {
         if (editing) {
             const area = el('textarea', 'text_pole stis-card-edit');
             area.value = sheetLine(member);
-            const hint = el('small', 'stis-card-hint', `Fields: ${CARD_FIELDS.join(', ')}, separated by ;. Hair is colour and length, build is height and body type.`);
+            const hint = el('small', 'stis-card-hint', `Fields: ${CARD_FIELDS.join(', ')}, separated by ;. Hair is the colour, build is height and body type, bust only for adults.`);
             const saveButton = el('div', 'menu_button', 'Save');
             const cancel = el('div', 'menu_button', 'Cancel');
             saveButton.addEventListener('click', () => {
@@ -4592,7 +4620,7 @@ function sheetBox(member, onSave) {
                 }
                 const basis = sceneMembers().find(item => item.key === member.key)?.basis || '';
                 s.lookSheets = s.lookSheets || {};
-                s.lookSheets[member.key] = { name: member.name, person, basis, edited: true };
+                s.lookSheets[member.key] = { name: member.name, person, basis, edited: true, v: SHEET_VERSION };
                 save();
                 Object.keys(member).filter(key => CARD_FIELDS.includes(key)).forEach(key => delete member[key]);
                 Object.assign(member, person, { edited: true, guessed: false });
@@ -4639,14 +4667,62 @@ function sheetBox(member, onSave) {
     return box;
 }
 
+const SCENE_CUT = /\b(?:the )?(?:next|following) (?:day|morning|evening|night|afternoon|week|month|year)\b|\b(?:hours|days|weeks|months|years|moments|minutes) later\b|\b(?:an?|one|some|few|several|couple of|two|three) (?:hours?|days?|weeks?|months?|years?) later\b|\blater (?:that|on|in the) (?:day|night|evening|morning|afternoon|week)\b|\bthe (?:morning|day|night|week) after\b|\bthat (?:evening|night|afternoon)\b|\bmeanwhile\b|\belsewhere\b|\btime ?skip\b|\bscene (?:change|break|cut|shift)\b|^\s*(?:-{3,}|\*{3,}|#{3,}|~{3,}|_{3,})\s*$/im;
+const NEGATIONS = /\b(?:no|not|never|without|don'?t|doesn'?t|didn'?t|won'?t|isn'?t|aren'?t|wasn'?t|can'?t|cannot|stops?|stopped|refuses? to|refused to|avoids?|avoiding|instead of|rather than)\s+(?:(?:any|more|the|a|an|her|his|their|longer|even|to|be|being|get|getting|go|going|start|starting|want|wants|try|trying|tries|bother|dare)\s+){0,3}([a-z]{3,})/gi;
+const NOT_ACTIONS = new Set(['one', 'way', 'matter', 'idea', 'time', 'problem', 'need', 'thing', 'things', 'reason', 'doubt', 'sure', 'know', 'think', 'want', 'like', 'care', 'mind', 'longer', 'more', 'less', 'much', 'many', 'other', 'response', 'answer', 'words', 'word', 'sound', 'only', 'just', 'really', 'quite', 'yet', 'again', 'here', 'there', 'that', 'this', 'what', 'how', 'why', 'where', 'when', 'say', 'said', 'tell', 'see', 'look', 'seem', 'feel', 'hear', 'notice', 'help', 'move', 'react', 'wait', 'stop', 'anymore', 'anything', 'something', 'nothing', 'everything', 'someone', 'anyone', 'nobody', 'big', 'deal', 'joke', 'kidding', 'chance', 'choice', 'escape', 'hope', 'hurry', 'rush', 'fair', 'good', 'bad', 'right', 'wrong', 'ever', 'thanks', 'thank', 'sorry', 'please', 'okay', 'ready', 'today', 'tonight']);
+
+function sceneCut(message) {
+    const match = String(message || '').match(SCENE_CUT);
+    return match ? match[0].trim() : '';
+}
+
+function actionStem(word) {
+    let stem = String(word || '').toLowerCase();
+    stem = stem.replace(/(?:ing|ed|es|s)$/, '');
+    if (stem.length >= 4 && /([^aeiou])\1$/.test(stem)) {
+        stem = stem.slice(0, -1);
+    }
+    return stem.length >= 3 ? stem : String(word || '').toLowerCase();
+}
+
+function ruledOut(message) {
+    const out = [];
+    for (const match of String(message || '').matchAll(NEGATIONS)) {
+        const word = match[1].toLowerCase();
+        if (!NOT_ACTIONS.has(word) && !STOP_WORDS.has(word) && !out.some(item => item.word === word)) {
+            out.push({ word, stem: actionStem(word), phrase: match[0].trim() });
+        }
+    }
+    return out.slice(0, 6);
+}
+
+function showsAction(entry, item) {
+    const text = [entry.card?.pose.join(' '), entry.card?.moments.join(' '), entry.sections?.action, entry.keywords?.join(' '), entry.variants.map(variant => variant.diff).join(' ')].filter(Boolean).join(' ').toLowerCase();
+    return text.split(/[^a-z']+/).some(word => word.length >= 3 && actionStem(word) === item.stem);
+}
+
+function withoutRuledOut(message) {
+    let text = String(message || '');
+    ruledOut(message).forEach(item => {
+        text = text.split(item.phrase).join(' ');
+    });
+    return text.replace(/\s+/g, ' ').trim();
+}
+
 function meaningQuery(message) {
+    const text = withoutRuledOut(message);
+    if (sceneCut(message)) {
+        return text;
+    }
     const last = (ctx().chat || []).filter(m => m && !m.is_system && typeof m.mes === 'string').slice(-1)[0];
     const before = last ? cleanForPrompt(last.mes).slice(-400) : '';
-    return `${before}\n${message}`.trim();
+    return `${before}\n${text}`.trim();
 }
 
 async function rankedCandidates(message) {
-    const choices = pictureCandidates(`${recentText(2)} ${message} ${appearanceNotes().join(' ')}`);
+    const cut = sceneCut(message);
+    const banned = ruledOut(message);
+    const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(message)} ${appearanceNotes().join(' ')}`);
     if (!choices.length) {
         return choices;
     }
@@ -4672,6 +4748,8 @@ async function rankedCandidates(message) {
         const detail = looksDetail(choice.entry, cast);
         const looks = detail.score;
         const shownPoints = choice.fresh ? 0 : -12;
+        const clashes = banned.filter(item => showsAction(choice.entry, item));
+        const bannedPoints = clashes.length ? -15 : 0;
         let meaningNote;
         if (!meaningSource()) {
             meaningNote = 'Meaning: search by meaning is off, so it does not count.';
@@ -4684,9 +4762,9 @@ async function rankedCandidates(message) {
         } else {
             meaningNote = 'Meaning: not in the search index yet (it updates in the background) → 0';
         }
-        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with the story and the character's looks → ${signed(keywords)} (at most +24)`, ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : [])] };
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with ${cut ? 'your message' : 'the story'} and the character's looks → ${signed(keywords)} (at most +24)`, ...(cut ? [`Scene cut ("${cut}"): the old scene is left out of keywords, meaning and the AI's check`] : []), ...(clashes.length ? [`Your message rules out ${clashes.map(item => `"${item.word}"`).join(', ')}, and the picture shows it → ${signed(bannedPoints)}`] : []), ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : [])] };
         choice.parts.meaningNote = choice.parts.notes.shift();
-        choice.first = keywords + looks + shownPoints;
+        choice.first = keywords + looks + shownPoints + bannedPoints;
         choice.total = choice.first + meaningPoints;
     }
     const keep = firstPassSize();
@@ -4913,8 +4991,12 @@ function storyLines(count = 4) {
 function pickContext(message) {
     const c = ctx();
     const user = c.name1 || 'The user';
-    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${personText(member)}`), ...appearanceNotes()];
-    return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, build, skin, hair and clothing. A picture of someone who looks different is wrong, even if the action fits.\n2. What happens next: the picture should show the result of the newest message or the reaction to it (if someone gets pushed, a picture of them falling or lying on the ground fits better than one of them standing).\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${storyLines() || '(start of the story)'}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
+    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...appearanceNotes()];
+    const cut = sceneCut(message);
+    const banned = ruledOut(message);
+    const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
+    const rules = banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '';
+    return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
 }
 
 async function askPicturePick(message, candidates) {

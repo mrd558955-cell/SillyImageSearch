@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.20.1';
+const VERSION = '2.20.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -614,6 +614,9 @@ function xmlPosts(text) {
 function siteAnswer(result) {
     const text = String(result?.text || '');
     const plain = text.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/^\(\uFFFD\/\uFFFD/.test(text)) {
+        return `${result?.status ?? '?'} with zstd-compressed data that SillyTavern's proxy did not unpack; SillyTavern 1.19.0 and later fix this, so update SillyTavern`;
+    }
     const cloudflare = /just a moment|cf-chl|cf_chl|challenge-platform|attention required|cloudflare/i.test(text);
     return `${result?.status ?? '?'}${plain ? ` "${plain.slice(0, 70)}"` : ''}${cloudflare ? ' (a Cloudflare check, which stops SillyTavern\'s server)' : ''}`;
 }

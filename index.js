@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.24.1';
+const VERSION = '2.24.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -1861,8 +1861,12 @@ async function fetchImageBlob(downloadUrl, variant, route) {
     } catch (error) {
         throw new Error(`Could not download the picture: ${error?.message || error}`);
     }
+    const checkMessage = () => `${hostOf(route === 'proxy' ? decodeURIComponent(downloadUrl.replace(/^\/proxy\//, '')) : downloadUrl) || 'The image server'} asks for a Cloudflare check that SillyTavern's server cannot pass, so the picture could not be saved. Try again later, or save it from another site.`;
     if (!response.ok) {
         const text = await response.text().catch(() => '');
+        if (CHALLENGE_PAGE.test(text.slice(0, 20000))) {
+            throw new Error(checkMessage());
+        }
         if (/CORS proxy is disabled/i.test(text)) {
             throw new Error('Saving pictures needs enableCorsProxy: true in SillyTavern\'s config.yaml.');
         }
@@ -1878,6 +1882,9 @@ async function fetchImageBlob(downloadUrl, variant, route) {
         const start = (await blob.slice(0, 4000).text()).trim();
         if (start.startsWith('<')) {
             const title = (start.match(/<title[^>]*>([^<]*)/i)?.[1] || '').trim();
+            if (CHALLENGE_PAGE.test(`${title} ${start.slice(0, 2000)}`)) {
+                throw new Error(checkMessage());
+            }
             const text = start.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
             throw new Error(`The image server sent a web page instead of the picture. Page title: "${title || 'none'}". Text: "${text}"`);
         }
@@ -6645,17 +6652,83 @@ function el(tag, className, text) {
     return node;
 }
 
+const thumbTrouble = new Map();
+const thumbWatchers = new Set();
+const CHALLENGE_PAGE = /just a moment|challenge-platform|cf-chl|cf_chl|attention required|cloudflare/i;
+
+function noteThumb(item, img, ok) {
+    const host = hostOf(item.thumb || '');
+    if (!host) {
+        return;
+    }
+    const trouble = thumbTrouble.get(host) || { host, failed: [], loaded: 0, sample: '', tries: 0, checked: false, cloudflare: false, why: '' };
+    if (ok) {
+        trouble.loaded++;
+    } else {
+        trouble.failed.push({ img, item });
+        trouble.sample = trouble.sample || item.thumb;
+    }
+    thumbTrouble.set(host, trouble);
+    thumbWatchers.forEach(watch => watch(trouble));
+}
+
+function blockedHosts() {
+    return [...thumbTrouble.values()].filter(trouble => {
+        trouble.failed = trouble.failed.filter(({ img }) => img.isConnected);
+        return trouble.failed.length >= 3 && trouble.failed.length > trouble.loaded * 3;
+    });
+}
+
+async function checkBlockedHost(trouble) {
+    if (trouble.checked) {
+        return;
+    }
+    trouble.checked = true;
+    try {
+        const result = await rawFetch(proxyUrl(trouble.sample), { headers: ctx().getRequestHeaders() });
+        trouble.cloudflare = CHALLENGE_PAGE.test(String(result.text || '').slice(0, 20000));
+        trouble.why = trouble.cloudflare ? 'its image server asks for a Cloudflare check' : result.ok ? '' : `its image server answered ${result.status}`;
+    } catch (error) {
+        trouble.why = '';
+    }
+    thumbWatchers.forEach(watch => watch(trouble));
+}
+
+function retryThumbs(host) {
+    const trouble = thumbTrouble.get(host);
+    if (!trouble) {
+        return;
+    }
+    const list = trouble.failed;
+    trouble.failed = [];
+    trouble.loaded = 0;
+    trouble.tries++;
+    list.forEach(({ img, item }) => {
+        if (img.isConnected) {
+            img.closest('.stis-cell')?.classList.remove('stis-broken');
+            setThumbSource(img, item);
+        }
+    });
+    thumbWatchers.forEach(watch => watch(trouble));
+}
+
 function setThumbSource(img, item) {
     const sources = [item.thumb, fetcherLink(item.thumb), proxyUrl(item.thumb)].filter(Boolean);
     let index = 0;
     img.referrerPolicy = 'no-referrer';
+    img.onload = () => {
+        img.onload = null;
+        noteThumb(item, img, true);
+    };
     img.onerror = () => {
         index++;
         if (index < sources.length) {
             img.src = sources[index];
         } else {
             img.onerror = null;
+            img.onload = null;
             img.closest('.stis-cell')?.classList.add('stis-broken');
+            noteThumb(item, img, false);
         }
     };
     img.src = sources[0];
@@ -6747,6 +6820,7 @@ async function openPicker(initialTags = null, focus = null) {
         lookCancel: el('div', 'menu_button', 'Cancel'),
         status: el('div', 'stis-status'),
         debug: el('div', 'stis-debug'),
+        blocked: el('div', 'stis-blocked'),
         grid: el('div', 'stis-grid'),
         sentinel: el('div', 'stis-sentinel'),
         preview: el('div', 'stis-preview'),
@@ -6805,7 +6879,49 @@ async function openPicker(initialTags = null, focus = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
+    ui.blocked.hidden = true;
+    thumbTrouble.clear();
+    const awaitingCheck = new Set();
+    const renderBlocked = () => {
+        const list = blockedHosts();
+        ui.blocked.innerHTML = '';
+        ui.blocked.hidden = !list.length || ui.grid.hidden;
+        for (const trouble of list) {
+            checkBlockedHost(trouble);
+            const row = el('div', 'stis-blocked-row');
+            const why = trouble.why ? `: ${trouble.why}` : '';
+            row.appendChild(el('div', 'stis-blocked-text', `${trouble.tries ? 'Still blocked. ' : ''}${trouble.failed.length} picture(s) from ${trouble.host} could not be shown${why}.`));
+            const buttons = el('div', 'stis-blocked-buttons');
+            const open = el('div', 'menu_button', trouble.cloudflare ? 'Pass the check' : 'Open one');
+            open.title = 'Opens one of these pictures in a new tab';
+            open.addEventListener('click', () => {
+                awaitingCheck.add(trouble.host);
+                window.open(trouble.sample, '_blank');
+            });
+            const again = el('div', 'menu_button', 'Try again');
+            again.addEventListener('click', () => retryThumbs(trouble.host));
+            buttons.append(open, again);
+            row.appendChild(buttons);
+            row.appendChild(el('small', '', trouble.cloudflare ? 'A new tab opens on one of the pictures. Pass the check there, then come back here: the pictures load again by themselves.' : 'A new tab opens on one of the pictures. If it shows there, come back here: the pictures load again by themselves.'));
+            ui.blocked.appendChild(row);
+        }
+    };
+    const onThumbTrouble = () => {
+        if (!closed) {
+            renderBlocked();
+        }
+    };
+    const onCheckReturn = () => {
+        if (document.visibilityState === 'visible' && awaitingCheck.size && !closed) {
+            const hosts = [...awaitingCheck];
+            awaitingCheck.clear();
+            hosts.forEach(retryThumbs);
+        }
+    };
+    thumbWatchers.add(onThumbTrouble);
+    document.addEventListener('visibilitychange', onCheckReturn);
+    window.addEventListener('focus', onCheckReturn);
 
     let tags = [];
     let required = new Set();
@@ -8229,6 +8345,7 @@ async function openPicker(initialTags = null, focus = null) {
         ui.complete.hidden = true;
         ui.status.hidden = lib;
         ui.grid.hidden = lib;
+        ui.blocked.hidden = lib || !blockedHosts().length;
         ui.lookBar.hidden = lib;
         ui.chipMenu.hidden = lib || !menuTag;
         ui.who.hidden = lib || !ui.who.childElementCount;
@@ -8518,6 +8635,9 @@ async function openPicker(initialTags = null, focus = null) {
             clearTimeout(searchTimer);
             clearTimeout(completeTimer);
             saveWatchers.delete(onSaveChange);
+            thumbWatchers.delete(onThumbTrouble);
+            document.removeEventListener('visibilitychange', onCheckReturn);
+            window.removeEventListener('focus', onCheckReturn);
             document.removeEventListener('keydown', onKey);
         },
     });

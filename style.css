@@ -1057,3 +1057,33 @@ video.stis-preview-img {
     text-decoration: underline;
     cursor: pointer;
 }
+
+.stis-blocked {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.stis-blocked[hidden] {
+    display: none;
+}
+
+.stis-blocked-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeQuoteColor, #c90);
+    border-radius: 8px;
+    background: rgba(255, 170, 0, 0.08);
+}
+
+.stis-blocked-text {
+    font-weight: bold;
+}
+
+.stis-blocked-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}

@@ -11,7 +11,7 @@ Click the images icon next to the chat box (or the wand menu, or `/imgsearch tag
 
 Saving pictures needs `enableCorsProxy: true` in `config.yaml`, or the Cloudflare image fetcher.
 
-With more than one image board listed, "All sites" in the picker searches them all at once; the site switches under the tag box leave some out. Typing two letters or more in the tag box suggests matching tags from the sites, favorites first.
+If a site's image server blocks its pictures (Danbooru's cdn.donmai.us sometimes asks for a Cloudflare check), the picker says so instead of showing an empty grid: "Pass the check" opens one picture in a new tab, and when you come back the pictures load again by themselves. Saving still goes through SillyTavern's server, which cannot pass such a check, so saving from that site may fail until the check is lifted. With more than one image board listed, "All sites" in the picker searches them all at once; the site switches under the tag box leave some out. Typing two letters or more in the tag box suggests matching tags from the sites, favorites first.
 
 Scroll down in a picture's preview to see all its tags: select some to add them to the search, mark them as favorites (the ★ row under the tag box), or leave out pictures that have them. The left-out list is in the settings ("Leave out pictures with these tags").
 

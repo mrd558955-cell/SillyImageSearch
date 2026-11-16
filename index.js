@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.12.1';
+const VERSION = '2.12.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3817,7 +3817,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…). skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man, girl, boy or unclear. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin and hair are colours and style, build is the body type, outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "species": "orc", "skin": "green", "hair": "short black", "build": "muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -4041,7 +4041,6 @@ const SPECIES = [
     [/\b(wolf|werewolf|wolf ?girl|lycan)\b/, 'wolf'],
     [/\b(robot|android|cyborg|automaton|gynoid|mecha)\b/, 'robot'],
     [/\b(demon|succubus|incubus|devil|oni|tiefling)\b/, 'demon'],
-    [/\b(vampire)\b/, 'vampire'],
     [/\b(angel)\b/, 'angel'],
     [/\b(dragon|dragon ?girl)\b/, 'dragon'],
     [/\b(dark ?elf|drow|elf|elven|elves)\b/, 'elf'],
@@ -4049,9 +4048,27 @@ const SPECIES = [
     [/\b(goblin)\b/, 'goblin'],
     [/\b(dwarf|dwarven)\b/, 'dwarf'],
     [/\b(slime)\b/, 'slime'],
-    [/\b(ghost|spirit)\b/, 'ghost'],
     [/\b(human|person|people)\b/, 'human'],
 ];
+
+const OVERLAYS = [
+    [/\b(ghosts?|ghostly|spirits?|phantoms?|spect(?:er|re)s?|wraiths?|translucent|transparent|see-through|spectral)\b/, 'ghost'],
+    [/\b(undead|zombies?|skeletal|rotting)\b/, 'undead'],
+    [/\b(vampires?|vampiric)\b/, 'vampire'],
+];
+
+function overlaysOf(...values) {
+    const text = values.map(value => String(value || '').toLowerCase().replace(/_/g, ' ')).join(' ');
+    return new Set(OVERLAYS.filter(([pattern]) => pattern.test(text)).map(([, name]) => name));
+}
+
+function baseSpecies(value) {
+    let text = String(value || '').toLowerCase().replace(/_/g, ' ');
+    OVERLAYS.forEach(([pattern]) => {
+        text = text.replace(new RegExp(pattern.source, 'g'), ' ');
+    });
+    return speciesOf(text.replace(/\s+/g, ' ').trim());
+}
 
 function speciesOf(value) {
     const text = String(value || '').toLowerCase().replace(/_/g, ' ').trim();
@@ -4091,7 +4108,7 @@ function hairColors(value) {
 }
 
 function traitsOf(person) {
-    return { gender: genderOf(person.gender), species: speciesOf(person.species), skin: skinColors(person.skin), hair: hairColors(person.hair) };
+    return { gender: genderOf(person.gender), species: baseSpecies(person.species), extras: overlaysOf(person.species, person.features, person.skin), skin: skinColors(person.skin), hair: hairColors(person.hair) };
 }
 
 function overlaps(a, b) {
@@ -4121,7 +4138,7 @@ function compareLooks(person, member) {
             score += 4;
             parts.push(`species ${p.species} ✓ +4`);
         } else {
-            wrong = wrong || `species ${person.species} ≠ ${member.species}`;
+            wrong = wrong || `species ${p.species} ≠ ${m.species}`;
         }
     }
     if (p.skin.size && m.skin.size) {
@@ -4133,6 +4150,14 @@ function compareLooks(person, member) {
         const same = overlaps(p.hair, m.hair);
         score += same ? 2 : -2;
         parts.push(same ? `hair ${person.hair} ✓ +2` : `hair ${person.hair} ≠ ${member.hair} −2`);
+    }
+    for (const extra of m.extras) {
+        if (p.extras.has(extra)) {
+            score += 3;
+            parts.push(`${extra} ✓ +3`);
+        } else {
+            parts.push(`${extra} not shown 0`);
+        }
     }
     return { score, wrong, parts };
 }

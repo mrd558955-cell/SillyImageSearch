@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.16.1';
+const VERSION = '2.17.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -74,6 +74,8 @@ const DEFAULTS = {
     meaningSource: 'nanogpt',
     meaningModel: '',
     pickShortlist: 30,
+    pickWindow: true,
+    pickWithUser: true,
     firstPass: 50,
     lookSheets: {},
     includeVideos: true,
@@ -3623,12 +3625,10 @@ function onWorldInfoActivated(entries) {
 }
 
 const CARD_BATCH = 10;
-const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'eyes', 'build', 'bust', 'outfit', 'features'];
+const CARD_FIELDS = ['gender', 'age', 'species', 'skin', 'hair', 'eyes', 'build', 'outfit', 'features'];
 const CARD_VERSION = 3;
 const SHEET_VERSION = 2;
 const AGES = ['child', 'teen', 'young adult', 'adult', 'middle-aged', 'old'];
-const ADULT_AGES = new Set(['young adult', 'adult', 'middle-aged', 'old']);
-const BUSTS = ['small', 'medium', 'large', 'very large'];
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
 const filing = { running: null, timer: null, failed: new Map(), total: 0, done: 0, made: 0, error: '', warned: false, started: 0, stage: '', bar: false, dismissed: false };
@@ -3691,7 +3691,6 @@ function cleanCard(card) {
             }
             return [field, value];
         })) }))
-        .map(person => (person.age && !ADULT_AGES.has(ageOf(person.age)) ? { ...person, bust: '' } : person))
         .filter(person => CARD_FIELDS.some(field => person[field]));
     return {
         people,
@@ -3834,7 +3833,7 @@ async function requestCards(batch) {
     const poses = listSetting(s.poseList || DEFAULT_POSES);
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const pictures = batch.map((entry, index) => `#${index + 1}\nDescription: ${cardSource(entry)}\nTags: ${entry.tags.slice(0, 30).join(', ').replace(/_/g, ' ') || 'none'}`).join('\n\n');
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: child, teen, young adult, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin is the colour, hair is the colour, eyes is the colour, build is height and body type (tall, short, slim, athletic, muscular, curvy, heavy), bust is small, medium, large or very large and only for women who look adult (leave it "" for anyone else), outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "bust": "medium", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
+    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nRules:\n- people: the main people of the picture first, at most 6. role is "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people. gender is woman, man or unclear. age is how old they look: child, teen, young adult, adult, middle-aged or old. species is human unless the picture shows otherwise (elf, orc, demon, catgirl, robot…); being a ghost, undead or a vampire goes in features, not species. skin is the colour, hair is the colour, eyes is the colour, build is height and figure (tall, short, slim, athletic, muscular, curvy, heavy: the one that stands out most), outfit is the clothes, features are anything that stands out (horns, tusks, scars, wings, glasses). Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n[{"n": 1, "people": [{"role": "main", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks"}], "pose": ["knocked down"], "mood": ["pained"], "place": "forest at night", "framing": "full body", "moments": ["after being shoved", "losing a fight", "an ambush"]}]\n\nPictures:\n${pictures}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), Math.max(700, 180 * batch.length), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     return parseCards(String(typeof result === 'string' ? result : result?.content || ''), batch.length, poses, moods);
 }
@@ -4265,26 +4264,10 @@ const FEATURES = [
 const OUTFIT_WORDS = /\b(armou?r|plate|dress|gown|kimono|yukata|uniform|robes?|cloak|cape|suit|bikini|swimsuit|jacket|hoodie|coat|shirt|blouse|skirt|jeans|pants|shorts|maid|nun|school|tunic|leather|lingerie|apron|corset|hakama|toga|sweater|vest|trench|scarf|hat|hood|boots|gloves|bodysuit|leotard|qipao|cheongsam|sari|overalls|fur)\b/g;
 const sheetFailed = new Set();
 let lastCast = [];
+let pickOptions = { withUser: true };
 
 function closeColors(a, b) {
     return [...a].some(x => [...b].some(y => CLOSE_COLORS.has(`${x}|${y}`) || CLOSE_COLORS.has(`${y}|${x}`)));
-}
-
-function bustOf(value) {
-    const text = String(value || '').toLowerCase();
-    if (/\b(very large|huge|enormous|gigantic|massive)\b/.test(text)) {
-        return 'very large';
-    }
-    if (/\b(large|big|busty|ample|full)\b/.test(text)) {
-        return 'large';
-    }
-    if (/\b(medium|average|modest)\b/.test(text)) {
-        return 'medium';
-    }
-    if (/\b(small|flat|petite|tiny)\b/.test(text)) {
-        return 'small';
-    }
-    return '';
 }
 
 function eyeColors(value) {
@@ -4350,7 +4333,6 @@ function traitsOf(person) {
         extras: overlaysOf(person.species, person.features, person.skin),
         skin: skinColors(person.skin),
         hair: hairColors(person.hair),
-        bust: bustOf(person.bust),
         eyes: eyeColors(person.eyes),
         height: heightOf(person.build),
         body: bodyOf(person.build),
@@ -4443,15 +4425,6 @@ function compareLooks(person, member) {
             add(close ? 0 : -2, `eyes ${shown(p.eyes)} ≠ ${shown(m.eyes)}${close ? ' (close colours)' : ''}`);
         }
     }
-    const adults = ADULT_AGES.has(m.age) && (!p.age || ADULT_AGES.has(p.age));
-    if (m.bust && adults) {
-        if (!p.bust) {
-            missing('bust');
-        } else {
-            const gap = Math.abs(BUSTS.indexOf(p.bust) - BUSTS.indexOf(m.bust));
-            add(gap === 0 ? 3 : gap === 1 ? 0 : -3, gap === 0 ? `bust ${p.bust} ✓` : `bust ${p.bust} ≠ ${m.bust}${gap === 1 ? ' (close)' : ''}`);
-        }
-    }
     for (const feature of m.features) {
         add(p.features.has(feature) ? 3 : -1, p.features.has(feature) ? `${feature} ✓` : `${feature}: not shown`);
     }
@@ -4483,9 +4456,6 @@ function knownLine(member) {
     note('species', [m.species, ...m.extras].filter(Boolean).join(' '));
     note('hair', [...m.hair].join('/'));
     note('build', [m.height, [...m.body].join('/')].filter(Boolean).join(' '));
-    if (!m.age || ADULT_AGES.has(m.age)) {
-        note('bust', m.bust);
-    }
     note('skin', [...m.skin].join('/'));
     note('eyes', [...m.eyes].join('/'));
     note('features', [...m.features].join(', '));
@@ -4616,7 +4586,7 @@ function sceneMembers() {
 async function requestSheets(members) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
-    const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "bust": "medium", "outfit": "leather armor", "features": "tusks, scar on the cheek"}]\n- gender: woman or man; work it out from she/her or he/his when it is not said outright.\n- age: how old they look: child, teen, young adult, adult, middle-aged or old.\n- hair: colour. eyes: colour.\n- build: height and body type (tall, short, slim, athletic, muscular, curvy, heavy).\n- bust: small, medium, large or very large, only for women who look adult; "" for anyone else.\n- features: what stands out (horns, tail, tusks, wings, pointed or animal ears, scars, glasses, tattoos, freckles). Being a ghost, undead or a vampire goes in features.\n- Use "" for anything that is not written.\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
+    const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Reply with only a JSON array, one object per character, like this:\n[{"name": "Mira", "gender": "woman", "age": "adult", "species": "orc", "skin": "green", "hair": "black", "eyes": "amber", "build": "tall muscular", "outfit": "leather armor", "features": "tusks, scar on the cheek"}]\n- gender: woman or man; work it out from she/her or he/his when it is not said outright.\n- age: how old they look: child, teen, young adult, adult, middle-aged or old.\n- hair: colour. eyes: colour.\n- build: height and figure (tall, short, slim, athletic, muscular, curvy, heavy): the one that stands out most.\n- features: what stands out (horns, tail, tusks, wings, pointed or animal ears, scars, glasses, tattoos, freckles). Being a ghost, undead or a vampire goes in features.\n- Use "" for anything that is not written.\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
     const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 200 + 220 * members.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
     const start = text.indexOf('[');
@@ -4686,7 +4656,7 @@ function sheetBox(member, onSave) {
         if (editing) {
             const area = el('textarea', 'text_pole stis-card-edit');
             area.value = sheetLine(member);
-            const hint = el('small', 'stis-card-hint', `Fields: ${CARD_FIELDS.join(', ')}, separated by ;. Hair is the colour, build is height and body type, bust only for adults.`);
+            const hint = el('small', 'stis-card-hint', `Fields: ${CARD_FIELDS.join(', ')}, separated by ;. Hair is the colour, build is height and figure.`);
             const saveButton = el('div', 'menu_button', 'Save');
             const cancel = el('div', 'menu_button', 'Cancel');
             saveButton.addEventListener('click', () => {
@@ -4798,7 +4768,7 @@ function meaningQuery(message) {
 async function rankedCandidates(message) {
     const cut = sceneCut(message);
     const banned = ruledOut(message);
-    const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(message)} ${appearanceNotes().join(' ')}`);
+    const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(message)} ${judgedNotes().join(' ')}`);
     if (!choices.length) {
         return choices;
     }
@@ -5064,14 +5034,21 @@ function storyLines(count = 4) {
         .join('\n');
 }
 
+function judgedNotes() {
+    const user = String(ctx().name1 || '').toLowerCase();
+    const notes = appearanceNotes();
+    return pickOptions.withUser || !user ? notes : notes.filter(line => !line.toLowerCase().startsWith(`${user} (`));
+}
+
 function pickContext(message) {
     const c = ctx();
     const user = c.name1 || 'The user';
-    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...appearanceNotes()];
+    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...judgedNotes()];
     const cut = sceneCut(message);
     const banned = ruledOut(message);
     const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
-    const rules = banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '';
+    const ignoreUser = pickOptions.withUser ? '' : `\n${user} is not part of this check: never judge a picture by whether ${user} is in it or how ${user} looks, and do not mention ${user} in your reasons.`;
+    const rules = (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + ignoreUser;
     return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
 }
 
@@ -5251,11 +5228,62 @@ function showPictureCard(session) {
     popup.show();
 }
 
+function askSendOptions() {
+    const s = settings();
+    if (!s.pickWindow) {
+        return Promise.resolve({ withUser: s.pickWithUser !== false });
+    }
+    const c = ctx();
+    const user = c.name1 || 'You';
+    return new Promise(resolve => {
+        let answer = null;
+        const root = el('div', 'stis-sendopts');
+        root.appendChild(el('b', '', 'Send with a picture'));
+        const label = el('label', 'checkbox_label');
+        const box = el('input');
+        box.type = 'checkbox';
+        box.checked = s.pickWithUser !== false;
+        box.id = 'stis_sendopts_user';
+        label.append(box, el('span', '', ` Include ${user} when the AI judges the pictures`));
+        const hint = el('small', 'stis-sendopts-hint');
+        const paintHint = () => {
+            hint.textContent = box.checked ? `The AI knows how ${user} looks and may prefer pictures that show ${user} too.` : `The AI ignores ${user}: whether ${user} is in a picture does not count.`;
+        };
+        box.addEventListener('change', paintHint);
+        paintHint();
+        const bar = el('div', 'stis-sendcard-bar');
+        const go = el('div', 'menu_button stis-use', 'Choose picture');
+        const cancel = el('div', 'menu_button', 'Cancel');
+        bar.append(go, cancel);
+        root.append(label, hint, bar);
+        const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', onClose: () => resolve(answer) });
+        go.addEventListener('click', async () => {
+            s.pickWithUser = box.checked;
+            save();
+            answer = { withUser: box.checked };
+            await popup.completeCancelled();
+        });
+        cancel.addEventListener('click', () => popup.completeCancelled());
+        popup.show();
+    });
+}
+
 async function sendWithPicture() {
     const s = settings();
     if (!s.enabled || sendState.busy) {
         return;
     }
+    sendState.busy = true;
+    let choices = null;
+    try {
+        choices = await askSendOptions();
+    } finally {
+        sendState.busy = false;
+    }
+    if (!choices) {
+        return;
+    }
+    pickOptions = choices;
     const message = String(document.getElementById('send_textarea')?.value || '').trim();
     sendState.busy = true;
     const notice = toastr.info('Choosing a picture…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
@@ -7532,6 +7560,7 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> Show the send-with-picture button next to Send</label>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> Show me the chosen picture before sending</label>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> Show the options window (include me or not) before choosing</label>
                     <div class="st-imagesearch-row"><span>Pictures always listed for the AI, the ones that fit the chat best (0 = only when keywords match)</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div>
                     <div>Description prompt ({{tags}} is filled in)</div>
                     <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
@@ -7604,6 +7633,7 @@ function buildSettings() {
     bind('st_imagesearch_catalog_size', 'catalogSize', 'number', () => scheduleLorebookSync());
     bind('st_imagesearch_sendbutton', 'sendButton', 'checked', updateButtons);
     bind('st_imagesearch_confirmpic', 'confirmPicture', 'checked');
+    bind('st_imagesearch_pickwindow', 'pickWindow', 'checked');
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');

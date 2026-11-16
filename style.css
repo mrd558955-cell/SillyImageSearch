@@ -923,3 +923,15 @@ video.stis-preview-img {
 .stis-progress-done .stis-progress-fill {
     background: #4caf50;
 }
+
+.stis-sendopts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+    min-width: min(80vw, 320px);
+}
+
+.stis-sendopts-hint {
+    opacity: 0.75;
+}

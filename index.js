@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.20.2';
+const VERSION = '2.21.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -76,6 +76,9 @@ const DEFAULTS = {
     pickShortlist: 30,
     pickWindow: true,
     pickWithUser: true,
+    pickFocus: 'char',
+    pickMain: '',
+    pickAllowOther: null,
     firstPass: 50,
     lookSheets: {},
     lookCategories: [],
@@ -4783,24 +4786,33 @@ function looksDetail(entry, cast, fromMessage = new Map()) {
     const notes = [];
     const matched = [];
     let score = 0;
-    for (const member of cast) {
-        notes.push(knownLine(member, fromMessage));
+    const roled = cast.some(member => member.role) ? cast : cast.map((member, index) => ({ ...member, role: index === 0 ? 'main' : 'extra' }));
+    const needMain = roled.some(member => member.role === 'main');
+    let mainFound = false;
+    for (const member of roled) {
+        const main = member.role === 'main';
+        notes.push(`${knownLine(member, fromMessage)}${main ? ' (main focus)' : ' (may also be in it)'}`);
         const tried = people.map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member, fromMessage) }));
         const fits = tried.filter(item => !item.wrong && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
         const describe = item => `person ${item.index + 1} (${personHead(item.person) || 'person'})`;
         if (fits.length) {
             const best = fits[0];
-            const points = matched.length ? Math.min(best.score, lookRules().extraCap) : best.score;
+            const points = main ? best.score : Math.min(best.score, lookRules().extraCap);
             matched.push(best.index);
+            mainFound ||= main;
             score += points;
-            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${matched.length > 1 ? ` (extra character, at most ${signed(lookRules().extraCap)})` : ''}`);
-        } else {
+            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${main ? '' : ` (may also be in it, at most ${signed(lookRules().extraCap)})`}`);
+        } else if (main) {
             notes.push(`Nobody looks like ${member.name}: ${tried.map(item => `${describe(item)} ${item.wrong}`).join('; ')}`);
+        } else {
+            notes.push(`${member.name} is not in the picture: that is fine → 0`);
         }
     }
-    if (!matched.length) {
+    if (needMain && !mainFound) {
         score = lookRules().noMatch;
-        notes.push(`No character is in the picture → ${signed(score)}`);
+        notes.push(`The main focus is not in the picture → ${signed(score)}`);
+    } else if (!needMain) {
+        notes.push('How the main focus looks is not known, so only the others count.');
     }
     if (tail) {
         notes.push(tail.trim().replace(/^\(|\)$/g, ''));
@@ -4873,7 +4885,7 @@ function sheetFromText(name, source) {
 
 const sheetFailed = new Set();
 let lastCast = [];
-let pickOptions = { withUser: true };
+let pickOptions = { focus: 'char', main: '', allowOther: true };
 
 function categoryEditor(raw, onChange, onDelete) {
     const box = el('details', 'stis-cat');
@@ -5047,6 +5059,40 @@ function sceneMembers() {
     return members.map(member => ({ ...member, basis: String(hashText(member.source)) }));
 }
 
+async function castSheets() {
+    const plan = castPlan();
+    const members = [plan.main, ...plan.extras].filter(member => member && member.source);
+    const sheets = await lookSheets({ members });
+    return sheets.map(sheet => ({ ...sheet, role: sheet.key === plan.main?.key ? 'main' : 'extra' })).sort((a, b) => (a.role === 'main' ? -1 : 0) - (b.role === 'main' ? -1 : 0));
+}
+
+function personaMember() {
+    const c = ctx();
+    const name = c.name1 || '';
+    if (!name) {
+        return null;
+    }
+    const text = fillNames(c.powerUserSettings?.persona_description || '', c.name2).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 4000);
+    const saved = parseLooks().filter(look => look.name.toLowerCase() === name.toLowerCase()).map(look => `Saved look: ${look.tags.join(', ').replace(/_/g, ' ')}`);
+    const source = [text, ...saved].filter(Boolean).join('\n');
+    return { key: `persona:${name.toLowerCase()}`, name, source, basis: String(hashText(source)) };
+}
+
+function allMembers() {
+    const persona = personaMember();
+    return [...sceneMembers(), ...(persona && persona.source ? [persona] : [])];
+}
+
+function castPlan(options = pickOptions) {
+    const characters = sceneMembers();
+    const persona = personaMember();
+    if (options.focus === 'user') {
+        return { main: persona, extras: options.allowOther ? characters : [] };
+    }
+    const main = characters.find(member => member.name === options.main) || characters[0] || null;
+    return { main, extras: [...characters.filter(member => member !== main), ...(options.allowOther && persona ? [persona] : [])] };
+}
+
 function sheetCategories() {
     return personCategories().filter(category => category.against !== 'message');
 }
@@ -5084,8 +5130,7 @@ function staleSheet(sheet) {
     return Object.keys(want).filter(id => have[id] !== want[id]);
 }
 
-async function lookSheets({ ask = true } = {}) {
-    const members = sceneMembers();
+async function lookSheets({ ask = true, members = allMembers() } = {}) {
     if (!members.length) {
         return [];
     }
@@ -5156,7 +5201,7 @@ function sheetBox(member, onSave) {
                 if (!person) {
                     return;
                 }
-                const basis = sceneMembers().find(item => item.key === member.key)?.basis || '';
+                const basis = allMembers().find(item => item.key === member.key)?.basis || '';
                 s.lookSheets = s.lookSheets || {};
                 s.lookSheets[member.key] = { name: member.name, person, basis, edited: true, v: SHEET_VERSION, cats: sheetHashes() };
                 save();
@@ -5258,17 +5303,29 @@ function meaningQuery(message) {
 }
 
 async function rankedCandidates(message) {
+    const timing = {};
+    const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const timed = async (key, work) => {
+        const start = clock();
+        try {
+            return await work;
+        } finally {
+            timing[key] = clock() - start;
+        }
+    };
+    let started = clock();
     const cut = sceneCut(message);
     const banned = ruledOut(message);
     const fromMessage = messageValues(message);
     const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(message)} ${judgedNotes().join(' ')}`);
+    timing.keywords = clock() - started;
     if (!choices.length) {
         return choices;
     }
     let order = null;
     let meaningFailed = false;
     const [rank, cast] = await Promise.all([
-        meaningRank(meaningQuery(message || recentText(1)), Infinity).catch(error => {
+        timed('meaning', meaningRank(meaningQuery(message || recentText(1)), Infinity)).catch(error => {
             meaningFailed = true;
             if (!meaning.warned) {
                 meaning.warned = true;
@@ -5276,9 +5333,10 @@ async function rankedCandidates(message) {
             }
             return null;
         }),
-        lookSheets().catch(() => []),
+        timed('sheets', castSheets()).catch(() => []),
     ]);
     lastCast = cast;
+    started = clock();
     order = rank;
     for (const choice of choices) {
         const position = order?.get(choice.entry);
@@ -5321,12 +5379,20 @@ async function rankedCandidates(message) {
             choice.parts.notes.push(`2. Not ranked by meaning (left out by the first step) → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
         }
     });
+    timing.looks = clock() - started;
     sorted.cast = cast;
+    sorted.timing = timing;
     return sorted;
 }
 
 function firstPassSize() {
     return Math.max(shortlistSize(), Math.min(500, Number(settings().firstPass) || 50));
+}
+
+function timingLine(timing) {
+    const sec = ms => `${((Number(ms) || 0) / 1000).toFixed(1)} s`;
+    const parts = [['keywords', 'keywords'], ['meaning', 'meaning search'], ['sheets', 'look sheets'], ['looks', 'looks'], ['ai', 'AI ranking']].filter(([key]) => key in timing).map(([key, label]) => `${label} ${sec(timing[key])}`);
+    return `Took: ${parts.join(' · ')}${'total' in timing ? ` · total ${sec(timing.total)}` : ''}`;
 }
 
 function scoreLine(choice) {
@@ -5529,9 +5595,9 @@ function storyLines(count = 4) {
 }
 
 function judgedNotes() {
-    const user = String(ctx().name1 || '').toLowerCase();
-    const notes = appearanceNotes();
-    return pickOptions.withUser || !user ? notes : notes.filter(line => !line.toLowerCase().startsWith(`${user} (`));
+    const plan = castPlan();
+    const allowed = new Set([plan.main, ...plan.extras].filter(Boolean).map(member => member.name.toLowerCase()));
+    return appearanceNotes().filter(line => [...allowed].some(name => line.toLowerCase().startsWith(`${name} (`)));
 }
 
 function pickContext(message) {
@@ -5541,7 +5607,11 @@ function pickContext(message) {
     const cut = sceneCut(message);
     const banned = ruledOut(message);
     const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
-    const ignoreUser = pickOptions.withUser ? '' : `\n${user} is not part of this check: never judge a picture by whether ${user} is in it or how ${user} looks, and do not mention ${user} in your reasons.`;
+    const plan = castPlan();
+    const everyone = [...sceneMembers(), personaMember()].filter(Boolean);
+    const left = everyone.filter(member => member !== plan.main && !plan.extras.includes(member) && member.key !== plan.main?.key && !plan.extras.some(extra => extra.key === member.key)).map(member => member.name);
+    const focus = plan.main ? `\nThe picture must show ${plan.main.name}: judge looks against ${plan.main.name} first.${plan.extras.length ? ` ${plan.extras.map(member => member.name).join(', ')} may also be in it, but does not have to be.` : ''}` : '';
+    const ignoreUser = focus + (left.length ? `\n${left.join(', ')} ${left.length > 1 ? 'are' : 'is'} not part of this check: never judge a picture by whether ${left.join(' or ')} ${left.length > 1 ? 'are' : 'is'} in it or how they look, and do not mention them in your reasons.` : '');
     const rules = (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + ignoreUser;
     return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
 }
@@ -5659,7 +5729,7 @@ function showPictureCard(session) {
         img.src = (choice.variant || choice.entry).url;
         text.textContent = choiceLine(choice);
         score.textContent = scoreLine(choice) ? `${scoreLine(choice)} ${showLooks ? '▴' : '▾'}` : '';
-        looksBox.textContent = showLooks ? (choice.parts?.notes || []).join('\n') : '';
+        looksBox.textContent = showLooks ? [...(choice.parts?.notes || []), ...(session.timing ? [timingLine(session.timing)] : [])].join('\n') : '';
         if (showLooks && !sheets.childElementCount) {
             (session.cast || []).forEach(member => sheets.appendChild(sheetBox(member, () => {
                 note.textContent = 'Saved. The new look counts from the next picture send.';
@@ -5722,39 +5792,70 @@ function showPictureCard(session) {
     popup.show();
 }
 
+function storedSendOptions() {
+    const s = settings();
+    return { focus: s.pickFocus === 'user' ? 'user' : 'char', main: String(s.pickMain || ''), allowOther: typeof s.pickAllowOther === 'boolean' ? s.pickAllowOther : s.pickWithUser !== false };
+}
+
 function askSendOptions() {
     const s = settings();
+    const stored = storedSendOptions();
     if (!s.pickWindow) {
-        return Promise.resolve({ withUser: s.pickWithUser !== false });
+        return Promise.resolve(stored);
     }
     const c = ctx();
     const user = c.name1 || 'You';
+    const names = [...new Set([...chatCharacters().map(character => character.name), ...(chatCharacters().length ? [] : [c.name2])].filter(Boolean))];
     return new Promise(resolve => {
         let answer = null;
         const root = el('div', 'stis-sendopts');
         root.appendChild(el('b', '', 'Send with a picture'));
+        const row = el('div', 'st-imagesearch-row');
+        row.appendChild(el('span', '', 'Main focus'));
+        const focus = el('select', 'text_pole');
+        focus.id = 'stis_sendopts_focus';
+        names.forEach(name => {
+            const option = el('option', '', name);
+            option.value = `char:${name}`;
+            focus.appendChild(option);
+        });
+        const me = el('option', '', `${user} (me)`);
+        me.value = 'user';
+        focus.appendChild(me);
+        focus.value = stored.focus === 'user' ? 'user' : `char:${names.includes(stored.main) ? stored.main : names[0] || ''}`;
+        if (!focus.value) {
+            focus.value = 'user';
+        }
+        row.appendChild(focus);
         const label = el('label', 'checkbox_label');
         const box = el('input');
         box.type = 'checkbox';
-        box.checked = s.pickWithUser !== false;
-        box.id = 'stis_sendopts_user';
-        label.append(box, el('span', '', ` Include ${user} when the AI judges the pictures`));
+        box.checked = stored.allowOther;
+        box.id = 'stis_sendopts_other';
+        const boxText = el('span', '');
+        label.append(box, boxText);
         const hint = el('small', 'stis-sendopts-hint');
-        const paintHint = () => {
-            hint.textContent = box.checked ? `The AI knows how ${user} looks and may prefer pictures that show ${user} too.` : `The AI ignores ${user}: whether ${user} is in a picture does not count.`;
+        const others = () => (focus.value === 'user' ? names.join(', ') || 'the characters' : user);
+        const mainName = () => (focus.value === 'user' ? user : focus.value.slice(5));
+        const paint = () => {
+            boxText.textContent = ` Also allow ${others()} in the picture`;
+            hint.textContent = box.checked ? `The picture must show ${mainName()}; ${others()} may also be in it.` : `The picture must show ${mainName()}; the AI leaves ${others()} out of its check.`;
         };
-        box.addEventListener('change', paintHint);
-        paintHint();
+        focus.addEventListener('change', paint);
+        box.addEventListener('change', paint);
+        paint();
         const bar = el('div', 'stis-sendcard-bar');
         const go = el('div', 'menu_button stis-use', 'Choose picture');
         const cancel = el('div', 'menu_button', 'Cancel');
         bar.append(go, cancel);
-        root.append(label, hint, bar);
+        root.append(row, label, hint, bar);
         const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', onClose: () => resolve(answer) });
         go.addEventListener('click', async () => {
-            s.pickWithUser = box.checked;
+            answer = { focus: focus.value === 'user' ? 'user' : 'char', main: focus.value === 'user' ? stored.main : focus.value.slice(5), allowOther: box.checked };
+            s.pickFocus = answer.focus;
+            s.pickMain = answer.main;
+            s.pickAllowOther = answer.allowOther;
             save();
-            answer = { withUser: box.checked };
             await popup.completeCancelled();
         });
         cancel.addEventListener('click', () => popup.completeCancelled());
@@ -5789,6 +5890,8 @@ async function sendWithPicture() {
     let shortlist = new Set();
     let ranks = new Map();
     let cast = [];
+    let timing = null;
+    const sendStart = Date.now();
     try {
         await loadLibrary();
         const candidates = await rankedCandidates(message);
@@ -5797,6 +5900,7 @@ async function sendWithPicture() {
             return;
         }
         let picked = null;
+        const aiStart = Date.now();
         try {
             picked = await askPicturePick(message, candidates);
         } catch (error) {
@@ -5812,6 +5916,7 @@ async function sendWithPicture() {
         shortlist = new Set(candidates.slice(0, shortlistSize()));
         ranks = new Map(candidates.map((choice, position) => [choice, position + 1]));
         cast = candidates.cast || [];
+        timing = { ...(candidates.timing || {}), ai: Date.now() - aiStart, total: Date.now() - sendStart };
     } finally {
         toastr.clear?.(notice);
         sendState.busy = false;
@@ -5820,7 +5925,7 @@ async function sendWithPicture() {
         return;
     }
     if (s.confirmPicture || noneFits) {
-        showPictureCard({ message, cast, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks });
+        showPictureCard({ message, cast, timing, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks });
     } else {
         forcePicture(options[0]);
     }
@@ -8126,7 +8231,7 @@ function buildSettings() {
                     <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> Show the send-with-picture button next to Send</label>
                     <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> Show me the chosen picture before sending</label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> Show the options window (include me or not) before choosing</label>
+                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> Show the options window (main focus, who else may be in it) before choosing</label>
                     <div class="st-imagesearch-row"><span>Pictures always listed for the AI, the ones that fit the chat best (0 = only when keywords match)</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div>
                     <div>Description prompt ({{tags}} is filled in)</div>
                     <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>

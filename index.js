@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.22.1';
+const VERSION = '2.23.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2527,14 +2527,19 @@ function parseDescription(raw) {
     return { text, sections, keywords, variants };
 }
 
-async function requestDescription(url, tags, blob = null) {
+function lockedPrompt(locked, prompt) {
+    return `The user checked this description of the picture and locked it as correct:\n\n${locked}\n\nRewrite it in the format asked below. Keep every fact it gives and never contradict it; keep its wording where it fits. Look at the picture only to add what the format asks for and the locked description does not say.\n\n${prompt}`;
+}
+
+async function requestDescription(url, tags, blob = null, locked = '') {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
     const profile = visionProfileId();
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const prompt = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const asked = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const prompt = locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
         const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
@@ -2631,6 +2636,7 @@ function cleanEntry(entry) {
         kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
         animated: Boolean(entry.animated),
         described: String(entry.described || ''),
+        lock: entry.lock && typeof entry.lock === 'object' && String(entry.lock.text || '').trim() ? { text: String(entry.lock.text), at: Number(entry.lock.at) || Date.now() } : null,
         card: cleanCard(entry.card),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
@@ -2878,6 +2884,7 @@ async function removeVariant(entry, variant) {
     await saveLibrary();
     await deleteUnusedFiles([variant.url]);
     if (sequence && wasFirst) {
+        entry.lock = null;
         redoEntry(entry).catch(error => console.warn('[Image Search] could not describe the sequence again', error));
     }
 }
@@ -2922,17 +2929,24 @@ async function describeSet(entry, blobs = []) {
     const count = Math.min(entry.variants.length, 8);
     const sequence = entry.kind === 'sequence';
     const firstTags = sequence && entry.variants[0].tags?.length ? entry.variants[0].tags : entry.tags;
+    const locked = Boolean(entry.lock?.text);
     let parsed = null;
-    try {
-        const images = [];
-        for (let i = 0; i < count; i++) {
-            images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
+    if (!locked) {
+        try {
+            const images = [];
+            for (let i = 0; i < count; i++) {
+                images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
+            }
+            const content = [{ type: 'text', text: sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
+            const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+            parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
+        } catch (error) {
+            console.warn('[Image Search] set description failed, describing one picture at a time', error);
         }
-        const content = [{ type: 'text', text: sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
-        const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
-        parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
-    } catch (error) {
-        console.warn('[Image Search] set description failed, describing one picture at a time', error);
+    }
+    if (locked) {
+        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null, entry.lock.text);
+        parsed.variants = {};
     }
     if (!parsed?.text) {
         parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null);
@@ -2943,7 +2957,7 @@ async function describeSet(entry, blobs = []) {
     entry.sections = parsed.sections || {};
     entry.keywords = parsed.keywords || [];
     for (let i = 1; i < entry.variants.length; i++) {
-        let diff = parsed.variants?.[i + 1] || '';
+        let diff = parsed.variants?.[i + 1] || (locked ? entry.variants[i].diff || '' : '');
         if (!diff) {
             try {
                 diff = sequence ? await describeStep(entry, i, blobs[i]) : await describeDifference(entry, i, blobs[i]);
@@ -2961,7 +2975,7 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     if (isMulti(entry)) {
         await describeSet(entry);
     } else {
-        const result = await requestDescription(entry.url, entry.tags);
+        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '');
         entry.description = result.text;
         entry.described = visionHash();
         entry.sections = result.sections || {};
@@ -7571,7 +7585,7 @@ async function openPicker(initialTags = null) {
             info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
         }
         const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
-        const meta = [kindLine, entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        const meta = [kindLine, entry.lock ? 'Description locked' : '', entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
         info.appendChild(cardBox(entry, () => {
             if (!closed) {
@@ -7579,23 +7593,49 @@ async function openPicker(initialTags = null) {
             }
         }));
         bar.before(info);
-        const redo = el('div', 'menu_button', 'Redo');
-        redo.title = sequence ? 'Describe the sequence again' : 'Describe this picture again';
+        const redoLabel = entry.lock ? 'Update' : 'Redo';
+        const redo = el('div', 'menu_button', redoLabel);
+        redo.title = entry.lock ? 'Bring the locked description up to the current description format, keeping what it says; unlock to describe from scratch' : sequence ? 'Describe the sequence again' : 'Describe this picture again';
         redo.addEventListener('click', async () => {
-            if (redo.textContent !== 'Redo') {
+            if (redo.textContent !== redoLabel) {
                 return;
             }
-            redo.textContent = 'Describing…';
+            redo.textContent = entry.lock ? 'Updating…' : 'Describing…';
             try {
                 await redoEntry(entry);
                 if (!closed && previewState?.target === entry) {
                     showEntry(entry, current);
                 }
             } catch (error) {
-                redo.textContent = 'Redo';
+                redo.textContent = redoLabel;
                 toastr.warning(`Could not describe the picture: ${error?.message || error}`, 'Image Search');
             }
         });
+        const lock = entry.lock
+            ? confirmButton('Unlock', 'Tap again to unlock', async () => {
+                entry.lock = null;
+                await saveLibrary();
+                if (!closed && previewState?.target === entry) {
+                    showEntry(entry, current);
+                    renderLibrary();
+                }
+            })
+            : el('div', 'menu_button', 'Lock');
+        lock.title = entry.lock ? 'Let Redo describe this picture from scratch again' : 'Keep this description: later redos only bring it up to date instead of starting over';
+        if (!entry.lock) {
+            lock.classList.toggle('disabled', !entry.description);
+            lock.addEventListener('click', async () => {
+                if (!entry.description) {
+                    return;
+                }
+                entry.lock = { text: entry.description, at: Date.now() };
+                await saveLibrary();
+                if (!closed && previewState?.target === entry) {
+                    showEntry(entry, current);
+                    renderLibrary();
+                }
+            });
+        }
         const removeLabel = sequence ? 'Delete sequence' : multi ? 'Delete set' : 'Delete';
         const armedLabel = sequence ? 'Tap again to delete the sequence' : multi ? `Tap again to delete ${entry.variants.length} pictures` : 'Tap again to delete';
         const remove = confirmButton(removeLabel, armedLabel, async button => {
@@ -7605,7 +7645,7 @@ async function openPicker(initialTags = null) {
             renderLibrary();
         });
         remove.title = sequence ? 'Delete the sequence; pictures also saved on their own are kept' : 'Delete from the library, the lorebook and the disk';
-        bar.append(redo, remove);
+        bar.append(redo, lock, remove);
         if (multi && current) {
             const removeOne = confirmButton(sequence ? 'Remove picture' : 'Delete version', sequence ? 'Tap again to remove this picture' : 'Tap again to delete this version', async () => {
                 await removeVariant(entry, current);
@@ -7725,6 +7765,12 @@ async function openPicker(initialTags = null) {
                 badge.appendChild(document.createTextNode(` ${entry.variants.length}`));
                 badge.title = entry.kind === 'sequence' ? 'Sequence' : 'Set of versions';
                 cell.appendChild(badge);
+            }
+            if (entry.lock) {
+                const locked = el('span', 'stis-lock-badge');
+                locked.appendChild(el('i', 'fa-solid fa-lock'));
+                locked.title = 'Description locked';
+                cell.appendChild(locked);
             }
             const choice = entryPick(entry);
             cell.appendChild(orderBadge(choice));
@@ -8657,7 +8703,11 @@ function buildSettings() {
         }
         return true;
     };
-    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again`, () => runRedo(redoButton, redoLabel, null), () => canRedo());
+    const lockedNote = list => {
+        const count = list.filter(entry => entry.lock).length;
+        return count ? ` (${count} locked: updated from their locked description)` : '';
+    };
+    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again${lockedNote(library.entries)}`, () => runRedo(redoButton, redoLabel, null), () => canRedo());
     const regif = document.getElementById('st_imagesearch_regif');
     const gifLabel = () => `Re-download GIFs saved as stills (${stillGifs().length})`;
     confirmClicks(regif, 'Re-download GIFs saved as stills', () => `Tap again to download ${stillGifs().length} animated GIF(s) again`, async () => {
@@ -8687,7 +8737,7 @@ function buildSettings() {
         return true;
     });
     const oldList = () => library.entries.filter(describedOld);
-    confirmClicks(redoOld, 'Redo out-of-date descriptions', () => `Tap again to describe ${oldList().length} out-of-date entr${oldList().length === 1 ? 'y' : 'ies'}`, () => runRedo(redoOld, oldLabel, oldList()), () => canRedo(oldList));
+    confirmClicks(redoOld, 'Redo out-of-date descriptions', () => `Tap again to describe ${oldList().length} out-of-date entr${oldList().length === 1 ? 'y' : 'ies'}${lockedNote(oldList())}`, () => runRedo(redoOld, oldLabel, oldList()), () => canRedo(oldList));
     const deleteButton = document.getElementById('st_imagesearch_delete_all');
     const deleteLabel = 'Delete everything';
     confirmClicks(deleteButton, deleteLabel, () => `Tap again to delete ${pictureCount()} picture(s) and their files`, async () => {

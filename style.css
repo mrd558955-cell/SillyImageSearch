@@ -1003,3 +1003,15 @@ video.stis-preview-img {
     opacity: 0.85;
     color: #e57373;
 }
+
+.stis-lock-badge {
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 0.75em;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    pointer-events: none;
+}

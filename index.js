@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.27.0';
+const VERSION = '2.27.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -6680,9 +6680,10 @@ function noteThumb(item, img, ok) {
     if (!host) {
         return;
     }
-    const trouble = thumbTrouble.get(host) || { host, failed: [], loaded: 0, sample: '', tries: 0, checked: false, cloudflare: false, why: '' };
+    const trouble = thumbTrouble.get(host) || { host, failed: [], loaded: 0, loadedUrls: new Set(), sample: '', tries: 0, checked: false, cloudflare: false, why: '' };
     if (ok) {
         trouble.loaded++;
+        trouble.loadedUrls.add(item.thumb);
     } else {
         trouble.failed.push({ img, item });
         trouble.sample = trouble.sample || item.thumb;
@@ -6725,15 +6726,19 @@ function retryThumbs(host) {
     list.forEach(({ img, item }) => {
         if (img.isConnected) {
             img.closest('.stis-cell')?.classList.remove('stis-broken');
-            setThumbSource(img, item);
+            setThumbSource(img, item, true);
         }
     });
     thumbWatchers.forEach(watch => watch(trouble));
 }
 
-function setThumbSource(img, item) {
+function freshUrl(url) {
+    return `${url}${url.includes('?') ? '&' : '?'}_r=${Date.now().toString(36)}`;
+}
+
+function setThumbSource(img, item, fresh = false) {
     const site = item.siteFiles?.thumb || '';
-    const sources = [item.thumb, site, fetcherLink(item.thumb), proxyUrl(item.thumb), site ? proxyUrl(site) : ''].filter(Boolean);
+    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb), proxyUrl(item.thumb), site ? proxyUrl(site) : ''].filter(Boolean);
     let index = 0;
     img.referrerPolicy = 'no-referrer';
     img.onload = () => {
@@ -6916,11 +6921,17 @@ async function openPicker(initialTags = null, focus = null) {
     };
     const openInTab = trouble => {
         awaitingCheck.add(trouble.host);
-        window.open(trouble.sample, '_blank');
+        window.open(freshUrl(lastSample || trouble.sample), '_blank');
     };
+    let checkBase = new Set();
+    let lastSample = '';
     const openCheck = trouble => {
         closeCheck();
         checkHost = trouble.host;
+        checkBase = new Set(trouble.loadedUrls);
+        const candidates = trouble.failed.map(({ item }) => item.thumb).filter(Boolean);
+        const sample = candidates.find(url => url !== lastSample) || candidates[0] || trouble.sample;
+        lastSample = sample;
         const head = el('div', 'stis-check-head');
         head.appendChild(el('b', '', `Check for ${trouble.host}`));
         const done = el('div', 'menu_button', 'Done');
@@ -6932,9 +6943,14 @@ async function openPicker(initialTags = null, focus = null) {
         head.appendChild(done);
         const frame = el('iframe', 'stis-check-frame');
         frame.referrerPolicy = 'no-referrer';
+        let frameLoads = 0;
         frame.addEventListener('load', () => {
+            frameLoads++;
+            if (frameLoads < 2) {
+                return;
+            }
             clearTimeout(checkTimer);
-            checkTimer = setTimeout(() => retryThumbs(trouble.host), 800);
+            checkTimer = setTimeout(() => retryThumbs(trouble.host), 1500);
         });
         const tab = el('a', 'stis-check-tab', 'Stays blank? Open it in a new tab instead');
         tab.href = '#';
@@ -6942,9 +6958,9 @@ async function openPicker(initialTags = null, focus = null) {
             event.preventDefault();
             openInTab(trouble);
         });
-        ui.check.append(head, frame, el('small', 'stis-help', 'Tick the box if one shows. When the picture appears here, the others load by themselves.'), tab);
+        ui.check.append(head, frame, el('small', 'stis-help', 'Tick the box if one shows. When the picture appears here, tap Done.'), tab);
         ui.check.hidden = false;
-        frame.src = trouble.sample;
+        frame.src = freshUrl(sample);
     };
     const renderBlocked = () => {
         const list = blockedHosts();
@@ -6963,7 +6979,10 @@ async function openPicker(initialTags = null, focus = null) {
             again.addEventListener('click', () => retryThumbs(trouble.host));
             buttons.append(open, again);
             row.appendChild(buttons);
-            row.appendChild(el('small', '', trouble.cloudflare ? 'The check opens right here. When the picture shows in it, the others load by themselves.' : 'One of the pictures opens right here. If it shows, the others load by themselves.'));
+            row.appendChild(el('small', '', trouble.cloudflare ? 'The check opens right here. When the picture shows in it, tap Done and the others load again.' : 'One of the pictures opens right here. If it shows, tap Done and the others load again.'));
+            if (trouble.tries && trouble.cloudflare) {
+                row.appendChild(el('small', 'stis-help', 'Passed the check and still blocked? Some browsers (Firefox, Brave, Safari) keep the pass apart from pictures shown inside another page. In Firefox, tap the shield in the address bar on this page and turn off Enhanced Tracking Protection for it, then pass the check again; or use Chrome.'));
+            }
             ui.blocked.appendChild(row);
         }
     };
@@ -6972,7 +6991,8 @@ async function openPicker(initialTags = null, focus = null) {
             return;
         }
         renderBlocked();
-        if (checkHost && (thumbTrouble.get(checkHost)?.loaded || 0) > 0 && !blockedHosts().some(trouble => trouble.host === checkHost)) {
+        const loadedNow = [...(thumbTrouble.get(checkHost)?.loadedUrls || [])].filter(url => !checkBase.has(url) && url !== lastSample);
+        if (checkHost && loadedNow.length >= 2 && !blockedHosts().some(trouble => trouble.host === checkHost)) {
             closeCheck();
         }
     };

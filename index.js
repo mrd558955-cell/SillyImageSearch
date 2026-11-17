@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.32.1';
+const VERSION = '2.33.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -96,6 +96,7 @@ const DEFAULTS = {
     includeVideos: true,
     gifSeconds: 6,
     splitSense: 3,
+    loopRepeats: 3,
     videoReader: 'auto',
     decoderUrl: '',
     gifWidth: 480,
@@ -2326,6 +2327,20 @@ function waitFor(target, event, ms = 8000) {
     });
 }
 
+function releaseMedia(root) {
+    root?.querySelectorAll?.('video').forEach(video => {
+        video.pause?.();
+        if (video.getAttribute('src') || video.currentSrc) {
+            video.removeAttribute('src');
+            video.load?.();
+        }
+    });
+    root?.querySelectorAll?.('img[data-stis-made]').forEach(img => {
+        URL.revokeObjectURL(img.src);
+        img.removeAttribute('data-stis-made');
+    });
+}
+
 const videoCopies = new Map();
 const videoPlayUrls = new Map();
 
@@ -2843,7 +2858,7 @@ function resetDecoder(reason = 'the video reader stopped') {
     decoder.worker?.terminate();
     decoder.calls.forEach(call => call.reject(new Error(reason)));
     decoder.calls.clear();
-    Object.assign(decoder, { worker: null, ready: null, log: null, input: null, name: '', info: null });
+    Object.assign(decoder, { worker: null, ready: null, log: null, input: null, name: '', info: null, busy: false });
 }
 
 function decoderCall(type, data, transfer = []) {
@@ -2948,22 +2963,51 @@ function loadDecoder() {
     return decoder.ready;
 }
 
+let decoderIdle = null;
+
+function idleDecoder(wait = 90000) {
+    clearTimeout(decoderIdle);
+    decoderIdle = setTimeout(() => {
+        if (decoder.worker && !decoder.calls.size && !decoder.busy) {
+            resetDecoder('the video reader was closed to free memory');
+        }
+    }, wait);
+}
+
 function decoderTask(task) {
-    const run = decoder.queue.then(task, task);
+    clearTimeout(decoderIdle);
+    const wrapped = async () => {
+        decoder.busy = true;
+        try {
+            return await task();
+        } finally {
+            decoder.busy = false;
+            idleDecoder();
+        }
+    };
+    const run = decoder.queue.then(wrapped, wrapped);
     decoder.queue = run.catch(() => {});
     return run;
 }
 
 async function decoderRun(args, onLine = null) {
     const lines = [];
+    let watchdog = null;
+    const alive = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => resetDecoder('the video reader stopped answering (the phone may be short of memory)'), 60000);
+    };
     decoder.log = line => {
+        alive();
         lines.push(line);
         onLine?.(line);
     };
+    alive();
     try {
         const code = await decoderCall('exec', { args });
         return { code, lines };
     } finally {
+        clearTimeout(watchdog);
         decoder.log = null;
     }
 }
@@ -3236,11 +3280,11 @@ function medianOf(values) {
     return sorted[Math.floor(sorted.length / 2)];
 }
 
-function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
+function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8, repeats = 3 } = {}) {
     const { duration } = scan;
     const samples = [...(scan.samples || [])].sort((a, b) => a.time - b.time);
     if (samples.length < 2 || !duration) {
-        return { parts: [], loops: 0, cuts: 0, dropped: 0, longest: maxPart };
+        return { parts: [], loops: 0, cuts: 0, bursts: 0, dropped: 0, longest: maxPart, skipped: [] };
     }
     const spacing = medianOf(samples.slice(1).map((sample, i) => sample.time - samples[i].time));
     const step = Math.max(Number(scan.step) || 0, spacing, Math.sqrt(duration * 0.000029), 0.01);
@@ -3427,14 +3471,98 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
             two.change = two.period < one.period ? 'faster' : 'slower';
         }
     }
+    for (let i = loops.length - 1; i >= 0; i--) {
+        const loop = loops[i];
+        if (loop.end - loop.start < loop.period * 2.6 || (loop.end - loop.start) * step < 2) {
+            if (loops[i + 1]) {
+                loops[i + 1].change = '';
+            }
+            loops.splice(i, 1);
+        }
+    }
+    const light = grid.map(frame => {
+        let sum = 0;
+        for (let i = 0; i < frame.length; i++) {
+            sum += frame[i];
+        }
+        return sum / frame.length;
+    });
+    const soft = light.map((value, k) => (light[Math.max(0, k - 1)] + value + light[Math.min(count - 1, k + 1)]) / 3);
+    const darkLevel = 18;
+    const ramp = Math.round(3 / step);
+    const skip = new Array(count).fill(false);
+    const fadeFrom = (k, way) => {
+        let edge = k;
+        while (Math.abs(edge - k) < ramp) {
+            const next = edge + way;
+            if (next < 0 || next >= count || soft[next] - soft[edge] <= 0.25) {
+                break;
+            }
+            edge = next;
+        }
+        if (edge === k) {
+            return k;
+        }
+        const [a, b] = way < 0 ? [edge, k] : [k, edge];
+        let jump = 0;
+        for (let i = a + 1; i <= b; i++) {
+            jump = Math.max(jump, Math.abs(light[i] - light[i - 1]));
+        }
+        const drop = Math.abs(light[edge] - light[k]);
+        return drop > 25 && jump <= drop * 0.45 && Math.abs(edge - k) * step >= 0.25 ? edge : k;
+    };
+    for (let k = 0; k < count;) {
+        if (light[k] >= darkLevel) {
+            k++;
+            continue;
+        }
+        let e = k;
+        while (e < count && light[e] < darkLevel) {
+            e++;
+        }
+        if (k === 0 || e === count || (e - k) * step >= 0.3) {
+            const from = k > 0 ? fadeFrom(k, -1) : 0;
+            const to = e < count ? fadeFrom(e - 1, 1) + 1 : count;
+            for (let i = from; i < to; i++) {
+                skip[i] = true;
+            }
+        }
+        k = e;
+    }
+    for (const loop of loops) {
+        while (loop.end > loop.start && skip[loop.end - 1]) {
+            loop.end--;
+        }
+        while (loop.start < loop.end && skip[loop.start]) {
+            loop.start++;
+        }
+    }
     const motion = grid.map((frame, k) => (k ? raw[k * width + 1] : 0));
     const cutLevel = Math.max(12, medianOf(motion.slice(1)) * 5);
     const cuts = [];
     motion.forEach((value, k) => {
-        if (k && value >= cutLevel && value >= 3 * Math.max(k > 1 ? motion[k - 1] : 0, k + 1 < count ? motion[k + 1] : 0) && !loops.some(loop => k > loop.start && k < loop.end)) {
+        if (k && !skip[k] && !skip[k - 1] && value >= cutLevel && value >= 3 * Math.max(k > 1 ? motion[k - 1] : 0, k + 1 < count ? motion[k + 1] : 0) && !loops.some(loop => k > loop.start && k < loop.end)) {
             cuts.push(k);
         }
     });
+    const burstGap = Math.round(1.5 / step);
+    const bursts = [];
+    for (let i = 0; i < cuts.length;) {
+        let j = i;
+        while (j + 1 < cuts.length && cuts[j + 1] - cuts[j] <= burstGap) {
+            j++;
+        }
+        if (j - i + 1 >= 3) {
+            let to = Math.min(count, cuts[j] + Math.round(1 / step));
+            while (to > cuts[j] + 1 && skip[to - 1]) {
+                to--;
+            }
+            bursts.push({ from: cuts[i], to, cuts: j - i + 1 });
+        }
+        i = j + 1;
+    }
+    const inBurst = k => bursts.find(burst => k >= burst.from && k < burst.to);
+    const marksCut = cuts.filter(k => !inBurst(k) || inBurst(k).from === k);
     const calmSpan = Math.max(1, Math.round(0.5 / step));
     const quiet = grid.map((frame, k) => {
         if (!k) {
@@ -3458,15 +3586,18 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
         }
     }
     const tiny = Math.max(1, Math.round(0.4 / step));
+    const shortest = Math.max(tiny, Math.round(1.5 / step));
+    const burstMarks = bursts.map(burst => burst.to);
     const build = limit => {
         const pieces = [];
-        const gap = (a, b) => {
-            const marks = [...new Set([a, ...cuts.filter(k => k > a && k < b), ...stillMarks.filter(k => k > a && k < b), b])].sort((x, y) => x - y);
+        const piecesOf = (a, b) => {
+            const marks = [...new Set([a, ...marksCut.filter(k => k > a && k < b), ...burstMarks.filter(k => k > a && k < b), ...stillMarks.filter(k => k > a && k < b), b])].sort((x, y) => x - y);
             for (let i = 0; i + 1 < marks.length; i++) {
                 const x = marks[i];
                 const y = marks[i + 1];
+                const burst = inBurst(x);
                 const calm = quiet.slice(Math.max(1, x), y);
-                const kind = calm.length && calm.filter(Boolean).length >= calm.length * 0.6 ? 'still' : cuts.includes(x) ? 'cut' : 'action';
+                const kind = burst ? 'burst' : calm.length && calm.filter(Boolean).length >= calm.length * 0.6 ? 'still' : cuts.includes(x) ? 'cut' : 'action';
                 if (kind === 'still') {
                     pieces.push({ start: x, end: y, kind });
                     continue;
@@ -3476,9 +3607,23 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
                     const from = x + Math.round((y - x) * c / chunks);
                     const to = x + Math.round((y - x) * (c + 1) / chunks);
                     if (to > from) {
-                        pieces.push({ start: from, end: to, kind: c ? (kind === 'cut' ? 'action' : kind) : kind });
+                        pieces.push({ start: from, end: to, kind: c && kind === 'cut' ? 'action' : kind });
                     }
                 }
+            }
+        };
+        const gap = (a, b) => {
+            for (let k = a; k < b;) {
+                if (skip[k]) {
+                    k++;
+                    continue;
+                }
+                let e = k;
+                while (e < b && !skip[e]) {
+                    e++;
+                }
+                piecesOf(k, e);
+                k = e;
             }
         };
         let cursor = 0;
@@ -3486,26 +3631,36 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
             if (loop.start > cursor) {
                 gap(cursor, loop.start);
             }
-            pieces.push({ ...loop, kind: 'loop' });
-            cursor = loop.end;
+            if (loop.end > loop.start) {
+                pieces.push({ ...loop, kind: 'loop' });
+            }
+            cursor = Math.max(cursor, loop.end);
         }
         if (cursor < count) {
             gap(cursor, count);
         }
-        for (let i = 0; i < pieces.length; i++) {
-            const piece = pieces[i];
-            if (piece.kind === 'loop' || piece.end - piece.start >= tiny) {
-                continue;
+        for (let changed = true; changed;) {
+            changed = false;
+            for (let i = 0; i < pieces.length; i++) {
+                const piece = pieces[i];
+                if (piece.kind === 'loop' || piece.end - piece.start >= shortest) {
+                    continue;
+                }
+                const left = pieces[i - 1]?.kind !== 'loop' && pieces[i - 1]?.end === piece.start ? pieces[i - 1] : null;
+                const right = pieces[i + 1]?.kind !== 'loop' && pieces[i + 1]?.start === piece.end ? pieces[i + 1] : null;
+                const into = left && right ? (left.end - left.start <= right.end - right.start ? left : right) : left || right;
+                if (into) {
+                    const kinds = into === left ? [left.kind, piece.kind] : [piece.kind, right.kind];
+                    into.start = Math.min(into.start, piece.start);
+                    into.end = Math.max(into.end, piece.end);
+                    into.kind = kinds.includes('burst') ? 'burst' : kinds[0] === 'cut' ? 'cut' : kinds.every(kind => kind === 'still') ? 'still' : 'action';
+                } else if (piece.end - piece.start >= tiny) {
+                    continue;
+                }
+                pieces.splice(i, 1);
+                changed = true;
+                i--;
             }
-            const left = pieces[i - 1];
-            const right = pieces[i + 1];
-            if (left && left.kind !== 'loop' && left.end === piece.start) {
-                left.end = piece.end;
-            } else if (right && right.kind !== 'loop' && right.start === piece.end) {
-                right.start = piece.start;
-            }
-            pieces.splice(i, 1);
-            i--;
         }
         return pieces;
     };
@@ -3532,12 +3687,29 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
     }
     const round = value => Math.round(value * 1000) / 1000;
     const region = piece => [round(piece.start * step), round(Math.min(duration, piece.end * step))];
+    const loopPart = piece => {
+        const cycles = (piece.end - piece.start) / piece.period;
+        const shown = Math.max(1, Math.min(Math.round(Number(repeats) || 3), Math.floor(cycles + 0.05), Math.floor(Math.max(1, maxPart) / (piece.period * step) + 0.001)));
+        return { start: round(piece.start * step), end: round(Math.min(duration, (piece.start + piece.period * shown) * step)), kind: 'loop', cycles: Math.max(2, Math.round(cycles)), shown, period: round(piece.period * step), change: piece.change, region: region(piece) };
+    };
     const parts = pieces.map(piece => (piece.kind === 'loop'
-        ? { start: round(piece.start * step), end: round(Math.min(duration, (piece.start + piece.period) * step)), kind: 'loop', cycles: Math.max(2, Math.round((piece.end - piece.start) / piece.period)), period: round(piece.period * step), change: piece.change, region: region(piece) }
+        ? loopPart(piece)
         : piece.kind === 'still' && (piece.end - piece.start) * step > 1.5
             ? { start: round(piece.start * step), end: round(Math.min(duration, piece.start * step + 1.5)), kind: 'still', region: region(piece) }
-            : { start: round(piece.start * step), end: round(Math.min(duration, piece.end * step)), kind: piece.kind }));
-    return { parts, loops: parts.filter(part => part.kind === 'loop').length, cuts: parts.filter(part => part.kind === 'cut').length, dropped, longest };
+            : piece.kind === 'burst'
+                ? { start: round(piece.start * step), end: round(Math.min(duration, piece.end * step)), kind: 'burst', cuts: cuts.filter(k => k >= piece.start && k < piece.end).length }
+                : { start: round(piece.start * step), end: round(Math.min(duration, piece.end * step)), kind: piece.kind }));
+    const skipped = [];
+    for (let k = 0; k < count; k++) {
+        if (skip[k] && (!k || !skip[k - 1])) {
+            let e = k;
+            while (e < count && skip[e]) {
+                e++;
+            }
+            skipped.push([round(k * step), round(Math.min(duration, e * step))]);
+        }
+    }
+    return { parts, loops: parts.filter(part => part.kind === 'loop').length, cuts: parts.filter(part => part.kind === 'cut').length, bursts: parts.filter(part => part.kind === 'burst').length, dropped, longest, skipped };
 }
 
 async function convertVideoItem(item, onProgress = null) {
@@ -9307,12 +9479,15 @@ async function openPicker(initialTags = null, focus = null) {
     }
 
     function closePreview() {
+        releaseMedia(ui.preview);
+        ui.preview.innerHTML = '';
         ui.preview.hidden = true;
         previewState = null;
     }
 
     function previewShell(src, sourceUrl, target, kind) {
         previewState = { kind, target };
+        releaseMedia(ui.preview);
         ui.preview.innerHTML = '';
         ui.preview.scrollTop = 0;
         const main = el('div', 'stis-preview-main');
@@ -9671,6 +9846,9 @@ async function openPicker(initialTags = null, focus = null) {
         const clipLength = () => Math.min(30, Math.max(1, Number(current.clipSeconds) || Number(length.value) || 6));
         let madeGif = null;
         const showVideo = () => {
+            if (madeGif) {
+                URL.revokeObjectURL(madeGif.src);
+            }
             madeGif?.remove();
             madeGif = null;
             player.hidden = false;
@@ -9732,6 +9910,7 @@ async function openPicker(initialTags = null, focus = null) {
                     playClip.textContent = 'Play clip';
                     madeGif = el('img', 'stis-preview-img');
                     madeGif.alt = '';
+                    madeGif.dataset.stisMade = '1';
                     madeGif.src = URL.createObjectURL(picture.blob);
                     player.before(madeGif);
                     player.hidden = true;
@@ -9779,8 +9958,8 @@ async function openPicker(initialTags = null, focus = null) {
         };
 
         const partNote = part => {
-            const base = part.kind === 'loop' ? `Loop ×${part.cycles}, ${fmt(part.period)} s each${part.change ? `: the loop before, ${part.change}` : ''}`
-                : part.kind === 'cut' ? 'After a cut' : part.kind === 'still' ? 'Still' : part.kind === 'hand' ? 'Added by hand' : 'Action';
+            const base = part.kind === 'loop' ? `Loop ×${part.cycles} in the video, ${fmt(part.period)} s each${part.change ? `: the loop before, ${part.change}` : ''}; GIF holds ${part.shown || 1}`
+                : part.kind === 'burst' ? `Fast action, ${part.cuts || 'many'} cuts` : part.kind === 'cut' ? 'After a cut' : part.kind === 'still' ? 'Still' : part.kind === 'hand' ? 'Added by hand' : 'Action';
             return part.edited ? `${base} (edited)` : base;
         };
         const moveHead = time => {
@@ -10069,6 +10248,7 @@ async function openPicker(initialTags = null, focus = null) {
                 }
                 current.parts.forEach(releasePart);
                 current.parts = [];
+                current.skipped = [];
                 tools.saved = '';
                 tools.footText = '';
                 renderParts();
@@ -10080,6 +10260,12 @@ async function openPicker(initialTags = null, focus = null) {
                     node.style.left = `${Math.max(0, from / duration * 100)}%`;
                     node.style.width = `${Math.max(0.8, (to - from) / duration * 100)}%`;
                 };
+                (current.skipped || []).forEach(([from, to]) => {
+                    const gone = el('div', 'stis-timeline-skip');
+                    place(gone, from, to);
+                    gone.title = `${fmt(from)}–${fmt(to)} s: black or fading, left out`;
+                    line.appendChild(gone);
+                });
                 current.parts.forEach((part, index) => {
                     if (part.region) {
                         const region = el('div', 'stis-timeline-region');
@@ -10155,8 +10341,9 @@ async function openPicker(initialTags = null, focus = null) {
                 partsStatus.textContent = 'Finding the parts…';
                 await new Promise(resolve => setTimeout(resolve, 30));
                 const maxPart = Math.min(30, Math.max(1, Number(s.gifSeconds) || 6));
-                const found = splitVideo(scan, { maxPart, sense: s.splitSense, maxParts: MAX_PARTS });
+                const found = splitVideo(scan, { maxPart, sense: s.splitSense, maxParts: MAX_PARTS, repeats: Math.min(5, Math.max(1, Math.round(Number(s.loopRepeats) || 3))) });
                 current.scan = scan;
+                current.skipped = found.skipped;
                 current.parts.forEach(releasePart);
                 current.parts = found.parts.map(part => ({ ...part, still: stillAt((part.start + part.end) / 2) }));
                 tools.saved = '';
@@ -10166,9 +10353,11 @@ async function openPicker(initialTags = null, focus = null) {
                 const left = found.dropped ? ` ${found.dropped} short part${found.dropped === 1 ? ' was' : 's were'} left out (${MAX_PARTS} at most); add ${found.dropped === 1 ? 'it' : 'them'} by hand if needed.` : '';
                 const longer = found.longest > maxPart ? ` Parts are up to ${Math.round(found.longest)} s long so the whole video fits in ${MAX_PARTS} parts.` : '';
                 const read = ` Read ${scan.samples.length} pictures in ${Math.round(scan.ms / 1000)} s (${scan.how}).`;
+                const darkSeconds = found.skipped.reduce((sum, [from, to]) => sum + to - from, 0);
+                const dark = darkSeconds >= 0.3 ? ` Left out ${fmt(darkSeconds)} s of black and fades.` : '';
                 partsStatus.textContent = scan.moving === false
                     ? `The picture never changed while the video was read, so there is nothing to split. If the video does move, this browser is not giving its pictures: try Chrome.${read}`
-                    : `Found ${count} part${count === 1 ? '' : 's'}: ${loops}${found.cuts ? `, ${found.cuts} after a cut` : ''}.${left}${longer} Tap a part to play it.${read}`;
+                    : `Found ${count} part${count === 1 ? '' : 's'}: ${loops}${found.bursts ? `, ${found.bursts} of fast action` : ''}${found.cuts ? `, ${found.cuts} after a cut` : ''}.${dark}${left}${longer} Tap a part to play it.${read}`;
             } catch (error) {
                 partsStatus.textContent = scanStop ? 'Stopped.' : `Could not read the video: ${error?.message || error}`;
             }
@@ -10682,6 +10871,8 @@ async function openPicker(initialTags = null, focus = null) {
         renderSites();
         ui.tabSearch.classList.toggle('stis-tab-on', !lib);
         ui.tabLibrary.classList.toggle('stis-tab-on', lib);
+        releaseMedia(ui.preview);
+        ui.preview.innerHTML = '';
         ui.preview.hidden = true;
         previewState = null;
         if (lib) {
@@ -10970,6 +11161,9 @@ async function openPicker(initialTags = null, focus = null) {
         onClose: () => {
             closed = true;
             state.pickerOpen = false;
+            releaseMedia(ui.root);
+            decoder.note = null;
+            idleDecoder(5000);
             observer.disconnect();
             clearTimeout(searchTimer);
             clearTimeout(completeTimer);
@@ -11212,6 +11406,7 @@ function buildSettings() {
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> <span>Include videos</span></label><small class="stis-help">Made into GIFs when you use or save them.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF length (seconds)</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>Finding parts</span><input type="range" min="1" max="5" step="1" id="st_imagesearch_split_sense"><b id="st_imagesearch_split_sense_value" class="stis-range-value"></b></div><small class="stis-help">How easily "Find parts" sees a loop in a video. Strict finds fewer loops and makes fewer mistakes; loose finds loops that change a little. Parts that are not loops are at most the GIF length above.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>Loop repeats in a GIF</span><input type="range" min="1" max="5" step="1" id="st_imagesearch_loop_repeats"><b id="st_imagesearch_loop_repeats_value" class="stis-range-value"></b></div><small class="stis-help">When "Find parts" finds a loop, its GIF holds this many full turns of it (fewer if they do not fit in the GIF length), cut so it loops without a jump.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Reading videos</span><select id="st_imagesearch_video_reader" class="text_pole"><option value="auto">Automatic</option><option value="browser">The browser</option><option value="software">Built-in reader</option></select></div><small class="stis-help">Making GIFs and finding parts need the pictures of the video. Some browsers cannot give them (Firefox for Android gives black or purple). The built-in reader always works and is faster: it is downloaded once (32 MB) and kept. Automatic uses it, and uses the browser only if it cannot be downloaded.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF width (px)</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div></div>
@@ -11436,6 +11631,14 @@ function buildSettings() {
         senseValue.textContent = senseNames[Math.min(5, Math.max(1, Math.round(Number(s.splitSense) || 3)))];
     };
     bind('st_imagesearch_split_sense', 'splitSense', 'number', showSense);
+    const repeatsValue = document.getElementById('st_imagesearch_loop_repeats_value');
+    const showRepeats = () => {
+        const count = Math.min(5, Math.max(1, Math.round(Number(s.loopRepeats) || 3)));
+        repeatsValue.textContent = `${count} turn${count === 1 ? '' : 's'}`;
+    };
+    bind('st_imagesearch_loop_repeats', 'loopRepeats', 'number', showRepeats);
+    document.getElementById('st_imagesearch_loop_repeats').value = String(Math.min(5, Math.max(1, Math.round(Number(s.loopRepeats) || 3))));
+    showRepeats();
     document.getElementById('st_imagesearch_split_sense').value = String(Math.min(5, Math.max(1, Math.round(Number(s.splitSense) || 3))));
     showSense();
     document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3))));

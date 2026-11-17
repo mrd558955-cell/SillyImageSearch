@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.31.0';
+const VERSION = '2.31.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2476,56 +2476,211 @@ async function playThrough(video, from, to, step, onFrame, rate = 1) {
     });
 }
 
-function blackFrames(frames) {
-    const picks = frames.length <= 5 ? frames : [0, 1, 2, 3, 4].map(i => frames[Math.round(i * (frames.length - 1) / 4)]);
-    return picks.length > 0 && picks.every(({ data }) => {
-        let top = 0;
-        for (let i = 0; i < data.length; i += 16) {
-            const value = data[i + 3] ? data[i] + data[i + 1] + data[i + 2] : 0;
-            if (value > top) {
-                top = value;
-            }
+let frameMethod = '';
+
+function glReader(video, width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const options = { antialias: false, depth: false, stencil: false, premultipliedAlpha: false, preserveDrawingBuffer: true };
+    const gl = canvas.getContext('webgl', options) || canvas.getContext('experimental-webgl', options);
+    if (!gl) {
+        throw new Error('WebGL is not available');
+    }
+    const shader = (type, source) => {
+        const unit = gl.createShader(type);
+        gl.shaderSource(unit, source);
+        gl.compileShader(unit);
+        if (!gl.getShaderParameter(unit, gl.COMPILE_STATUS)) {
+            throw new Error(gl.getShaderInfoLog(unit) || 'WebGL shader failed');
         }
-        return top < 30;
-    });
+        return unit;
+    };
+    const program = gl.createProgram();
+    gl.attachShader(program, shader(gl.VERTEX_SHADER, 'attribute vec2 p;varying vec2 t;void main(){t=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}'));
+    gl.attachShader(program, shader(gl.FRAGMENT_SHADER, 'precision mediump float;varying vec2 t;uniform sampler2D s;void main(){gl_FragColor=texture2D(s,t);}'));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program) || 'WebGL program failed');
+    }
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const where = gl.getAttribLocation(program, 'p');
+    gl.enableVertexAttribArray(where);
+    gl.vertexAttribPointer(where, 2, gl.FLOAT, false, 0, 0);
+    gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.uniform1i(gl.getUniformLocation(program, 's'), 0);
+    gl.viewport(0, 0, width, height);
+    const out = new Uint8Array(width * height * 4);
+    return {
+        method: 'webgl',
+        read() {
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+            const error = gl.getError();
+            if (error) {
+                throw new Error(`WebGL could not take the frame (${error})`);
+            }
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, out);
+            return new Uint8ClampedArray(out);
+        },
+        close() {
+            gl.getExtension('WEBGL_lose_context')?.loseContext();
+        },
+    };
 }
 
-async function grabClip(video, from, to, fps, width, height, onProgress = null) {
+function frameReader(video, width, height, method) {
+    if (method === 'webgl') {
+        return glReader(video, width, height);
+    }
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext('2d', { willReadFrequently: true });
-    const grab = () => {
-        context.drawImage(video, 0, 0, width, height);
-        return context.getImageData(0, 0, width, height).data;
+    return {
+        method: '2d',
+        read() {
+            context.drawImage(video, 0, 0, width, height);
+            return context.getImageData(0, 0, width, height).data;
+        },
+        close() {},
     };
-    const span = Math.max(0.05, to - from);
-    let frames = [];
-    let how = 'playing';
-    try {
-        await playThrough(video, from, to, 1 / fps, time => {
-            frames.push({ data: grab(), time });
-            onProgress?.(Math.min(1, (time - from) / span));
-        });
-    } catch (error) {
-        console.debug('[Image Search] reading the video while it plays failed, reading it frame by frame', error);
-        frames = [];
-    }
-    if (!frames.length || blackFrames(frames)) {
-        how = 'seeking';
-        frames = [];
-        const count = Math.max(1, Math.round(span * fps));
-        for (let i = 0; i < count; i++) {
-            const time = from + i / fps;
-            await seekVideo(video, time);
-            frames.push({ data: grab(), time });
-            onProgress?.((i + 1) / count);
+}
+
+function darkData(data) {
+    let top = 0;
+    for (let i = 0; i < data.length; i += 16) {
+        const value = data[i + 3] ? data[i] + data[i + 1] + data[i + 2] : 0;
+        if (value > top) {
+            top = value;
         }
     }
-    if (blackFrames(frames)) {
-        throw new Error('the video frames came out black on this device');
+    return top < 30;
+}
+
+async function frameMethods(video, at, width, height) {
+    const methods = [...new Set([frameMethod, '2d', 'webgl'].filter(Boolean))];
+    const grades = new Map();
+    try {
+        await seekVideo(video, at);
+    } catch {
+        return methods;
     }
-    return { frames, how };
+    for (const method of methods) {
+        let reader = null;
+        try {
+            reader = frameReader(video, width, height, method);
+            grades.set(method, darkData(reader.read()) ? 1 : 0);
+        } catch {
+            grades.set(method, 2);
+        } finally {
+            reader?.close();
+        }
+    }
+    const usable = methods.filter(method => grades.get(method) < 2);
+    return (usable.length ? usable : methods).sort((a, b) => grades.get(a) - grades.get(b));
+}
+
+function noFramesError(errors) {
+    console.warn('[Image Search] no way to read the video frames worked', errors);
+    const firefoxAndroid = /Android/i.test(navigator.userAgent) && /Firefox/i.test(navigator.userAgent);
+    return new Error(firefoxAndroid
+        ? 'Firefox for Android cannot read the pictures of this video (a long-standing Firefox bug). Open SillyTavern in Chrome to make GIFs from videos.'
+        : `the video frames came out black on this device (${errors.join('; ')})`);
+}
+
+async function readFrames(video, { from, to, step, rate = 1, seekStep = step, width, height }, onStart, onFrame, onProgress = null, stopped = null) {
+    const methods = await frameMethods(video, (from + to) / 2, width, height);
+    const errors = [];
+    const span = Math.max(0.05, to - from);
+    for (const how of ['playing', 'seeking']) {
+        for (const method of methods) {
+            let reader = null;
+            let count = 0;
+            let lit = false;
+            try {
+                reader = frameReader(video, width, height, method);
+                onStart();
+                const take = time => {
+                    if (stopped?.()) {
+                        throw new Error('stopped');
+                    }
+                    const data = reader.read();
+                    lit = lit || !darkData(data);
+                    count++;
+                    onFrame(time, data);
+                    onProgress?.(Math.min(1, (time - from) / span));
+                };
+                if (how === 'playing') {
+                    await playThrough(video, from, to, step, take, rate);
+                } else {
+                    for (let time = from; time < to - seekStep * 0.25; time += seekStep) {
+                        await seekVideo(video, time);
+                        take(time);
+                    }
+                }
+                if (lit && (how === 'seeking' || count >= Math.max(1, span / step * 0.3))) {
+                    frameMethod = method;
+                    return { how, method };
+                }
+                errors.push(`${method} by ${how}: ${count ? (lit ? 'too few frames' : 'black frames') : 'no frames'}`);
+            } catch (error) {
+                if (stopped?.()) {
+                    throw new Error('stopped');
+                }
+                errors.push(`${method} by ${how}: ${error?.message || error}`);
+            } finally {
+                reader?.close();
+            }
+        }
+    }
+    throw noFramesError(errors);
+}
+
+async function grabClip(video, from, to, fps, width, height, onProgress = null) {
+    let frames = [];
+    const { how, method } = await readFrames(video, { from, to, step: 1 / fps, width, height }, () => {
+        frames = [];
+    }, (time, data) => frames.push({ data, time }), onProgress);
+    return { frames, how: `${how}, ${method}` };
+}
+
+async function videoStill(video, width = 160) {
+    if (!video.videoWidth) {
+        return '';
+    }
+    const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth));
+    for (const method of [...new Set([frameMethod, '2d', 'webgl'].filter(Boolean))]) {
+        let reader = null;
+        try {
+            reader = frameReader(video, width, height, method);
+            const data = reader.read();
+            if (!darkData(data)) {
+                return pixelsToUrl(data, width, height);
+            }
+        } catch {
+            continue;
+        } finally {
+            reader?.close();
+        }
+    }
+    return '';
+}
+
+function pixelsToUrl(data, width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(data), width, height), 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.7);
 }
 
 async function encodeFrames(frames, width, height, to, fps, onProgress = null) {
@@ -2595,6 +2750,29 @@ async function makePartGifs(url, parts, onProgress = null, onPart = null) {
 
 const SCAN_SIDE = 24;
 
+function grayCells(data, width, height) {
+    const gray = new Uint8Array(SCAN_SIDE * SCAN_SIDE);
+    for (let cy = 0; cy < SCAN_SIDE; cy++) {
+        const y0 = Math.floor(cy * height / SCAN_SIDE);
+        const y1 = Math.max(y0 + 1, Math.floor((cy + 1) * height / SCAN_SIDE));
+        for (let cx = 0; cx < SCAN_SIDE; cx++) {
+            const x0 = Math.floor(cx * width / SCAN_SIDE);
+            const x1 = Math.max(x0 + 1, Math.floor((cx + 1) * width / SCAN_SIDE));
+            let sum = 0;
+            let n = 0;
+            for (let y = y0; y < y1; y++) {
+                for (let x = x0; x < x1; x++) {
+                    const i = (y * width + x) * 4;
+                    sum += data[i + 3] ? (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8 : 0;
+                    n++;
+                }
+            }
+            gray[cy * SCAN_SIDE + cx] = n ? Math.round(sum / n) : 0;
+        }
+    }
+    return gray;
+}
+
 async function scanVideo(url, onProgress = null, stopped = null) {
     const started = Date.now();
     const open = await openVideo(url);
@@ -2603,63 +2781,25 @@ async function scanVideo(url, onProgress = null, stopped = null) {
         if (!duration) {
             throw new Error('the length of the video is unknown');
         }
-        const canvas = document.createElement('canvas');
-        canvas.width = SCAN_SIDE;
-        canvas.height = SCAN_SIDE;
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        const stillCanvas = document.createElement('canvas');
-        stillCanvas.width = 160;
-        stillCanvas.height = Math.max(1, Math.round(160 * (video.videoHeight || 9) / (video.videoWidth || 16)));
-        const stillContext = stillCanvas.getContext('2d');
+        const width = 160;
+        const height = Math.max(1, Math.round(width * (video.videoHeight || 9) / (video.videoWidth || 16)));
+        const rate = duration > 180 ? 4 : duration > 60 ? 3 : 2;
+        const step = 1 / (duration > 180 ? 15 : duration > 60 ? 20 : 30);
         let samples = [];
         let stills = [];
         let nextStill = 0;
-        const sample = time => {
-            if (stopped?.()) {
-                throw new Error('stopped');
-            }
-            context.drawImage(video, 0, 0, SCAN_SIDE, SCAN_SIDE);
-            const data = context.getImageData(0, 0, SCAN_SIDE, SCAN_SIDE).data;
-            const gray = new Uint8Array(SCAN_SIDE * SCAN_SIDE);
-            for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
-                gray[p] = data[i + 3] ? (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8 : 0;
-            }
-            samples.push({ time, gray });
-            if (time >= nextStill) {
-                stillContext.drawImage(video, 0, 0, stillCanvas.width, stillCanvas.height);
-                stills.push({ time, url: stillCanvas.toDataURL('image/jpeg', 0.7) });
-                nextStill = time + 0.5;
-            }
-            onProgress?.(Math.min(1, time / duration));
-        };
-        const rate = duration > 180 ? 4 : duration > 60 ? 3 : 2;
-        let step = 1 / (duration > 180 ? 15 : duration > 60 ? 20 : 30);
-        let how = 'playing';
-        try {
-            await playThrough(video, 0, duration, step, sample, rate);
-        } catch (error) {
-            if (stopped?.()) {
-                throw new Error('stopped');
-            }
-            console.debug('[Image Search] reading the video while it plays failed, reading it frame by frame', error);
-            samples = [];
-        }
-        const dark = list => list.length > 0 && list.every(item => item.gray.every(value => value < 10));
-        if (samples.length < duration * 2 || dark(samples)) {
-            how = 'seeking';
-            step = 1 / 8;
+        const { how, method } = await readFrames(video, { from: 0, to: duration, step, rate, seekStep: 1 / 8, width, height }, () => {
             samples = [];
             stills = [];
             nextStill = 0;
-            for (let time = 0; time < duration; time += step) {
-                await seekVideo(video, time);
-                sample(time);
+        }, (time, data) => {
+            samples.push({ time, gray: grayCells(data, width, height) });
+            if (time >= nextStill) {
+                stills.push({ time, url: pixelsToUrl(data, width, height) });
+                nextStill = time + 0.5;
             }
-        }
-        if (dark(samples)) {
-            throw new Error('the video frames came out black on this device');
-        }
-        return { duration, step, samples, stills, how, rate: how === 'playing' ? video.playbackRate || rate : 0, ms: Date.now() - started };
+        }, onProgress, stopped);
+        return { duration, step: how === 'seeking' ? 1 / 8 : step, samples, stills, how: `${how}, ${method}`, rate: how === 'playing' ? video.playbackRate || rate : 0, ms: Date.now() - started };
     } finally {
         open.close();
     }
@@ -9135,20 +9275,7 @@ async function openPicker(initialTags = null, focus = null) {
             });
             return best?.url || '';
         };
-        const grabStill = () => {
-            try {
-                if (!player.videoWidth) {
-                    return '';
-                }
-                const canvas = document.createElement('canvas');
-                canvas.width = 160;
-                canvas.height = Math.max(1, Math.round(160 * player.videoHeight / player.videoWidth));
-                canvas.getContext('2d').drawImage(player, 0, 0, canvas.width, canvas.height);
-                return canvas.toDataURL('image/jpeg', 0.7);
-            } catch {
-                return '';
-            }
-        };
+
         const partNote = part => {
             const base = part.kind === 'loop' ? `Loop ×${part.cycles}, ${fmt(part.period)} s each${part.change ? `, then ${part.change}` : ''}`
                 : part.kind === 'cut' ? 'After a cut' : part.kind === 'still' ? 'Still' : part.kind === 'hand' ? 'Added by hand' : 'Action';
@@ -9553,11 +9680,20 @@ async function openPicker(initialTags = null, focus = null) {
             const duration = durationOf();
             const end = Math.max(start + 0.1, duration ? Math.min(duration, start + clipLength()) : start + clipLength());
             const near = Math.abs((Number(player.currentTime) || 0) - start) <= clipLength();
-            current.parts.push({ start, end, kind: 'hand', still: current.scan ? stillAt((start + end) / 2) : near ? grabStill() : '' });
+            const part = { start, end, kind: 'hand', still: current.scan ? stillAt((start + end) / 2) : '' };
+            current.parts.push(part);
             current.parts.sort((a, b) => a.start - b.start);
             tools.saved = '';
             partsStatus.textContent = `Added ${fmt(start)}–${fmt(end)} s.`;
             renderParts();
+            if (!part.still && near) {
+                videoStill(player).then(url => {
+                    if (url && current.parts.includes(part) && !part.still) {
+                        part.still = url;
+                        renderParts();
+                    }
+                }).catch(() => {});
+            }
         });
         renderParts();
         return { rows, panel };

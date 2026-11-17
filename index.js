@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.25.0';
+const VERSION = '2.26.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -79,6 +79,7 @@ const DEFAULTS = {
     meaningSource: 'nanogpt',
     meaningModel: '',
     pickShortlist: 30,
+    openSections: ['setup'],
     pickWindow: true,
     pickWithUser: true,
     pickFocus: 'char',
@@ -8860,138 +8861,214 @@ function buildSettings() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_enabled"> <span>Enabled</span></label>
-                <div>Image boards (one per line)</div>
-                <textarea id="st_imagesearch_sites" class="text_pole"></textarea>
-                <small>Booru sites only (Gelbooru, Danbooru, e621, Moebooru, Philomena, Shimmie such as rule34.paheal.net). If a site needs a login key, add it after the domain, e.g. <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
-                <div>Tag profile (connection profile used to suggest tags)</div>
-                <select id="st_imagesearch_profile" class="text_pole"></select>
-                <small id="st_imagesearch_profile_note"></small>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_prefetch"> <span>Prepare tags and pictures after each AI reply</span></label>
-                <div>Never suggest these tags (one per line, or tap <i class="fa-solid fa-ban"></i> on a tag in the picker)</div>
-                <textarea id="st_imagesearch_blacklist" class="text_pole"></textarea>
-                <div>Favorite tags (comma-separated; shown as a ★ row in the picker, tap one there to add it)</div>
-                <textarea id="st_imagesearch_favorites" class="text_pole"></textarea>
-                <div>Character looks (one per line, e.g. <code>Kaelen: !1boy, !muscular_male, bald, beard</code>; <code>!</code> marks tags a picture must have, the others only sort the results). You can also save the current tags with "Save as character look" in the picker.</div>
-                <textarea id="st_imagesearch_looks" class="text_pole"></textarea>
-                <div>Leave out pictures with these tags (comma-separated; sent to the site as -tag where it allows it, checked here otherwise)</div>
-                <textarea id="st_imagesearch_exclude" class="text_pole"></textarea>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> Include videos (made into GIFs when you use or save them)</label>
-                <div class="st-imagesearch-row"><span>GIF from a video: seconds</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div>
-                <div class="st-imagesearch-row"><span>GIF width in pixels</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div>
-                <div class="st-imagesearch-row"><span>GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div>
-                <div>Allowed ratings</div>
-                <div class="st-imagesearch-row">
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_sensitive"> <span>Sensitive</span></label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_questionable"> <span>Questionable</span></label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_explicit"> <span>Explicit</span></label>
+                <div class="stis-settings-top">
+                    <input type="search" id="st_imagesearch_find" class="text_pole" placeholder="Find a setting">
+                    <div id="st_imagesearch_open" class="menu_button">Open picker</div>
                 </div>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures into SillyTavern (needs CORS proxy or the fetcher)</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures when sending, so vision models can see them</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_describe"> <span>Describe picked pictures for the AI (a vision model looks at the picture and its tags; the description is sent to the AI with the picture, hidden from the chat)</span></label>
-                <div>Vision profile (empty = use the tag profile)</div>
-                <select id="st_imagesearch_vision_profile" class="text_pole"></select>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep picked pictures in the library</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>Let the AI show saved pictures in its replies</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites and take their tags before describing it</span></label>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt_iqdb"> <span>If it is not found there, also ask IQDB (a free lookalike search)</span></label>
-                <small>Saved pictures are offered through the lorebook "${LOREBOOK}" (World Info): one entry per picture, triggered by its keywords, at most one picture per reply. Keep that lorebook turned on. You can edit keywords there; your edits are kept.</small>
-                <div class="st-imagesearch-library">
-                    <div id="st_imagesearch_lib_count">Library</div>
-                    <div class="st-imagesearch-row">
-                        <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
-                        <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt">Redo out-of-date descriptions</div>
-                        <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
-                        <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
-                        <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
-                        <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop describing after the pictures being described now" hidden>Stop</div>
-                    </div>
-                    <div id="st_imagesearch_redo_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
-                    <small id="st_imagesearch_lib_status"></small>
-                    <hr>
-                    <div>Finding pictures</div>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_filing"> <span>Make a filing card for each picture (who, pose, mood, place, story moments), so the AI can find the right one</span></label>
-                    <div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div>
-                    <div class="st-imagesearch-row"><span>Embedding model (empty = default)</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div>
-                    <div class="st-imagesearch-row"><span>Pictures kept by looks and keywords, before ranking by meaning</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Pictures the AI compares when choosing</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div>
-                    <div class="st-imagesearch-row">
-                        <div id="st_imagesearch_cards_run" class="menu_button" title="Make the filing cards that are missing or out of date now">Make missing cards</div>
-                        <div id="st_imagesearch_cards_redo" class="menu_button" title="Make every filing card again, except the ones you edited">Redo all cards</div>
-                        <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
-                        <div id="st_imagesearch_cards_stop" class="menu_button" title="Stop making filing cards after the request that is running" hidden>Stop</div>
-                    </div>
-                    <div id="st_imagesearch_card_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
-                    <small id="st_imagesearch_card_status"></small>
-                    <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div></div>
-                    <div id="st_imagesearch_sheets"></div>
-                    <details id="st_imagesearch_cats_box">
-                        <summary>Look categories</summary>
-                        <small>Each category is a field on the filing cards and look sheets, with the points it is worth. Changing points needs nothing; changing tags or questions needs "Update cards".</small>
-                        <div id="st_imagesearch_cats"></div>
-                        <div class="st-imagesearch-row">
-                            <div id="st_imagesearch_cat_add" class="menu_button">+ Add category</div>
-                            <div id="st_imagesearch_cat_update" class="menu_button" title="Ask the tag model only for the changed categories">Update cards</div>
+                <small id="st_imagesearch_find_none" class="stis-help" hidden>No setting matches.</small>
+                <div class="stis-sections">
+                <details class="stis-section" data-section="setup">
+                    <summary><span class="stis-section-title">Setup</span><small class="stis-section-sum" data-sum="setup"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_enabled"> <span>Enabled</span></label></div>
+                        <div class="stis-set">
+                            <div class="stis-label">Image boards</div>
+                            <textarea id="st_imagesearch_sites" class="text_pole"></textarea>
+                            <small class="stis-help">One per line. Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (such as rule34.paheal.net). A login key goes after the domain: <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
+                            <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
                         </div>
-                        <small id="st_imagesearch_cat_status"></small>
-                        <div class="st-imagesearch-row"><span>Points when nobody looks like the character</span><input type="number" id="st_imagesearch_rule_nomatch" class="text_pole"></div>
-                        <div class="st-imagesearch-row"><span>Most an extra character can add</span><input type="number" id="st_imagesearch_rule_extra" class="text_pole"></div>
-                        <details>
-                            <summary>Export, import, reset</summary>
-                            <textarea id="st_imagesearch_cat_json" class="text_pole" placeholder="Export fills this box; paste categories here and Import"></textarea>
-                            <div class="st-imagesearch-row">
-                                <div id="st_imagesearch_cat_export" class="menu_button">Export</div>
-                                <div id="st_imagesearch_cat_import" class="menu_button">Import</div>
-                                <div id="st_imagesearch_cat_reset" class="menu_button">Reset to the built-in categories</div>
+                        <div class="stis-set">
+                            <div class="stis-label">Tag model</div>
+                            <select id="st_imagesearch_profile" class="text_pole"></select>
+                            <small id="st_imagesearch_profile_note" class="stis-help"></small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Vision model</div>
+                            <select id="st_imagesearch_vision_profile" class="text_pole"></select>
+                            <small class="stis-help">Describes saved pictures. Empty = the tag model.</small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Ratings</div>
+                            <div class="st-imagesearch-row stis-wrap">
+                                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_general"> <span>General</span></label>
+                                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_sensitive"> <span>Sensitive</span></label>
+                                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_questionable"> <span>Questionable</span></label>
+                                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_r_explicit"> <span>Explicit</span></label>
                             </div>
-                        </details>
-                    </details>
-                    <details>
-                        <summary>Pose and mood lists</summary>
-                        <div>Poses the filing cards use</div>
-                        <textarea id="st_imagesearch_poses" class="text_pole"></textarea>
-                        <div>Moods the filing cards use</div>
-                        <textarea id="st_imagesearch_moods" class="text_pole"></textarea>
-                        <div id="st_imagesearch_lists_reset" class="menu_button">Reset both lists</div>
-                    </details>
-                </div>
-                <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Show debug info in the picker (site search link, filter counts, tag model reply)</span></label>
-                <details>
-                    <summary>Advanced</summary>
-                    <div class="st-imagesearch-row"><span>Tags required by default (the rest only sort the results)</span><input type="number" min="0" max="6" id="st_imagesearch_required" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Max suggested tags</span><input type="number" min="1" max="20" id="st_imagesearch_max" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Minimum posts for a suggested tag</span><input type="number" min="0" max="100000" id="st_imagesearch_min_posts" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Messages sent to the tag model</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Characters per message</span><input type="number" min="100" max="4000" id="st_imagesearch_ctx_chars" class="text_pole"></div>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cards"> <span>Give the tag model what character cards and your persona say about appearance</span></label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_evidence"> <span>Only keep suggested tags the AI can quote from the story</span></label>
-                    <div class="st-imagesearch-row"><span>Tag reply token limit</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Description token limit</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div>
-                    <div class="st-imagesearch-row"><span>Seconds to wait for the description when sending</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div>
-                    <div class="st-imagesearch-row stis-range-row"><span>Frames of a GIF sent to the vision model, spread from start to end</span><input type="range" min="1" max="16" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div>
-                    <div class="st-imagesearch-row"><span>Size of each GIF frame</span><select id="st_imagesearch_gif_size" class="text_pole"><option value="384">384 px (cheapest)</option><option value="512">512 px</option><option value="768">768 px (default)</option><option value="1024">1024 px</option><option value="1536">1536 px</option><option value="2048">2048 px (most detail)</option></select></div>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>Send the GIF frames as one numbered sheet (one picture instead of several)</span></label>
-                    <div class="st-imagesearch-row"><span>Depth of the picture offer in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> Show the send-with-picture button next to Send</label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> Show me the chosen picture before sending</label>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> Show the options window (main focus, who else may be in it) before choosing</label>
-                    <div class="st-imagesearch-row"><span>Pictures always listed for the AI, the ones that fit the chat best (0 = only when keywords match)</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div>
-                    <div>Description prompt ({{tags}} is filled in)</div>
-                    <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
-                    <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
-                    <div>Tag prompt ({{max}} and {{context}} are filled in)</div>
-                    <textarea id="st_imagesearch_tag_prompt" class="text_pole"></textarea>
-                    <div id="st_imagesearch_prompt_reset" class="menu_button">Reset prompt</div>
-                    <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_proxy"> <span>Always route through SillyTavern proxy</span></label>
-                    <div class="st-imagesearch-row"><span>Image fetcher URL (Cloudflare)</span><input type="text" id="st_imagesearch_fetcher_url" class="text_pole" placeholder="https://imgfetch.yourname.workers.dev"></div>
-                    <div class="st-imagesearch-row"><span>Image fetcher key</span><input type="password" id="st_imagesearch_fetcher_key" class="text_pole"></div>
-                    <div>Tag cleanup list (from repo)</div>
-                    <textarea id="st_imagesearch_cleanup_view" class="text_pole" readonly></textarea>
-                    <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
+                        </div>
+                    </div>
                 </details>
-                <hr>
-                <div id="st_imagesearch_open" class="menu_button">Open picker</div>
+                <details class="stis-section" data-section="picker">
+                    <summary><span class="stis-section-title">Picker</span><small class="stis-section-sum" data-sum="picker"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_prefetch"> <span>Prepare tags after each reply</span></label><small class="stis-help">Tags and pictures are ready when you open the picker.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Required tags by default</span><input type="number" min="0" max="6" id="st_imagesearch_required" class="text_pole"></div><small class="stis-help">The other tags only sort the results.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Most suggested tags</span><input type="number" min="1" max="20" id="st_imagesearch_max" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Fewest posts for a tag</span><input type="number" min="0" max="100000" id="st_imagesearch_min_posts" class="text_pole"></div><small class="stis-help">Suggested tags with fewer posts on the site are dropped.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Messages read for tags</span><input type="number" min="1" max="10" id="st_imagesearch_ctx_count" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Characters per message</span><input type="number" min="100" max="4000" id="st_imagesearch_ctx_chars" class="text_pole"></div></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cards"> <span>Use the cards' appearance</span></label><small class="stis-help">Give the tag model what character cards and your persona say about looks.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_evidence"> <span>Only tags quoted from the story</span></label><small class="stis-help">Drop suggested tags the AI cannot quote from the chat.</small></div>
+                        <div class="stis-set">
+                            <div class="stis-label">Favorite tags</div>
+                            <textarea id="st_imagesearch_favorites" class="text_pole"></textarea>
+                            <small class="stis-help">Comma-separated. Shown as a ★ row in the picker; tap one there to add it.</small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Never suggest</div>
+                            <textarea id="st_imagesearch_blacklist" class="text_pole"></textarea>
+                            <small class="stis-help">One per line, or tap <i class="fa-solid fa-ban"></i> on a tag in the picker.</small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Leave out pictures with</div>
+                            <textarea id="st_imagesearch_exclude" class="text_pole"></textarea>
+                            <small class="stis-help">Comma-separated tags. Sent to the site as -tag where it allows it, checked here otherwise.</small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Character looks</div>
+                            <textarea id="st_imagesearch_looks" class="text_pole"></textarea>
+                            <small class="stis-help">One per line, e.g. <code>Kaelen: !1boy, !muscular_male, bald, beard</code>. <code>!</code> marks tags a picture must have; the others only sort. "Save as character look" in the picker adds one.</small>
+                        </div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> <span>Include videos</span></label><small class="stis-help">Made into GIFs when you use or save them.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF length (seconds)</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF width (px)</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Debug info in the picker</span></label><small class="stis-help">Site search link, filter counts and the tag model's reply.</small></div>
+                    </div>
+                </details>
+                <details class="stis-section" data-section="library">
+                    <summary><span class="stis-section-title">Saving and library</span><small class="stis-section-sum" data-sum="library"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures</span></label><small class="stis-help">Into SillyTavern. Needs the CORS proxy or the image fetcher.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep them in the library</span></label></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures to messages</span></label><small class="stis-help">So vision models can see them.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>Find tags for tag-poor pictures</span></label><small class="stis-help">When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites and take their tags before describing it.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt_iqdb"> <span>Also ask IQDB</span></label><small class="stis-help">A free lookalike search, when the picture is not found on your sites.</small></div>
+                        <div class="stis-set st-imagesearch-library">
+                            <div id="st_imagesearch_lib_count" class="stis-label">Library</div>
+                            <div class="st-imagesearch-row stis-wrap">
+                                <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
+                                <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt">Redo out-of-date descriptions</div>
+                                <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
+                                <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
+                                <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop after the pictures being worked on now" hidden>Stop</div>
+                            </div>
+                            <div id="st_imagesearch_redo_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
+                            <small id="st_imagesearch_lib_status"></small>
+                        </div>
+                    </div>
+                </details>
+                <details class="stis-section" data-section="describe">
+                    <summary><span class="stis-section-title">Descriptions</span><small class="stis-section-sum" data-sum="describe"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_describe"> <span>Describe saved pictures</span></label><small class="stis-help">A vision model looks at the picture and its tags. The description goes to the AI with the picture, hidden from the chat.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Description length (tokens)</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Wait for it when sending (s)</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div><small class="stis-help">After this, the message goes without it and the description is added when ready.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>GIF frames sent</span><input type="range" min="1" max="16" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div><small class="stis-help">Spread from the start to the end of the GIF. More frames show more of the motion, and cost more.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>GIF frame size</span><select id="st_imagesearch_gif_size" class="text_pole"><option value="384">384 px (cheapest)</option><option value="512">512 px</option><option value="768">768 px (default)</option><option value="1024">1024 px</option><option value="1536">1536 px</option><option value="2048">2048 px (most detail)</option></select></div></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>GIF frames as one sheet</span></label><small class="stis-help">One numbered picture instead of several: cheaper, less detail per frame.</small></div>
+                        <div class="stis-set">
+                            <div class="stis-label">Description prompt</div>
+                            <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>
+                            <small class="stis-help">{{tags}} is filled in.</small>
+                            <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
+                        </div>
+                    </div>
+                </details>
+                <details class="stis-section" data-section="send">
+                    <summary><span class="stis-section-title">Picture send</span><small class="stis-section-sum" data-sum="send"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> <span>Picture button next to Send</span></label></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> <span>Show the picture before sending</span></label></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> <span>Ask for the main focus first</span></label><small class="stis-help">Who the picture is about, and who else may be in it.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures the AI compares</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div><small class="stis-help">Fewer is faster; a good picture ranked lower is not seen by the AI.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Embedding model</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div><small class="stis-help">Empty = the default.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Kept before meaning ranking</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div><small class="stis-help">The best pictures by looks and keywords that go on to be ranked by meaning.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>AI may show pictures</span></label><small class="stis-help">Saved pictures are offered through the lorebook "${LOREBOOK}": one entry per picture, triggered by its keywords, at most one per reply. Keep that lorebook on; your keyword edits are kept.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures always listed</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div><small class="stis-help">The ones that fit the chat best. 0 = only when keywords match.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Offer depth in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div></div>
+                    </div>
+                </details>
+                <details class="stis-section" data-section="filing">
+                    <summary><span class="stis-section-title">Filing and looks</span><small class="stis-section-sum" data-sum="filing"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_filing"> <span>Make filing cards</span></label><small class="stis-help">Who, pose, mood, place and story moments for each picture, so the AI finds the right one.</small></div>
+                        <div class="stis-set">
+                            <div class="st-imagesearch-row stis-wrap">
+                                <div id="st_imagesearch_cards_run" class="menu_button" title="Make the filing cards that are missing or out of date now">Make missing cards</div>
+                                <div id="st_imagesearch_cards_redo" class="menu_button" title="Make every filing card again, except the ones you edited">Redo all cards</div>
+                                <div id="st_imagesearch_meaning_rebuild" class="menu_button" title="Throw away the search index and build it again">Rebuild search index</div>
+                                <div id="st_imagesearch_cards_stop" class="menu_button" title="Stop making filing cards after the request that is running" hidden>Stop</div>
+                            </div>
+                            <div id="st_imagesearch_card_progress" class="stis-progress-track" hidden><div class="stis-progress-fill"></div></div>
+                            <small id="st_imagesearch_card_status"></small>
+                        </div>
+                        <div class="stis-set">
+                            <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div></div>
+                            <div id="st_imagesearch_sheets"></div>
+                        </div>
+                        <details id="st_imagesearch_cats_box" class="stis-set">
+                            <summary>Look categories</summary>
+                            <small class="stis-help">Each category is a field on the filing cards and look sheets, with the points it is worth. Changing points needs nothing; changing tags or questions needs "Update cards".</small>
+                            <div id="st_imagesearch_cats"></div>
+                            <div class="st-imagesearch-row">
+                                <div id="st_imagesearch_cat_add" class="menu_button">+ Add category</div>
+                                <div id="st_imagesearch_cat_update" class="menu_button" title="Ask the tag model only for the changed categories">Update cards</div>
+                            </div>
+                            <small id="st_imagesearch_cat_status"></small>
+                            <div class="st-imagesearch-row"><span>Points when nobody looks like the main focus</span><input type="number" id="st_imagesearch_rule_nomatch" class="text_pole"></div>
+                            <div class="st-imagesearch-row"><span>Most another person can add</span><input type="number" id="st_imagesearch_rule_extra" class="text_pole"></div>
+                            <details>
+                                <summary>Export, import, reset</summary>
+                                <textarea id="st_imagesearch_cat_json" class="text_pole" placeholder="Export fills this box; paste categories here and Import"></textarea>
+                                <div class="st-imagesearch-row">
+                                    <div id="st_imagesearch_cat_export" class="menu_button">Export</div>
+                                    <div id="st_imagesearch_cat_import" class="menu_button">Import</div>
+                                    <div id="st_imagesearch_cat_reset" class="menu_button">Reset to the built-in categories</div>
+                                </div>
+                            </details>
+                        </details>
+                        <details class="stis-set">
+                            <summary>Pose and mood lists</summary>
+                            <div class="stis-label">Poses the filing cards use</div>
+                            <textarea id="st_imagesearch_poses" class="text_pole"></textarea>
+                            <div class="stis-label">Moods the filing cards use</div>
+                            <textarea id="st_imagesearch_moods" class="text_pole"></textarea>
+                            <div id="st_imagesearch_lists_reset" class="menu_button">Reset both lists</div>
+                        </details>
+                    </div>
+                </details>
+                <details class="stis-section" data-section="advanced">
+                    <summary><span class="stis-section-title">Advanced</span><small class="stis-section-sum" data-sum="advanced"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Tag reply length (tokens)</span><input type="number" min="16" max="4000" id="st_imagesearch_tokens" class="text_pole"></div></div>
+                        <div class="stis-set">
+                            <div class="stis-label">Tag prompt</div>
+                            <textarea id="st_imagesearch_tag_prompt" class="text_pole"></textarea>
+                            <small class="stis-help">{{max}} and {{context}} are filled in.</small>
+                            <div id="st_imagesearch_prompt_reset" class="menu_button">Reset prompt</div>
+                        </div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_proxy"> <span>Always use SillyTavern's proxy</span></label><small class="stis-help">For sites the browser cannot reach directly.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Image fetcher URL</span><input type="text" id="st_imagesearch_fetcher_url" class="text_pole" placeholder="https://imgfetch.yourname.workers.dev"></div><small class="stis-help">Your Cloudflare image fetcher, if you made one.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Image fetcher key</span><input type="password" id="st_imagesearch_fetcher_key" class="text_pole"></div></div>
+                        <div class="stis-set">
+                            <div class="stis-label">Tag cleanup list</div>
+                            <textarea id="st_imagesearch_cleanup_view" class="text_pole" readonly></textarea>
+                            <small class="stis-help">Downloaded from the extension's repository.</small>
+                        </div>
+                    </div>
+                </details>
+                <details class="stis-section stis-danger" data-section="danger">
+                    <summary><span class="stis-section-title">Delete everything</span><small class="stis-section-sum" data-sum="danger"></small></summary>
+                    <div class="stis-section-body">
+                        <div class="stis-set">
+                            <div id="st_imagesearch_delete_all" class="menu_button" title="Remove every saved picture from the library, the lorebook and the disk">Delete everything</div>
+                            <small class="stis-help">Removes every saved picture from the library, the lorebook and the disk. Asks to tap again.</small>
+                        </div>
+                    </div>
+                </details>
+                </div>
             </div>
         </div>
     </div>`;
@@ -9447,6 +9524,97 @@ function buildSettings() {
     } catch (error) {
         note.textContent = `Tag suggestions unavailable: ${error?.message || error}. Enable the Connection Profiles extension.`;
     }
+    setupSections();
+}
+
+function sectionSummary(section) {
+    const s = settings();
+    const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+    if (section === 'setup') {
+        const name = document.getElementById('st_imagesearch_profile')?.selectedOptions?.[0]?.textContent?.trim();
+        return [count(siteEntries().length, 'site'), s.tagProfile ? `tag model: ${name || 'chosen'}` : 'no tag model yet', s.enabled ? '' : 'turned off'].filter(Boolean).join(' · ');
+    }
+    if (section === 'picker') {
+        return `${Number.isFinite(Number(s.requiredCount)) ? Number(s.requiredCount) : 2} required · up to ${maxSuggested()} suggested`;
+    }
+    if (section === 'library') {
+        return [s.saveLocal ? 'saving on' : 'saving off', library.loaded && !library.broken ? count(library.entries.length, 'entry', 'entries') : ''].filter(Boolean).join(' · ');
+    }
+    if (section === 'describe') {
+        const frames = Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        return s.describe ? `on · ${count(frames, 'GIF frame')}${s.gifSheet ? ' as one sheet' : ''}` : 'off';
+    }
+    if (section === 'send') {
+        return `button ${s.sendButton ? 'on' : 'off'} · the AI compares ${shortlistSize()}`;
+    }
+    if (section === 'filing') {
+        return `cards ${s.cards ? 'on' : 'off'} · ${count(categories().length, 'look category', 'look categories')}`;
+    }
+    return '';
+}
+
+function setupSections() {
+    const s = settings();
+    const root = document.getElementById('st_imagesearch_settings');
+    if (!root) {
+        return;
+    }
+    const sections = [...root.querySelectorAll('.stis-section')];
+    const openNow = () => new Set(Array.isArray(s.openSections) ? s.openSections : ['setup']);
+    let finding = false;
+    sections.forEach(section => {
+        section.open = openNow().has(section.dataset.section);
+        section.addEventListener('toggle', () => {
+            if (finding) {
+                return;
+            }
+            const now = openNow();
+            now[section.open ? 'add' : 'delete'](section.dataset.section);
+            s.openSections = [...now];
+            save();
+        });
+    });
+    const paint = () => sections.forEach(section => {
+        const sum = section.querySelector('.stis-section-sum');
+        if (sum) {
+            sum.textContent = sectionSummary(section.dataset.section);
+        }
+    });
+    let timer = null;
+    root.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(paint, 300);
+    });
+    root.addEventListener('change', () => {
+        clearTimeout(timer);
+        timer = setTimeout(paint, 300);
+    });
+    root.querySelector('.inline-drawer-toggle')?.addEventListener('click', () => loadLibrary().then(paint));
+    paint();
+    const find = document.getElementById('st_imagesearch_find');
+    const none = document.getElementById('st_imagesearch_find_none');
+    const setText = set => `${set.textContent} ${[...set.querySelectorAll('[placeholder], [title], option')].map(node => `${node.getAttribute('placeholder') || ''} ${node.getAttribute('title') || ''} ${node.tagName === 'OPTION' ? node.textContent : ''}`).join(' ')}`.toLowerCase();
+    find.addEventListener('input', () => {
+        const words = find.value.toLowerCase().split(/\s+/).filter(Boolean);
+        finding = true;
+        let shown = 0;
+        sections.forEach(section => {
+            const title = section.querySelector('.stis-section-title')?.textContent.toLowerCase() || '';
+            let hits = 0;
+            section.querySelectorAll('.stis-set').forEach(set => {
+                const match = !words.length || words.every(word => setText(set).includes(word) || title.includes(word));
+                set.hidden = !match;
+                hits += match ? 1 : 0;
+            });
+            section.hidden = Boolean(words.length) && !hits;
+            section.open = words.length ? hits > 0 : openNow().has(section.dataset.section);
+            shown += hits;
+        });
+        none.hidden = !words.length || shown > 0;
+        setTimeout(() => {
+            finding = false;
+        });
+    });
 }
 
 jQuery(() => {

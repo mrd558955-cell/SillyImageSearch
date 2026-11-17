@@ -1087,3 +1087,116 @@ video.stis-preview-img {
     flex-wrap: wrap;
     gap: 6px;
 }
+
+#st_imagesearch_settings .stis-settings-top {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin: 4px 0 8px;
+}
+
+#st_imagesearch_settings .stis-settings-top input[type="search"] {
+    flex: 1 1 auto;
+    min-height: 2.4em;
+}
+
+#st_imagesearch_settings .stis-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#st_imagesearch_settings .stis-section {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.4));
+    border-radius: 8px;
+    padding: 0 8px;
+}
+
+#st_imagesearch_settings .stis-section[open] {
+    padding-bottom: 8px;
+}
+
+#st_imagesearch_settings .stis-section > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    min-height: 2.8em;
+    padding: 8px 0;
+    cursor: pointer;
+    list-style: none;
+}
+
+#st_imagesearch_settings .stis-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+#st_imagesearch_settings .stis-section > summary::before {
+    content: '▸';
+    display: inline-block;
+    width: 1em;
+    transition: transform 0.15s;
+}
+
+#st_imagesearch_settings .stis-section[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+#st_imagesearch_settings .stis-section-title {
+    font-weight: bold;
+    font-size: 1.05em;
+}
+
+#st_imagesearch_settings .stis-section-sum {
+    opacity: 0.7;
+    flex: 1 1 12em;
+}
+
+#st_imagesearch_settings .stis-section-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#st_imagesearch_settings .stis-set {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+#st_imagesearch_settings .stis-set[hidden],
+#st_imagesearch_settings .stis-section[hidden] {
+    display: none;
+}
+
+#st_imagesearch_settings .stis-label {
+    font-weight: 600;
+}
+
+#st_imagesearch_settings .stis-help {
+    opacity: 0.65;
+    font-size: 0.85em;
+    line-height: 1.3;
+}
+
+#st_imagesearch_settings .stis-set .checkbox_label {
+    min-height: 2.2em;
+    align-items: center;
+}
+
+#st_imagesearch_settings .stis-wrap {
+    flex-wrap: wrap;
+}
+
+#st_imagesearch_settings .stis-set .st-imagesearch-row select {
+    flex: 1 1 10em;
+    min-width: 0;
+}
+
+#st_imagesearch_settings .stis-danger {
+    border-color: rgba(220, 60, 60, 0.6);
+}
+
+#st_imagesearch_settings .stis-danger .stis-section-title {
+    color: #e06060;
+}

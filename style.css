@@ -1507,6 +1507,68 @@ video.stis-preview-img {
     text-decoration: underline;
 }
 
+.stis-entry-overview {
+    white-space: pre-line;
+    font-style: italic;
+    opacity: 0.9;
+    margin-bottom: 4px;
+}
+
+.stis-entry-changed {
+    margin-top: 4px;
+    opacity: 0.9;
+}
+
+.stis-group-progress {
+    display: block;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+.stis-group-progress:empty {
+    display: none;
+}
+
+.stis-attention {
+    margin: 4px 0;
+    padding: 4px 8px;
+    border-left: 3px solid #e0a020;
+    border-radius: 4px;
+    background: rgba(224, 160, 32, 0.12);
+}
+
+.stis-attention-fine {
+    text-decoration: underline;
+    white-space: nowrap;
+}
+
+.stis-attention-badge {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 0.75em;
+    background: #e0a020;
+    color: #000;
+    pointer-events: none;
+}
+
+.stis-group-report {
+    margin-top: 2px;
+    opacity: 0.85;
+}
+
+.stis-group-report summary {
+    cursor: pointer;
+    font-size: 0.9em;
+}
+
+.stis-group-report-line {
+    display: block;
+    margin-left: 8px;
+}
+
 .stis-video-length {
     margin-left: 4px;
     font-size: 0.85em;

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.26.0';
+const VERSION = '2.27.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -690,40 +690,14 @@ function engineFor(name, result) {
     return name;
 }
 
-const hostHealth = new Map();
-
-function noteHost(url, ok) {
-    const host = hostOf(url);
-    if (!host) {
-        return;
-    }
-    const health = hostHealth.get(host) || { miss: 0, hit: 0 };
-    health[ok ? 'hit' : 'miss']++;
-    hostHealth.set(host, health);
-}
-
-function hostBlocked(url) {
-    const health = hostHealth.get(hostOf(url));
-    return Boolean(health && health.miss >= 3 && health.miss > health.hit * 3);
-}
-
-function gelbooruMirror(md5, original) {
-    const key = String(md5 || '').toLowerCase();
-    if (!/^[0-9a-f]{32}$/.test(key)) {
-        return null;
-    }
-    let ext = '';
+function siteCopy(url, origin) {
     try {
-        ext = (filePath(original).match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
+        const file = new URL(url);
+        const site = new URL(origin);
+        return file.host !== site.host && !file.pathname.startsWith('/data/') ? `${site.origin}/data${file.pathname}` : '';
     } catch {
-        ext = '';
+        return '';
     }
-    const dir = `${key.slice(0, 2)}/${key.slice(2, 4)}`;
-    return {
-        thumb: `https://img3.gelbooru.com/thumbnails/${dir}/thumbnail_${key}.jpg`,
-        sample: `https://img3.gelbooru.com/samples/${dir}/sample_${key}.jpg`,
-        full: ext ? `https://img3.gelbooru.com/images/${dir}/${key}.${ext}` : '',
-    };
 }
 
 function postsToItems(engineName, posts, origin, ratings, localTags, stats, exclude = new Set(excludedTags())) {
@@ -767,7 +741,6 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
         const anim = video ? '' : [original, full, img].find(url => url && isGifUrl(url)) || '';
         const postId = String(post.id ?? '');
         const parentId = engine.parentId(post);
-        const mirror = /(^|\.)gelbooru\.com$/.test(hostOf(origin)) ? null : gelbooruMirror(engine.md5(post), original);
         items.push({
             img,
             thumb: thumb || img,
@@ -782,7 +755,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
             hasChildren: engine.hasChildren(post),
             md5: engine.md5(post),
             root: parentId || postId,
-            mirror,
+            siteFiles: engineName === 'danbooru' ? { thumb: siteCopy(thumb, origin), img: siteCopy(img, origin), full: siteCopy(original, origin) } : null,
         });
     }
     return items;
@@ -1098,7 +1071,7 @@ function warmThumbs(items) {
     items.slice(0, BATCH).forEach(item => {
         const img = new Image();
         img.referrerPolicy = 'no-referrer';
-        img.src = hostBlocked(item.thumb) && item.mirror ? item.mirror.thumb : item.thumb;
+        img.src = item.thumb;
     });
 }
 
@@ -2475,25 +2448,19 @@ function prepareDownload(item) {
     }
     const promise = (async () => {
         const errors = [];
-        const blocked = hostBlocked(item.thumb || item.img);
-        const mirrorFirst = list => (blocked ? [...list].reverse() : list);
         if (item.video) {
             let notice = null;
             const slow = setTimeout(() => {
                 notice = toastr.info('Making a GIF from the video…', 'Image Search', { timeOut: 0, extendedTimeOut: 0 });
             }, 600);
             try {
-                const videos = mirrorFirst([item.video, item.mirror?.full && isVideoUrl(item.mirror.full) ? item.mirror.full : ''].filter(Boolean));
-                for (const [position, video] of videos.entries()) {
-                    try {
-                        return await convertVideoItem(video === item.video ? item : { ...item, video });
-                    } catch (error) {
-                        if (position === videos.length - 1) {
-                            throw error;
-                        }
-                        errors.push(`${video}: ${error?.message || error}`);
-                    }
+                return await convertVideoItem(item);
+            } catch (error) {
+                if (!item.siteFiles?.full || !isVideoUrl(item.siteFiles.full)) {
+                    throw error;
                 }
+                errors.push(`${item.video}: ${error?.message || error}`);
+                return await convertVideoItem({ ...item, video: item.siteFiles.full });
             } finally {
                 clearTimeout(slow);
                 if (notice) {
@@ -2501,7 +2468,7 @@ function prepareDownload(item) {
                 }
             }
         }
-        for (const anim of mirrorFirst([item.anim, item.anim && item.mirror?.full && /\.gif$/i.test(item.mirror.full) ? item.mirror.full : ''].filter(Boolean))) {
+        for (const anim of [item.anim, item.anim ? item.siteFiles?.full : ''].filter(Boolean)) {
             try {
                 const picture = await downloadImage(anim);
                 if (await isAnimated(picture) && picture.blob.size <= MAX_ANIMATED_BYTES) {
@@ -2512,9 +2479,7 @@ function prepareDownload(item) {
                 errors.push(`${anim}: ${error?.message || error}`);
             }
         }
-        const own = [item.img, ...(item.alts || [])];
-        const mirror = item.mirror ? [item.mirror.sample, !item.anim && item.mirror.full && !isVideoUrl(item.mirror.full) ? item.mirror.full : ''].filter(Boolean) : [];
-        for (const url of blocked ? [...mirror, ...own] : [...own, ...mirror]) {
+        for (const url of [...new Set([item.img, ...(item.alts || []), item.siteFiles?.img, item.siteFiles?.full].filter(Boolean))]) {
             try {
                 return await shrinkImage(await downloadImage(url));
             } catch (error) {
@@ -6767,21 +6732,15 @@ function retryThumbs(host) {
 }
 
 function setThumbSource(img, item) {
-    const mirror = item.mirror?.thumb ? [item.mirror.thumb] : [];
-    const sources = [...(hostBlocked(item.thumb) ? [...mirror, item.thumb] : [item.thumb, ...mirror]), fetcherLink(item.thumb), proxyUrl(item.thumb)].filter(Boolean);
+    const site = item.siteFiles?.thumb || '';
+    const sources = [item.thumb, site, fetcherLink(item.thumb), proxyUrl(item.thumb), site ? proxyUrl(site) : ''].filter(Boolean);
     let index = 0;
     img.referrerPolicy = 'no-referrer';
     img.onload = () => {
         img.onload = null;
-        if (sources[index] === item.thumb) {
-            noteHost(item.thumb, true);
-        }
         noteThumb(item, img, true);
     };
     img.onerror = () => {
-        if (sources[index] === item.thumb) {
-            noteHost(item.thumb, false);
-        }
         index++;
         if (index < sources.length) {
             img.src = sources[index];
@@ -6796,10 +6755,8 @@ function setThumbSource(img, item) {
 }
 
 function setPreviewSource(img, item) {
-    const own = [item.anim, item.img];
-    const mirror = item.mirror ? [/\.gif$/i.test(item.mirror.full) || !item.anim ? item.mirror.full : '', item.mirror.sample] : [];
-    const first = hostBlocked(item.thumb || item.img) ? [...mirror, ...own] : [...own, ...mirror];
-    const sources = [...new Set([...first, fetcherLink(item.img), proxyUrl(item.img), item.thumb, item.mirror?.thumb].filter(Boolean))];
+    const site = item.siteFiles || {};
+    const sources = [...new Set([item.anim, item.img, item.anim ? site.full : '', site.img, fetcherLink(item.img), proxyUrl(item.img), site.img ? proxyUrl(site.img) : '', item.thumb, site.thumb].filter(Boolean))];
     let index = 0;
     img.referrerPolicy = 'no-referrer';
     img.onerror = () => {
@@ -6885,6 +6842,7 @@ async function openPicker(initialTags = null, focus = null) {
         status: el('div', 'stis-status'),
         debug: el('div', 'stis-debug'),
         blocked: el('div', 'stis-blocked'),
+        check: el('div', 'stis-check'),
         grid: el('div', 'stis-grid'),
         sentinel: el('div', 'stis-sentinel'),
         preview: el('div', 'stis-preview'),
@@ -6943,10 +6901,51 @@ async function openPicker(initialTags = null, focus = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.check, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
     ui.blocked.hidden = true;
+    ui.check.hidden = true;
     thumbTrouble.clear();
     const awaitingCheck = new Set();
+    let checkHost = '';
+    let checkTimer = null;
+    const closeCheck = () => {
+        clearTimeout(checkTimer);
+        ui.check.hidden = true;
+        ui.check.innerHTML = '';
+        checkHost = '';
+    };
+    const openInTab = trouble => {
+        awaitingCheck.add(trouble.host);
+        window.open(trouble.sample, '_blank');
+    };
+    const openCheck = trouble => {
+        closeCheck();
+        checkHost = trouble.host;
+        const head = el('div', 'stis-check-head');
+        head.appendChild(el('b', '', `Check for ${trouble.host}`));
+        const done = el('div', 'menu_button', 'Done');
+        done.addEventListener('click', () => {
+            const host = checkHost;
+            closeCheck();
+            retryThumbs(host);
+        });
+        head.appendChild(done);
+        const frame = el('iframe', 'stis-check-frame');
+        frame.referrerPolicy = 'no-referrer';
+        frame.addEventListener('load', () => {
+            clearTimeout(checkTimer);
+            checkTimer = setTimeout(() => retryThumbs(trouble.host), 800);
+        });
+        const tab = el('a', 'stis-check-tab', 'Stays blank? Open it in a new tab instead');
+        tab.href = '#';
+        tab.addEventListener('click', event => {
+            event.preventDefault();
+            openInTab(trouble);
+        });
+        ui.check.append(head, frame, el('small', 'stis-help', 'Tick the box if one shows. When the picture appears here, the others load by themselves.'), tab);
+        ui.check.hidden = false;
+        frame.src = trouble.sample;
+    };
     const renderBlocked = () => {
         const list = blockedHosts();
         ui.blocked.innerHTML = '';
@@ -6958,22 +6957,23 @@ async function openPicker(initialTags = null, focus = null) {
             row.appendChild(el('div', 'stis-blocked-text', `${trouble.tries ? 'Still blocked. ' : ''}${trouble.failed.length} picture(s) from ${trouble.host} could not be shown${why}.`));
             const buttons = el('div', 'stis-blocked-buttons');
             const open = el('div', 'menu_button', trouble.cloudflare ? 'Pass the check' : 'Open one');
-            open.title = 'Opens one of these pictures in a new tab';
-            open.addEventListener('click', () => {
-                awaitingCheck.add(trouble.host);
-                window.open(trouble.sample, '_blank');
-            });
+            open.title = 'Opens one of these pictures right here, so its check can be passed';
+            open.addEventListener('click', () => openCheck(trouble));
             const again = el('div', 'menu_button', 'Try again');
             again.addEventListener('click', () => retryThumbs(trouble.host));
             buttons.append(open, again);
             row.appendChild(buttons);
-            row.appendChild(el('small', '', trouble.cloudflare ? 'A new tab opens on one of the pictures. Pass the check there, then come back here: the pictures load again by themselves.' : 'A new tab opens on one of the pictures. If it shows there, come back here: the pictures load again by themselves.'));
+            row.appendChild(el('small', '', trouble.cloudflare ? 'The check opens right here. When the picture shows in it, the others load by themselves.' : 'One of the pictures opens right here. If it shows, the others load by themselves.'));
             ui.blocked.appendChild(row);
         }
     };
     const onThumbTrouble = () => {
-        if (!closed) {
-            renderBlocked();
+        if (closed) {
+            return;
+        }
+        renderBlocked();
+        if (checkHost && (thumbTrouble.get(checkHost)?.loaded || 0) > 0 && !blockedHosts().some(trouble => trouble.host === checkHost)) {
+            closeCheck();
         }
     };
     const onCheckReturn = () => {
@@ -8410,6 +8410,9 @@ async function openPicker(initialTags = null, focus = null) {
         ui.status.hidden = lib;
         ui.grid.hidden = lib;
         ui.blocked.hidden = lib || !blockedHosts().length;
+        if (lib) {
+            closeCheck();
+        }
         ui.lookBar.hidden = lib;
         ui.chipMenu.hidden = lib || !menuTag;
         ui.who.hidden = lib || !ui.who.childElementCount;

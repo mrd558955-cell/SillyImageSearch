@@ -1200,3 +1200,36 @@ video.stis-preview-img {
 #st_imagesearch_settings .stis-danger .stis-section-title {
     color: #e06060;
 }
+
+.stis-check {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeQuoteColor, #c90);
+    border-radius: 8px;
+}
+
+.stis-check[hidden] {
+    display: none;
+}
+
+.stis-check-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.stis-check-frame {
+    width: 100%;
+    height: 55vh;
+    border: 0;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.stis-check-tab {
+    font-size: 0.9em;
+    text-decoration: underline;
+}

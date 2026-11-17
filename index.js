@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.33.0';
+const VERSION = '2.34.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -842,6 +842,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
             alts,
             anim,
             video,
+            duration: video ? Number(post.media_asset?.duration || post.duration || post.file?.duration || 0) || 0 : 0,
             page: engine.postUrl(post, origin),
             tags,
             domain: origin.replace(/^https?:\/\//, ''),
@@ -2279,10 +2280,78 @@ function gifEncoder(width, height, table) {
     };
 }
 
+async function videoIntact(blob) {
+    const read = async (at, length) => new Uint8Array(await blob.slice(at, at + length).arrayBuffer());
+    const megabytes = bytes => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)}` : `${(bytes / 1048576).toFixed(2)}`);
+    const head = await read(0, 12);
+    if (String.fromCharCode(...head.slice(4, 8)) === 'ftyp') {
+        let at = 0;
+        let index = false;
+        for (let boxes = 0; at + 8 <= blob.size && boxes < 5000; boxes++) {
+            const box = await read(at, 16);
+            const view = new DataView(box.buffer);
+            let size = view.getUint32(0);
+            const type = String.fromCharCode(...box.slice(4, 8));
+            if (size === 1 && box.length >= 16) {
+                size = Number(view.getBigUint64(8));
+            } else if (size === 0) {
+                size = blob.size - at;
+            }
+            if (size < 8) {
+                return 'the file is damaged';
+            }
+            if (type === 'moov') {
+                index = true;
+            }
+            if (at + size > blob.size) {
+                return `the download stopped early (${megabytes(blob.size)} of ${megabytes(at + size)} MB)`;
+            }
+            at += size;
+        }
+        return index ? '' : 'the file has no index (it is damaged or cut short)';
+    }
+    if (head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3) {
+        const top = await read(0, 64);
+        const number = at => {
+            const first = top[at];
+            let length = 1;
+            while (length <= 8 && !(first & (0x80 >> (length - 1)))) {
+                length++;
+            }
+            if (length > 8) {
+                return null;
+            }
+            let value = first & (0xFF >> length);
+            let unknown = value === (0xFF >> length);
+            for (let i = 1; i < length; i++) {
+                value = value * 256 + top[at + i];
+                unknown = unknown && top[at + i] === 0xFF;
+            }
+            return { value, length, unknown };
+        };
+        const header = number(4);
+        if (!header) {
+            return '';
+        }
+        const segment = 4 + header.length + header.value;
+        if (segment + 5 > top.length || top[segment] !== 0x18 || top[segment + 1] !== 0x53 || top[segment + 2] !== 0x80 || top[segment + 3] !== 0x67) {
+            return '';
+        }
+        const body = number(segment + 4);
+        if (body && !body.unknown && segment + 4 + body.length + body.value > blob.size) {
+            return `the download stopped early (${megabytes(blob.size)} of ${megabytes(segment + 4 + body.length + body.value)} MB)`;
+        }
+    }
+    return '';
+}
+
 async function downloadVideo(url) {
     const errors = [];
-    const routes = [fetcherLink(url), proxyUrl(url)].filter(Boolean);
+    const routes = [fetcherLink(url), proxyUrl(url), proxyUrl(url)].filter(Boolean);
     for (const route of routes) {
+        if (route === routes[routes.length - 1] && errors.length && !/stopped early|damaged|no index/.test(errors[errors.length - 1])) {
+            break;
+        }
         try {
             const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
             if (!response.ok) {
@@ -2293,7 +2362,12 @@ async function downloadVideo(url) {
             const isWebm = head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3;
             const isMp4 = String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
             if (!isWebm && !isMp4 && !/^video\//.test(blob.type)) {
-                throw new Error('the download is not a video');
+                const text = /^\s*</.test(String.fromCharCode(...head)) ? new TextDecoder().decode(await blob.slice(0, 2000).arrayBuffer()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+                throw new Error(`the site sent a page instead of the video${text ? ` ("${text}")` : ''}`);
+            }
+            const broken = await videoIntact(blob);
+            if (broken) {
+                throw new Error(broken);
             }
             return blob;
         } catch (error) {
@@ -2360,9 +2434,80 @@ function videoCopy(url) {
     return videoCopies.get(url);
 }
 
+const videoRoutes = new Map();
+const videoLengths = new Map();
+const lengthQueue = [];
+let lengthBusy = false;
+
+function lengthText(seconds) {
+    const total = Math.round(Number(seconds) || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor(total / 60) % 60;
+    const rest = String(total % 60).padStart(2, '0');
+    return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`;
+}
+
+function videoLength(item) {
+    return item.duration || videoLengths.get(item.video) || 0;
+}
+
+function probeLength(url) {
+    return new Promise(resolve => {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.preload = 'metadata';
+        let timer = null;
+        const done = value => {
+            clearTimeout(timer);
+            video.removeAttribute('src');
+            video.load?.();
+            resolve(value);
+        };
+        timer = setTimeout(() => done(0), 10000);
+        video.addEventListener('loadedmetadata', () => done(Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0), { once: true });
+        video.addEventListener('error', () => done(0), { once: true });
+        video.src = url;
+    });
+}
+
+async function nextLength() {
+    if (lengthBusy) {
+        return;
+    }
+    lengthBusy = true;
+    while (lengthQueue.length) {
+        const { url, show } = lengthQueue.shift();
+        if (!show.isConnected) {
+            continue;
+        }
+        if (!videoLengths.has(url)) {
+            videoLengths.set(url, await probeLength(url));
+        }
+        if (videoLengths.get(url)) {
+            show(videoLengths.get(url));
+        }
+    }
+    lengthBusy = false;
+}
+
+function askLength(url, show) {
+    if (needsVideoCopy(url) || videoRoutes.get(url) === 'copy' || (videoLengths.has(url) && !videoLengths.get(url))) {
+        return;
+    }
+    lengthQueue.push({ url, show });
+    nextLength();
+}
+
+function forgetVideo(url) {
+    videoCopies.delete(url);
+    const played = videoPlayUrls.get(url);
+    videoPlayUrls.delete(url);
+    played?.then(objectUrl => URL.revokeObjectURL?.(objectUrl)).catch(() => {});
+}
+
 function videoPlayUrl(url) {
-    if (!needsVideoCopy(url)) {
-        return Promise.resolve(proxyUrl(url));
+    if (!needsVideoCopy(url) && videoRoutes.get(url) !== 'copy') {
+        return Promise.resolve(url);
     }
     if (!videoPlayUrls.has(url)) {
         const promise = videoCopy(url).then(blob => URL.createObjectURL(blob));
@@ -3030,11 +3175,12 @@ async function decoderInput(source) {
     const text = lines.join('\n');
     const length = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
     const size = text.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
+    const codec = (text.match(/Video:\s*([a-z0-9_]+)/i) || [])[1] || '';
     if (!size) {
         throw new Error('the video reader found no picture in this file');
     }
     decoder.input = source;
-    decoder.info = { duration: length ? Number(length[1]) * 3600 + Number(length[2]) * 60 + Number(length[3]) : 0, width: Number(size[1]), height: Number(size[2]) };
+    decoder.info = { duration: length ? Number(length[1]) * 3600 + Number(length[2]) * 60 + Number(length[3]) : 0, width: Number(size[1]), height: Number(size[2]), codec: codec.toLowerCase() };
     return decoder.info;
 }
 
@@ -4168,7 +4314,7 @@ function cleanEntry(entry) {
         animated: Boolean(entry.animated),
         described: String(entry.described || ''),
         borrowed: entry.borrowed && typeof entry.borrowed === 'object' && entry.borrowed.site ? { site: String(entry.borrowed.site), id: String(entry.borrowed.id || ''), page: String(entry.borrowed.page || ''), how: String(entry.borrowed.how || ''), alike: Number(entry.borrowed.alike) || 0, fromVideo: Boolean(entry.borrowed.fromVideo), at: Number(entry.borrowed.at) || Date.now() } : null,
-        fromVideo: entry.fromVideo && typeof entry.fromVideo === 'object' && Array.isArray(entry.fromVideo.parts) ? { video: String(entry.fromVideo.video || ''), parts: entry.fromVideo.parts.filter(part => part && typeof part === 'object').slice(0, MAX_PARTS).map(part => ({ start: Number(part.start) || 0, end: Number(part.end) || 0, kind: String(part.kind || '') })) } : null,
+        fromVideo: entry.fromVideo && typeof entry.fromVideo === 'object' && Array.isArray(entry.fromVideo.parts) ? { video: String(entry.fromVideo.video || ''), duration: Number(entry.fromVideo.duration) || 0, parts: entry.fromVideo.parts.filter(part => part && typeof part === 'object').slice(0, MAX_PARTS).map(part => ({ start: Number(part.start) || 0, end: Number(part.end) || 0, kind: String(part.kind || '') })) } : null,
         huntReport: entry.huntReport && typeof entry.huntReport === 'object' && entry.huntReport.text ? { text: String(entry.huntReport.text), closest: Array.isArray(entry.huntReport.closest) ? entry.huntReport.closest.filter(item => item && item.page).slice(0, 3).map(item => ({ page: String(item.page), id: String(item.id || ''), alike: Number(item.alike) || 0 })) : [], at: Number(entry.huntReport.at) || 0 } : null,
         lock: entry.lock && typeof entry.lock === 'object' && String(entry.lock.text || '').trim() ? { text: String(entry.lock.text), at: Number(entry.lock.at) || Date.now() } : null,
         card: cleanCard(entry.card),
@@ -5370,7 +5516,7 @@ async function saveVideoParts(item, parts, kind, searchTags) {
         variants.push({ id: ids[i], url, source: `${item.page}#t=${Math.round(parts[i].start * 100) / 100},${Math.round(parts[i].end * 100) / 100}`, tags: [], diff: '' });
         blobs.push(parts[i].gif.blob);
     }
-    const entry = cleanEntry({ id: ids[0], url: variants[0].url, source: variants[0].source, site: hostOf(item.page), tags: summaryTags(item.tags), searchTags, kind: kind === 'set' ? 'set' : 'sequence', variants, animated: true, fromVideo: { video: item.video, parts } });
+    const entry = cleanEntry({ id: ids[0], url: variants[0].url, source: variants[0].source, site: hostOf(item.page), tags: summaryTags(item.tags), searchTags, kind: kind === 'set' ? 'set' : 'sequence', variants, animated: true, fromVideo: { video: item.video, parts, duration: Number(item.scan?.duration || videoLength(item)) || 0 } });
     library.deleted.delete(entry.id);
     library.entries.unshift(entry);
     await saveLibrary();
@@ -8837,6 +8983,17 @@ async function openPicker(initialTags = null, focus = null) {
     let libMoreOpen = false;
     let reps = [];
     let gridFamilies = new Map();
+    const lengthCells = new WeakMap();
+    const lengthWatch = typeof IntersectionObserver === 'function'
+        ? new IntersectionObserver(entries => entries.forEach(entry => {
+            if (entry.isIntersecting && lengthCells.has(entry.target)) {
+                const ask = lengthCells.get(entry.target);
+                lengthCells.delete(entry.target);
+                lengthWatch.unobserve(entry.target);
+                ask();
+            }
+        }), { rootMargin: '200px' })
+        : { observe: cell => lengthCells.get(cell)?.(), unobserve() {}, disconnect() {} };
     let selecting = false;
     let selection = Array.isArray(state.selection) ? state.selection : [];
     let saveButtons = new Map();
@@ -9269,7 +9426,21 @@ async function openPicker(initialTags = null, focus = null) {
                 const play = el('span', 'stis-video-badge');
                 play.appendChild(el('i', 'fa-solid fa-play'));
                 play.title = 'Video: made into a GIF when you use or save it';
+                const length = el('span', 'stis-video-length');
+                const showLength = seconds => {
+                    length.textContent = lengthText(seconds);
+                    length.hidden = false;
+                };
+                length.hidden = true;
+                Object.defineProperty(showLength, 'isConnected', { get: () => play.isConnected });
+                play.appendChild(length);
                 cell.appendChild(play);
+                if (videoLength(item)) {
+                    showLength(videoLength(item));
+                } else {
+                    lengthCells.set(cell, () => askLength(item.video, showLength));
+                    lengthWatch.observe(cell);
+                }
             }
             const family = { rep: item, members: [item], badge, loaded: false };
             gridFamilies.set(key, family);
@@ -9485,6 +9656,70 @@ async function openPicker(initialTags = null, focus = null) {
         previewState = null;
     }
 
+    async function videoTrouble(url, player) {
+        const code = player.error?.code;
+        try {
+            if (await pickReader() === 'software') {
+                const info = await decoderInput(url);
+                const names = { hevc: 'H.265 (HEVC)', av1: 'AV1', h264: 'H.264', vp9: 'VP9', vp8: 'VP8', prores: 'ProRes', mpeg4: 'MPEG-4' };
+                return `This browser cannot play this video${info.codec ? `, made in ${names[info.codec] || info.codec}` : ''}. Make GIF and Find parts still work: they use the built-in reader.`;
+            }
+        } catch (error) {
+            return `The video file looks damaged: ${error?.message || error}`;
+        }
+        return `This browser cannot play this video (${code === 3 ? 'it could not decode it' : code === 4 ? 'unknown format' : `error ${code || '?'}`}).`;
+    }
+
+    function playPreviewVideo(player, url, note) {
+        let tries = 0;
+        const say = text => {
+            note.textContent = text;
+            note.hidden = !text;
+        };
+        const copy = async fresh => {
+            videoRoutes.set(url, 'copy');
+            if (fresh) {
+                forgetVideo(url);
+            }
+            say(fresh ? 'The video did not play; downloading it again through SillyTavern…' : 'Loading the video through SillyTavern…');
+            try {
+                const objectUrl = await videoPlayUrl(url);
+                if (player.isConnected) {
+                    player.src = objectUrl;
+                    say('');
+                }
+            } catch (error) {
+                if (player.isConnected) {
+                    say(`Could not load the video: ${error?.message || error}${needsVideoCopy(url) && !agentFor(url)['User-Agent'] ? ' Add your Danbooru account under Setup in the settings.' : ''}`);
+                }
+            }
+        };
+        player.addEventListener('error', async () => {
+            if (!player.isConnected || !player.getAttribute('src')) {
+                return;
+            }
+            tries++;
+            console.warn('[Image Search] the video did not play', url, player.error?.code, player.error?.message, tries);
+            if (tries <= 2 && !String(player.getAttribute('src')).startsWith('blob:')) {
+                copy(false);
+            } else if (tries <= 2) {
+                copy(true);
+            } else {
+                say('Checking the video…');
+                const text = await videoTrouble(url, player);
+                if (player.isConnected) {
+                    say(text);
+                }
+            }
+        });
+        if (needsVideoCopy(url) || videoRoutes.get(url) === 'copy') {
+            copy(false);
+        } else {
+            say('');
+            player.src = url;
+        }
+    }
+
     function previewShell(src, sourceUrl, target, kind) {
         previewState = { kind, target };
         releaseMedia(ui.preview);
@@ -9499,8 +9734,8 @@ async function openPicker(initialTags = null, focus = null) {
             img.src = src;
         } else if (isVideo) {
             Object.assign(img, { muted: true, loop: true, playsInline: true, autoplay: true, controls: true });
+            videoNote = el('small', 'stis-video-note');
             if (needsVideoCopy(src.video)) {
-                videoNote = el('small', 'stis-video-note', 'Loading the video through SillyTavern…');
                 if (agentFor(src.img)['User-Agent']) {
                     serverImageUrl(src.img).then(url => {
                         if (!img.src) {
@@ -9508,18 +9743,10 @@ async function openPicker(initialTags = null, focus = null) {
                         }
                     }).catch(() => {});
                 }
-                videoPlayUrl(src.video).then(url => {
-                    img.src = url;
-                    videoNote?.remove();
-                }).catch(error => {
-                    if (videoNote) {
-                        videoNote.textContent = `Could not load the video: ${error?.message || error}${agentFor(src.video)['User-Agent'] ? '' : ' Add your Danbooru account under Setup in the settings.'}`;
-                    }
-                });
             } else {
                 img.poster = src.img;
-                img.src = proxyUrl(src.video);
             }
+            playPreviewVideo(img, src.video, videoNote);
         } else {
             setPreviewSource(img, src);
         }
@@ -9928,7 +10155,18 @@ async function openPicker(initialTags = null, focus = null) {
                 status.textContent = `Could not make the GIF: ${error?.message || error}`;
             }
         });
-        clip.append(el('span', 'stis-clip-start', 'Start'), startInput, el('span', '', 's'), startHere, el('span', '', 'Length'), length, el('span', '', 's'), playClip, make, status);
+        const total = el('span', 'stis-clip-total');
+        const showTotal = () => {
+            const seconds = durationOf() || videoLength(current);
+            total.textContent = seconds ? `Video ${lengthText(seconds)}` : '';
+            total.hidden = !seconds;
+            if (seconds && !current.duration) {
+                videoLengths.set(current.video, seconds);
+            }
+        };
+        player.addEventListener('loadedmetadata', showTotal);
+        showTotal();
+        clip.append(total, el('span', 'stis-clip-start', 'Start'), startInput, el('span', '', 's'), startHere, el('span', '', 'Length'), length, el('span', '', 's'), playClip, make, status);
 
         const partsRow = el('div', 'stis-clip stis-parts-row');
         const findParts = el('div', 'menu_button stis-find-parts', 'Find parts');
@@ -10006,6 +10244,20 @@ async function openPicker(initialTags = null, focus = null) {
             tools.cardVideo = video;
             tools.playing = index;
             video.addEventListener('timeupdate', () => moveHead(Number(video.currentTime) || 0));
+            video.addEventListener('error', async () => {
+                if (tools.cardVideo !== video || String(video.getAttribute('src') || '').startsWith('blob:')) {
+                    return;
+                }
+                videoRoutes.set(current.video, 'copy');
+                try {
+                    video.src = await videoPlayUrl(current.video);
+                    if (tools.cardVideo === video) {
+                        loopRange(video, part.start, part.end);
+                    }
+                } catch (error) {
+                    partsStatus.textContent = `Could not play the part: ${error?.message || error}`;
+                }
+            });
             try {
                 video.src = await videoPlayUrl(current.video);
                 if (tools.cardVideo === video) {
@@ -10574,7 +10826,9 @@ async function openPicker(initialTags = null, focus = null) {
         if (multi && index > 0) {
             info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
         }
-        const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
+        const covered = entry.fromVideo ? entry.fromVideo.parts.reduce((sum, part) => sum + Math.max(0, part.end - part.start), 0) : 0;
+        const videoLine = entry.fromVideo ? `${entry.fromVideo.parts.length} parts of a video · ${lengthText(covered)}${entry.fromVideo.duration ? ` of ${lengthText(entry.fromVideo.duration)}` : ''}` : '';
+        const kindLine = entry.fromVideo ? `${sequence ? 'Sequence' : 'Set'}: ${videoLine}` : multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
         const meta = [kindLine, entry.lock ? 'Description locked' : '', borrowedLine(entry), entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
         if (!multi && entry.huntReport?.text) {
@@ -11161,6 +11415,8 @@ async function openPicker(initialTags = null, focus = null) {
         onClose: () => {
             closed = true;
             state.pickerOpen = false;
+            lengthWatch.disconnect();
+            lengthQueue.length = 0;
             releaseMedia(ui.root);
             decoder.note = null;
             idleDecoder(5000);

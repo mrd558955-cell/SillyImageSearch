@@ -1506,3 +1506,21 @@ video.stis-preview-img {
 .stis-hunt-report a {
     text-decoration: underline;
 }
+
+.stis-video-length {
+    margin-left: 4px;
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+}
+
+.stis-video-length[hidden],
+.stis-clip-total[hidden],
+.stis-video-note[hidden] {
+    display: none;
+}
+
+.stis-clip-total {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+    margin-right: 4px;
+}

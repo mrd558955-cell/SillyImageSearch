@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.41.1';
+const VERSION = '2.42.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -28,7 +28,8 @@ const OLD_NAMES_RULE = 'Use names only when the tags give them.';
 const NO_NAMES_RULE = 'Never use names for people or characters, even when the tags give them (a character tag is only a hint): say he, she or they, or describe the person (the blond boy in orange). If a text you are given uses names, replace them the same way.';
 const ACTORS_RULE = 'Start the description (the Visual line, if there is one) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Two people (one only partly in view):". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
 const PREV_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nGive each item a role and a story line.\nRole: a main role, then a finer one. Main roles: setup (how things are before the action, often a loop or an idle moment), build-up (leading to the action), main action (the key moment), aftermath (the result or the reaction to it), transition (moving on to another scene). The finer role is 1 to 3 words of your own, like idle loop, wind-up, climax, impact, reveal, reaction, calm down. With 3 items, the first is often the setup, the second the main action and the third the aftermath, but go by what the descriptions say.\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per item and nothing else, like:\n1. setup, idle loop: ...\n2. main action, climax: ...';
-const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst give the shape of the whole group, then a role and a story line for each item.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension rising toward an action or the climax), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between actions: catching breath, a standoff, a loop that holds the moment), climax (the single most intense moment of the whole group), aftermath (the result or the reaction after the climax), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, reaction, calm down.\nGuidelines:\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: a loop at the start is usually the setup, a loop between actions is a pause, a loop at the end can be the aftermath.\n- There is at most one climax. It is usually the last item or the one before it; an action earlier on is just an action unless nothing after it comes close.\n- Not every group has an aftermath. Use it only for an item that comes after the climax and shows its result or a reaction. If the group ends on the peak, the last item is the climax.\n- Judge each item by what it shows and by the items around it, not by its position.\nExamples: setup, climax, aftermath (a short scene with one peak); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); setup, action, action, transition (no real peak, so no climax).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with the shape line, then one line per item, and nothing else, like:\nShape: setup → action → pause → climax\n1. setup, idle loop: ...\n2. action, first clash: ...';
+const V241_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst give the shape of the whole group, then a role and a story line for each item.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension rising toward an action or the climax), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between actions: catching breath, a standoff, a loop that holds the moment), climax (the single most intense moment of the whole group), aftermath (the result or the reaction after the climax), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, reaction, calm down.\nGuidelines:\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: a loop at the start is usually the setup, a loop between actions is a pause, a loop at the end can be the aftermath.\n- There is at most one climax. It is usually the last item or the one before it; an action earlier on is just an action unless nothing after it comes close.\n- Not every group has an aftermath. Use it only for an item that comes after the climax and shows its result or a reaction. If the group ends on the peak, the last item is the climax.\n- Judge each item by what it shows and by the items around it, not by its position.\nExamples: setup, climax, aftermath (a short scene with one peak); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); setup, action, action, transition (no real peak, so no climax).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with the shape line, then one line per item, and nothing else, like:\nShape: setup → action → pause → climax\n1. setup, idle loop: ...\n2. action, first clash: ...';
+const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst rate each item, then give the shape of the whole group, then a role and a story line for each item.\nIntensity: rate each item from 1 to 10 for how intense the moment is. Intensity is the peak of emotion, not just of action: a fierce blow, a confession, a reconciliation hug, a goodbye or someone breaking into tears can all be a 9 or a 10. Calm, ordinary or waiting moments are low. Compare the items with each other, not with other stories.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension or feeling rising toward the peak), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between two higher moments: catching breath, a standoff, a loop that holds the moment), climax (the item where the intensity peaks), aftermath (after the climax: its result, or the reaction to it, with the intensity coming down), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, embrace, tears, reaction, calm down.\nGuidelines:\n- Decide the climax from the intensity: it is the item with the highest one, and there is at most one. It can be anywhere, also the first item, and in a sad or tender scene it is the most emotional moment, not the most active one.\n- An item after the climax that shows its result or a reaction is the aftermath, even if something still moves in it. A group that ends on the peak has no aftermath.\n- Item 1 is not always the setup: a group can start in the middle of things, with a build-up or an action.\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: it can be a setup, a pause or an aftermath depending on what it shows.\nExamples: setup, climax, aftermath; build-up, climax, aftermath (starts in the middle of things); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); climax, aftermath, aftermath (starts at the peak); setup, build-up, climax (a tearful goodbye).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one rating line per item, then the shape line, then one line per item, and nothing else, like:\nIntensity 1: 4, they size each other up\nIntensity 2: 9, the decisive blow\nIntensity 3: 5, she staggers back, hurt\nShape: build-up → climax → aftermath\n1. build-up, sizing up: ...\n2. climax, finishing blow: ...';
 const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
@@ -213,7 +214,7 @@ function settings() {
     if (!Array.isArray(s.skipSites)) {
         s.skipSites = [];
     }
-    if (s.storyPrompt === PREV_STORY_PROMPT || s.storyPrompt === PREV_STORY_PROMPT.replace('Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange).', OLD_NAMES_RULE)) {
+    if (s.storyPrompt === V241_STORY_PROMPT || s.storyPrompt === PREV_STORY_PROMPT || s.storyPrompt === PREV_STORY_PROMPT.replace('Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange).', OLD_NAMES_RULE)) {
         s.storyPrompt = DEFAULT_STORY_PROMPT;
     }
     for (const key of ['storyPrompt', 'versionsPrompt']) {
@@ -4254,6 +4255,12 @@ function parseDescription(raw) {
     return { text, sections, keywords, variants, changed };
 }
 
+function peopleLine(description) {
+    const first = String(description || '').replace(/^\s*\**\s*visual\s*:\s*\**\s*/i, '');
+    const match = first.match(/^([^:.\n]{3,90}?)\s*:/);
+    return match && /\b(one|two|three|four|five|six|several|many|\d+|no)\b[^:]*\b(people|person|characters?|figures?|girls?|boys?|men|man|women|woman)\b/i.test(match[1]) ? match[1].trim() : '';
+}
+
 function peopleHint(tags) {
     const names = { girl: 'girl', boy: 'boy', other: 'other character' };
     const counted = [];
@@ -4421,7 +4428,11 @@ function cleanItem(item, index, entry, grouped) {
 }
 
 function cleanRole(role) {
-    return role && typeof role === 'object' && String(role.main || '').trim() ? { main: String(role.main).slice(0, 40), sub: String(role.sub || '').slice(0, 40) } : null;
+    if (!role || typeof role !== 'object' || !String(role.main || '').trim()) {
+        return null;
+    }
+    const intensity = Math.max(0, Math.min(10, Math.round(Number(role.intensity) || 0)));
+    return { main: String(role.main).slice(0, 40), sub: String(role.sub || '').slice(0, 40), ...(intensity ? { intensity, why: String(role.why || '').slice(0, 200) } : {}) };
 }
 
 function cleanReport(report) {
@@ -4443,6 +4454,7 @@ function cleanReport(report) {
         verdict: String(report.verdict || ''),
         problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, about: item.about === 'story' ? 'story' : 'description', problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
         errors: cleanStrings(report.errors, 12),
+        storyReply: String(report.storyReply || '').slice(0, 4000),
     };
 }
 
@@ -4964,6 +4976,10 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
     if (before?.description) {
         context.push(`${sequence ? `Item ${index} (the one before it)` : 'Item 1'} was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
+        const cast = peopleLine(before.description);
+        if (cast) {
+            context.push(`${sequence ? 'The item before' : 'Item 1'} counted: "${cast}". People do not vanish between items: if someone from it cannot be seen here, they are most likely still there out of view (behind someone, off screen, hidden by smoke or shadow). Count them anyway and say where they most likely are, like "Two people (one out of view, behind her)", unless this picture shows they left.`);
+        }
     }
     const added = item.added.filter(tag => !missed.includes(tag)).concat(item.deduced.map(d => d.tag).filter(tag => !missed.includes(tag) && !item.added.includes(tag)));
     if (added.length) {
@@ -5000,7 +5016,7 @@ function roleText(role) {
 
 function itemStory(entry, item, index) {
     if (item.role && item.diff) {
-        return `${entry.kind === 'set' && !entry.fromVideo ? 'This version' : 'Story'} (${roleText(item.role)}): ${item.diff}`;
+        return `${entry.kind === 'set' && !entry.fromVideo ? 'This version' : 'Story'} (${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}): ${item.diff}`;
     }
     if (index > 0 && item.diff) {
         return `${entry.kind === 'sequence' ? `What changed since the ${entry.fromVideo ? 'part' : 'picture'} before` : `How it differs from the first ${entry.fromVideo ? 'moment' : 'version'}`}: ${item.diff}`;
@@ -5034,6 +5050,12 @@ function parseStory(reply, count, versions) {
     const roles = versions ? VERSION_ROLES : STORY_ROLES;
     const lines = new Map();
     for (const line of String(reply || '').split('\n')) {
+        const rated = line.replace(/\*\*/g, '').match(/^\s*[-*•]?\s*intensity\s*(?:of\s*)?(?:item\s*)?(\d+)\s*[:=-]\s*(\d{1,2})(?:\s*\/\s*10)?\s*[,;:.–—-]*\s*(.*)$/i);
+        if (rated) {
+            lines.ratings = lines.ratings || new Map();
+            lines.ratings.set(Number(rated[1]), { value: Math.max(1, Math.min(10, Number(rated[2]))), why: rated[3].replace(/\s+/g, ' ').trim().slice(0, 200) });
+            continue;
+        }
         const shape = line.replace(/\*\*/g, '').match(/^\s*shape\s*:\s*(.+)$/i);
         if (shape) {
             lines.shape = shape[1].replace(/\s*(?:->|=>|>|→)\s*/g, ' → ').replace(/\s+/g, ' ').trim().slice(0, 300);
@@ -5054,15 +5076,20 @@ function parseStory(reply, count, versions) {
     return lines;
 }
 
-async function writeStory(entry, notes = '') {
+async function writeStory(entry, notes = '', report = entry.report) {
     const count = entry.variants.length;
-    const lines = parseStory(await textAsk(storyPrompt(entry, notes), 150 + 100 * count), count, versionsOnly(entry));
+    const reply = await textAsk(storyPrompt(entry, notes), 200 + 130 * count);
+    if (report) {
+        report.storyReply = String(reply).slice(0, 4000);
+    }
+    const lines = parseStory(reply, count, versionsOnly(entry));
     if (!lines.size) {
         throw new Error('the answer gave no story lines');
     }
     lines.forEach((line, number) => {
         const item = entry.variants[number - 1];
-        item.role = { main: line.main, sub: line.sub };
+        const rating = lines.ratings?.get(number);
+        item.role = { main: line.main, sub: line.sub, ...(rating ? { intensity: rating.value, why: rating.why } : {}) };
         item.diff = line.text;
     });
     entry.arc = versionsOnly(entry) ? '' : lines.shape || entry.variants.map(item => item.role?.main || '?').join(' → ');
@@ -5097,34 +5124,76 @@ function renderTagNotes() {
         return;
     }
     box.innerHTML = '';
-    const all = settings().tagNotes || {};
-    const tags = Object.keys(all).filter(tag => tagNotesFor(tag).length).sort();
+    const s = settings();
+    const keep = () => {
+        save();
+    };
+    const tags = Object.keys(s.tagNotes || {}).filter(tag => tagNotesFor(tag).length).sort();
     if (!tags.length) {
         box.appendChild(el('small', 'stis-help', 'None yet. Notes you write on tags in the library are kept here.'));
-        return;
     }
     for (const tag of tags) {
-        tagNotesFor(tag).forEach((note, index) => {
+        tagNotesFor(tag).forEach(note => {
             const row = el('div', 'stis-tag-note');
-            row.appendChild(el('b', '', `${tag.replace(/_/g, ' ')}${note.wrong ? ' (wrongly deduced)' : note.lasts ? ' (lasts after)' : ''}: `));
-            row.append(note.note || 'no reason given');
+            const head = el('div', 'stis-tag-note-head');
+            head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
+            head.append(` ${note.wrong ? 'wrongly deduced' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
+            if (!note.wrong) {
+                const lasts = el('span', 'stis-fchip stis-tag-note-lasts', 'Lasts after');
+                lasts.classList.toggle('stis-fchip-on', Boolean(note.lasts));
+                lasts.addEventListener('click', () => {
+                    note.lasts = !note.lasts;
+                    lasts.classList.toggle('stis-fchip-on', note.lasts);
+                    keep();
+                });
+                head.appendChild(lasts);
+            }
             const remove = el('a', 'stis-tag-note-remove', '×');
             remove.href = '#';
             remove.title = 'Forget this note';
             remove.addEventListener('click', event => {
                 event.preventDefault();
-                const s = settings();
-                s.tagNotes[tag] = tagNotesFor(tag).filter((other, i) => i !== index);
-                if (!s.tagNotes[tag].length) {
+                s.tagNotes[tag] = s.tagNotes[tag].filter(other => other !== note);
+                if (!tagNotesFor(tag).length) {
                     delete s.tagNotes[tag];
                 }
-                save();
+                keep();
                 renderTagNotes();
             });
-            row.appendChild(remove);
+            head.appendChild(remove);
+            row.appendChild(head);
+            const text = el('input', 'text_pole stis-tag-note-text');
+            text.type = 'text';
+            text.value = note.note || '';
+            text.placeholder = note.wrong ? 'why it was wrong' : 'what happens, and why';
+            text.addEventListener('input', () => {
+                note.note = text.value;
+                keep();
+            });
+            row.appendChild(text);
+            if (note.story) {
+                row.appendChild(el('small', 'stis-help', `That item's story line: ${note.story}`));
+            }
             box.appendChild(row);
         });
     }
+    const add = el('div', 'stis-tag-note-add');
+    const tagBox = el('input', 'text_pole');
+    tagBox.type = 'text';
+    tagBox.placeholder = 'tag';
+    const noteBox = el('input', 'text_pole');
+    noteBox.type = 'text';
+    noteBox.placeholder = 'a note of your own: when it happens, and how to tell';
+    const addButton = el('div', 'menu_button', 'Add note');
+    addButton.addEventListener('click', () => {
+        const tag = normalizeTag(tagBox.value);
+        if (!tag || !noteBox.value.trim()) {
+            return;
+        }
+        saveTagNote(tag, { note: noteBox.value.trim(), lasts: false, role: '', story: '', kind: '' });
+    });
+    add.append(tagBox, noteBox, addButton);
+    box.appendChild(add);
 }
 
 function deducePrompt(entry, tags) {
@@ -5212,7 +5281,7 @@ function jsonIn(text) {
 
 async function reviewGroup(entry) {
     const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:`, `Tags given: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, `First look: ${item.seen.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}\nStory line: ${item.diff || 'not given'}` : '', item.deduced.length ? `Not seen, but placed here from the user's notes: ${item.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}` : ''].filter(Boolean).join('\n')).join('\n\n');
-    const prompt = `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Each was written by someone looking at that picture. For each item you get the tags it was given, the tags a first look saw in it, its description, and its role and story line in the group.${entry.arc ? ` The shape given to the group: ${entry.arc}.` : ''}\n\nLook for these problems:\n- a tag given to an item that its description leaves out or contradicts (only tags about what can be seen);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- something described that is in neither the item's tags nor its first look, so it may be invented;\n- a role or story line that the descriptions do not support, or that gets the order of events wrong (roles may repeat and come in any order, and a pause between two actions is fine; but there is at most one climax, and an aftermath needs a climax before it);\n- a person or character called by a name in a description or story line (they must be he, she, they or described).\nOnly report real problems; most items have none.\n\nThen write an overview of the whole group: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with the role or story line, and "description" for the rest.\n\n${blocks}`;
+    const prompt = `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Each was written by someone looking at that picture. For each item you get the tags it was given, the tags a first look saw in it, its description, and its role and story line in the group.${entry.arc ? ` The shape given to the group: ${entry.arc}.` : ''}\n\nLook for these problems:\n- a tag given to an item that its description leaves out or contradicts (only tags about what can be seen);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- something described that is in neither the item's tags nor its first look, so it may be invented;\n- a role or story line that the descriptions do not support, or that gets the order of events wrong (roles may repeat and come in any order, and a pause between two actions is fine; but there is at most one climax, and an aftermath needs a climax before it);\n- a person or character called by a name in a description or story line (they must be he, she, they or described);\n- a person count that drops from one item to the next with nothing in the story to explain it (someone hidden or out of view still counts).\nOnly report real problems; most items have none.\n\nThen write an overview of the whole group: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with the role or story line, and "description" for the rest.\n\n${blocks}`;
     const data = jsonIn(await textAsk(prompt, 300 + 80 * entry.variants.length));
     if (!data) {
         throw new Error('the check gave no readable answer');
@@ -5381,7 +5450,7 @@ async function describeSet(entry, blobs = []) {
         const story = async (notes = '') => {
             groupStep(entry, 'Writing what each item means in the story…');
             try {
-                await writeStory(entry, notes);
+                await writeStory(entry, notes, report);
                 report.steps.story = 'on';
             } catch (error) {
                 report.errors.push(`Story lines: ${error?.message || error}`);
@@ -6424,6 +6493,12 @@ function groupReportBox(entry, current) {
     report.problems.forEach(problem => lines.push(`Final check, item ${problem.item}${problem.about === 'story' ? ' (story line)' : ''}: ${problem.problem}${problem.redone ? (problem.about === 'story' ? ' (written again)' : ' (described again)') : entry.variants[problem.item - 1]?.lock ? ' (locked, left as is)' : ''}`));
     report.errors.forEach(error => lines.push(`Problem: ${error}`));
     lines.forEach(line => box.appendChild(el('small', 'stis-group-report-line', line)));
+    if (report.storyReply) {
+        const raw = el('details', 'stis-group-report-raw');
+        raw.appendChild(el('summary', '', 'The story step\'s answer'));
+        raw.appendChild(el('small', 'stis-group-report-line stis-entry-text', report.storyReply));
+        box.appendChild(raw);
+    }
     return box;
 }
 
@@ -13205,7 +13280,7 @@ function buildSettings() {
                         <div class="stis-set">
                             <div class="stis-label">Tag notes</div>
                             <div id="st_imagesearch_tag_notes" class="stis-tag-notes"></div>
-                            <small class="stis-help">Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 6 per tag). Used to deduce those tags in later groups.</small>
+                            <small class="stis-help">Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 6 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
                         </div>
                     </div>
                 </details>

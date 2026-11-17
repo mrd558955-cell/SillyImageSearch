@@ -1634,9 +1634,39 @@ video.stis-preview-img {
 
 .stis-tag-note {
     display: flex;
-    gap: 6px;
-    align-items: baseline;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
     font-size: 0.9em;
+}
+
+.stis-tag-note-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.stis-tag-note-text {
+    width: 100%;
+    margin: 0;
+}
+
+.stis-tag-note-add {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-top: 6px;
+}
+
+.stis-tag-note-add .text_pole {
+    flex: 1 1 8em;
+    margin: 0;
+}
+
+.stis-group-report-raw summary {
+    font-size: 0.85em;
 }
 
 .stis-tag-note-remove {

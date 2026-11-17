@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.30.0';
+const VERSION = '2.31.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -95,6 +95,7 @@ const DEFAULTS = {
     lookRules: { noMatch: -20, extraCap: 5 },
     includeVideos: true,
     gifSeconds: 6,
+    splitSense: 3,
     gifWidth: 480,
     gifFps: 10,
     wiDisabledByUs: [],
@@ -2312,47 +2313,597 @@ function waitFor(target, event, ms = 8000) {
     });
 }
 
-async function videoToGif(url, { start = 0, seconds = 6, fps = 10, width = 480 } = {}, onProgress = null) {
-    const blob = await downloadVideo(url);
+const videoCopies = new Map();
+const videoPlayUrls = new Map();
+
+function needsVideoCopy(url) {
+    return DONMAI.test(hostOf(url));
+}
+
+function videoCopy(url) {
+    if (!videoCopies.has(url)) {
+        const promise = downloadVideo(url);
+        promise.catch(() => videoCopies.delete(url));
+        videoCopies.set(url, promise);
+        while (videoCopies.size > 2) {
+            videoCopies.delete(videoCopies.keys().next().value);
+        }
+    }
+    return videoCopies.get(url);
+}
+
+function videoPlayUrl(url) {
+    if (!needsVideoCopy(url)) {
+        return Promise.resolve(proxyUrl(url));
+    }
+    if (!videoPlayUrls.has(url)) {
+        const promise = videoCopy(url).then(blob => URL.createObjectURL(blob));
+        promise.catch(() => videoPlayUrls.delete(url));
+        videoPlayUrls.set(url, promise);
+        while (videoPlayUrls.size > 2) {
+            const [oldest, old] = videoPlayUrls.entries().next().value;
+            videoPlayUrls.delete(oldest);
+            old.then(objectUrl => URL.revokeObjectURL?.(objectUrl)).catch(() => {});
+        }
+    }
+    return videoPlayUrls.get(url);
+}
+
+async function openVideo(source) {
+    const blob = typeof source === 'string' ? await videoCopy(source) : source;
     const objectUrl = URL.createObjectURL(blob);
     const video = document.createElement('video');
     video.muted = true;
+    video.defaultMuted = true;
     video.playsInline = true;
     video.preload = 'auto';
-    try {
-        video.src = objectUrl;
-        await waitFor(video, 'loadeddata');
-        const duration = Number.isFinite(video.duration) ? video.duration : start + seconds;
-        const from = Math.max(0, Math.min(start, Math.max(0, duration - 0.1)));
-        const to = Math.min(duration, from + seconds);
-        const count = Math.max(1, Math.min(600, Math.round((to - from) * fps)));
-        const scale = Math.min(1, width / Math.max(1, video.videoWidth));
-        const w = Math.max(1, Math.round(video.videoWidth * scale));
-        const h = Math.max(1, Math.round(video.videoHeight * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        const grab = async time => {
-            video.currentTime = Math.min(Math.max(0, time), Math.max(0, duration - 0.05));
-            await waitFor(video, 'seeked');
-            context.drawImage(video, 0, 0, w, h);
-            return context.getImageData(0, 0, w, h).data;
-        };
-        const samples = [await grab(from), await grab(from + (to - from) / 2), await grab(Math.max(from, to - 1 / fps))];
-        const encoder = gifEncoder(w, h, buildPalette(samples));
-        for (let i = 0; i < count; i++) {
-            encoder.addFrame(await grab(from + i / fps), 1000 / fps);
-            onProgress?.((i + 1) / count);
-            await new Promise(resolve => setTimeout(resolve, 0));
-        }
-        const { bytes, frames } = encoder.finish();
-        return { blob: new Blob([bytes], { type: 'image/gif' }), frames, width: w, height: h };
-    } finally {
+    video.setAttribute('playsinline', '');
+    video.className = 'stis-video-work';
+    document.body.appendChild(video);
+    const close = () => {
+        video.pause?.();
         video.removeAttribute('src');
         video.load?.();
+        video.remove();
         URL.revokeObjectURL(objectUrl);
+    };
+    try {
+        video.src = objectUrl;
+        await waitFor(video, 'loadeddata', 20000);
+        return { video, close, duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0 };
+    } catch (error) {
+        close();
+        throw error;
     }
+}
+
+async function seekVideo(video, time) {
+    const end = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : time + 1;
+    const target = Math.max(0, Math.min(time, end - 0.02));
+    if (Math.abs((Number(video.currentTime) || 0) - target) < 0.0005 && video.readyState >= 2) {
+        return;
+    }
+    const seeked = waitFor(video, 'seeked');
+    video.currentTime = target;
+    await seeked;
+}
+
+async function playThrough(video, from, to, step, onFrame, rate = 1) {
+    await seekVideo(video, from);
+    try {
+        video.playbackRate = rate;
+    } catch {
+        video.playbackRate = 1;
+    }
+    const speed = video.playbackRate || 1;
+    await new Promise((resolve, reject) => {
+        let finished = false;
+        let last = -1;
+        let next = from;
+        let watchdog = null;
+        const finish = error => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            clearTimeout(watchdog);
+            clearTimeout(limit);
+            video.removeEventListener('ended', ended);
+            video.pause?.();
+            if (error) {
+                reject(error);
+            } else {
+                resolve();
+            }
+        };
+        const ended = () => finish(last < 0 ? new Error('the video did not play') : null);
+        const limit = setTimeout(() => finish(new Error('the video played too slowly')), ((to - from) / speed) * 1000 + 15000);
+        const alive = () => {
+            clearTimeout(watchdog);
+            watchdog = setTimeout(() => finish(new Error(last < 0 ? 'the video did not play' : 'the video stopped playing; keep SillyTavern open while it works')), 5000);
+        };
+        const handle = time => {
+            if (finished || !(time > last)) {
+                return;
+            }
+            last = time;
+            alive();
+            if (time >= to - step * 0.25) {
+                finish();
+                return;
+            }
+            if (time + step * 0.25 >= next) {
+                try {
+                    onFrame(time);
+                } catch (error) {
+                    finish(error);
+                    return;
+                }
+                while (next <= time + step * 0.25) {
+                    next += step;
+                }
+            }
+        };
+        const byFrame = typeof video.requestVideoFrameCallback === 'function';
+        const tick = (now, meta) => {
+            if (finished) {
+                return;
+            }
+            handle(Number(meta?.mediaTime ?? video.currentTime));
+            if (!finished) {
+                video.requestVideoFrameCallback(tick);
+            }
+        };
+        const poll = () => {
+            if (finished) {
+                return;
+            }
+            handle(Number(video.currentTime));
+            if (!finished) {
+                requestAnimationFrame(poll);
+            }
+        };
+        video.addEventListener('ended', ended);
+        alive();
+        if (byFrame) {
+            video.requestVideoFrameCallback(tick);
+        }
+        Promise.resolve(video.play()).then(() => {
+            if (!byFrame) {
+                requestAnimationFrame(poll);
+            }
+        }).catch(error => finish(error));
+    });
+}
+
+function blackFrames(frames) {
+    const picks = frames.length <= 5 ? frames : [0, 1, 2, 3, 4].map(i => frames[Math.round(i * (frames.length - 1) / 4)]);
+    return picks.length > 0 && picks.every(({ data }) => {
+        let top = 0;
+        for (let i = 0; i < data.length; i += 16) {
+            const value = data[i + 3] ? data[i] + data[i + 1] + data[i + 2] : 0;
+            if (value > top) {
+                top = value;
+            }
+        }
+        return top < 30;
+    });
+}
+
+async function grabClip(video, from, to, fps, width, height, onProgress = null) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const grab = () => {
+        context.drawImage(video, 0, 0, width, height);
+        return context.getImageData(0, 0, width, height).data;
+    };
+    const span = Math.max(0.05, to - from);
+    let frames = [];
+    let how = 'playing';
+    try {
+        await playThrough(video, from, to, 1 / fps, time => {
+            frames.push({ data: grab(), time });
+            onProgress?.(Math.min(1, (time - from) / span));
+        });
+    } catch (error) {
+        console.debug('[Image Search] reading the video while it plays failed, reading it frame by frame', error);
+        frames = [];
+    }
+    if (!frames.length || blackFrames(frames)) {
+        how = 'seeking';
+        frames = [];
+        const count = Math.max(1, Math.round(span * fps));
+        for (let i = 0; i < count; i++) {
+            const time = from + i / fps;
+            await seekVideo(video, time);
+            frames.push({ data: grab(), time });
+            onProgress?.((i + 1) / count);
+        }
+    }
+    if (blackFrames(frames)) {
+        throw new Error('the video frames came out black on this device');
+    }
+    return { frames, how };
+}
+
+async function encodeFrames(frames, width, height, to, fps, onProgress = null) {
+    const picks = frames.length <= 6 ? frames : Array.from({ length: 6 }, (_, i) => frames[Math.round(i * (frames.length - 1) / 5)]);
+    const encoder = gifEncoder(width, height, buildPalette(picks.map(frame => frame.data)));
+    for (let i = 0; i < frames.length; i++) {
+        const next = frames[i + 1];
+        const delay = next ? (next.time - frames[i].time) * 1000 : Math.min(2000 / fps, Math.max(1000 / fps, (to - frames[i].time) * 1000));
+        encoder.addFrame(frames[i].data, Math.max(20, delay));
+        frames[i].data = null;
+        onProgress?.((i + 1) / frames.length);
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return encoder.finish();
+}
+
+async function gifFromOpen(open, start, end, { fps = 10, width = 480 } = {}, onProgress = null) {
+    const { video } = open;
+    const total = open.duration || end;
+    const from = Math.max(0, Math.min(start, Math.max(0, total - 0.1)));
+    const to = Math.max(from + 0.05, Math.min(total, end));
+    const rate = Math.min(fps, 600 / (to - from));
+    const count = Math.max(1, Math.round((to - from) * rate));
+    let scale = Math.min(1, width / Math.max(1, video.videoWidth));
+    const bytes = video.videoWidth * scale * video.videoHeight * scale * 4 * count;
+    const budget = 160 * 1048576;
+    if (bytes > budget) {
+        scale *= Math.sqrt(budget / bytes);
+    }
+    const w = Math.max(1, Math.round(video.videoWidth * scale));
+    const h = Math.max(1, Math.round(video.videoHeight * scale));
+    const { frames, how } = await grabClip(video, from, to, rate, w, h, share => onProgress?.(share * 0.7));
+    const { bytes: data, frames: made } = await encodeFrames(frames, w, h, to, rate, share => onProgress?.(0.7 + share * 0.3));
+    return { blob: new Blob([data], { type: 'image/gif' }), frames: made, width: w, height: h, how };
+}
+
+async function videoToGif(url, { start = 0, seconds = 6, fps = 10, width = 480 } = {}, onProgress = null) {
+    const open = await openVideo(url);
+    try {
+        return await gifFromOpen(open, start, start + seconds, { fps, width }, onProgress);
+    } finally {
+        open.close();
+    }
+}
+
+function gifOptions() {
+    const s = settings();
+    const clamp = (value, min, max, fallback) => Math.min(max, Math.max(min, Number(value) || fallback));
+    return { fps: clamp(s.gifFps, 2, 30, 10), width: clamp(s.gifWidth, 120, 1280, 480) };
+}
+
+async function makePartGifs(url, parts, onProgress = null, onPart = null) {
+    const open = await openVideo(url);
+    try {
+        for (let i = 0; i < parts.length; i++) {
+            try {
+                const made = await gifFromOpen(open, parts[i].start, parts[i].end, gifOptions(), share => onProgress?.(i, share));
+                onPart?.(i, made, null);
+            } catch (error) {
+                onPart?.(i, null, error);
+            }
+        }
+    } finally {
+        open.close();
+    }
+}
+
+const SCAN_SIDE = 24;
+
+async function scanVideo(url, onProgress = null, stopped = null) {
+    const started = Date.now();
+    const open = await openVideo(url);
+    try {
+        const { video, duration } = open;
+        if (!duration) {
+            throw new Error('the length of the video is unknown');
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = SCAN_SIDE;
+        canvas.height = SCAN_SIDE;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        const stillCanvas = document.createElement('canvas');
+        stillCanvas.width = 160;
+        stillCanvas.height = Math.max(1, Math.round(160 * (video.videoHeight || 9) / (video.videoWidth || 16)));
+        const stillContext = stillCanvas.getContext('2d');
+        let samples = [];
+        let stills = [];
+        let nextStill = 0;
+        const sample = time => {
+            if (stopped?.()) {
+                throw new Error('stopped');
+            }
+            context.drawImage(video, 0, 0, SCAN_SIDE, SCAN_SIDE);
+            const data = context.getImageData(0, 0, SCAN_SIDE, SCAN_SIDE).data;
+            const gray = new Uint8Array(SCAN_SIDE * SCAN_SIDE);
+            for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+                gray[p] = data[i + 3] ? (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8 : 0;
+            }
+            samples.push({ time, gray });
+            if (time >= nextStill) {
+                stillContext.drawImage(video, 0, 0, stillCanvas.width, stillCanvas.height);
+                stills.push({ time, url: stillCanvas.toDataURL('image/jpeg', 0.7) });
+                nextStill = time + 0.5;
+            }
+            onProgress?.(Math.min(1, time / duration));
+        };
+        const rate = duration > 180 ? 4 : duration > 60 ? 3 : 2;
+        let step = 1 / (duration > 180 ? 15 : duration > 60 ? 20 : 30);
+        let how = 'playing';
+        try {
+            await playThrough(video, 0, duration, step, sample, rate);
+        } catch (error) {
+            if (stopped?.()) {
+                throw new Error('stopped');
+            }
+            console.debug('[Image Search] reading the video while it plays failed, reading it frame by frame', error);
+            samples = [];
+        }
+        const dark = list => list.length > 0 && list.every(item => item.gray.every(value => value < 10));
+        if (samples.length < duration * 2 || dark(samples)) {
+            how = 'seeking';
+            step = 1 / 8;
+            samples = [];
+            stills = [];
+            nextStill = 0;
+            for (let time = 0; time < duration; time += step) {
+                await seekVideo(video, time);
+                sample(time);
+            }
+        }
+        if (dark(samples)) {
+            throw new Error('the video frames came out black on this device');
+        }
+        return { duration, step, samples, stills, how, rate: how === 'playing' ? video.playbackRate || rate : 0, ms: Date.now() - started };
+    } finally {
+        open.close();
+    }
+}
+
+function frameGap(a, b) {
+    let changed = 0;
+    for (let i = 0; i < a.length; i++) {
+        if (Math.abs(a[i] - b[i]) > 5) {
+            changed++;
+        }
+    }
+    return changed / a.length;
+}
+
+function medianOf(values) {
+    if (!values.length) {
+        return 0;
+    }
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+}
+
+function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
+    const { duration, step } = scan;
+    const samples = [...(scan.samples || [])].sort((a, b) => a.time - b.time);
+    if (!samples.length || !duration || !step) {
+        return { parts: [], loops: 0, cuts: 0, dropped: 0 };
+    }
+    const count = Math.max(2, Math.ceil(duration / step - 0.001));
+    const grid = [];
+    for (let k = 0, j = 0; k < count; k++) {
+        const time = k * step;
+        while (j + 1 < samples.length && Math.abs(samples[j + 1].time - time) <= Math.abs(samples[j].time - time)) {
+            j++;
+        }
+        grid.push(samples[j].gray);
+    }
+    const ratio = [0.2, 0.27, 0.35, 0.45, 0.55][Math.min(5, Math.max(1, Math.round(Number(sense) || 3))) - 1];
+    const minLag = Math.max(2, Math.round(0.25 / step));
+    const maxLag = Math.max(minLag, Math.round(6 / step));
+    const motion = grid.map((frame, k) => (k ? frameGap(frame, grid[k - 1]) : 0));
+    const repeat = new Array(count).fill(false);
+    const lagAt = new Array(count).fill(0);
+    const quiet = new Array(count).fill(false);
+    for (let k = 1; k < count; k++) {
+        const top = Math.min(maxLag, k);
+        const gaps = [0];
+        for (let lag = 1; lag <= top; lag++) {
+            gaps.push(frameGap(grid[k], grid[k - lag]));
+        }
+        quiet[k] = Math.max(...gaps.slice(1, Math.max(2, Math.round(0.5 / step) + 1))) < 0.008;
+        if (quiet[k] || top < minLag) {
+            continue;
+        }
+        let reach = Math.max(...gaps.slice(1, minLag));
+        for (let lag = minLag; lag <= top; lag++) {
+            if (reach >= 0.015 && gaps[lag] <= ratio * reach) {
+                let low = lag;
+                while (low < top && gaps[low + 1] < gaps[low]) {
+                    low++;
+                }
+                const left = gaps[low - 1];
+                const right = low < top ? gaps[low + 1] : left;
+                const bend = left - 2 * gaps[low] + right;
+                const shift = bend > 0 ? Math.max(-0.5, Math.min(0.5, (left - right) / (2 * bend))) : 0;
+                repeat[k] = true;
+                lagAt[k] = low + shift;
+                break;
+            }
+            reach = Math.max(reach, gaps[lag]);
+        }
+    }
+    const smooth = repeat.map((_, k) => {
+        let yes = 0;
+        let all = 0;
+        for (let i = Math.max(0, k - 2); i <= Math.min(count - 1, k + 2); i++) {
+            all++;
+            yes += repeat[i] ? 1 : 0;
+        }
+        return yes * 2 > all;
+    });
+    const periodAt = smooth.map((on, k) => {
+        if (!on) {
+            return 0;
+        }
+        const near = [];
+        for (let i = Math.max(0, k - 4); i <= Math.min(count - 1, k + 4); i++) {
+            if (lagAt[i]) {
+                near.push(lagAt[i]);
+            }
+        }
+        return medianOf(near);
+    });
+    const runs = [];
+    for (let k = 0; k < count; k++) {
+        if (!periodAt[k]) {
+            continue;
+        }
+        const run = runs[runs.length - 1];
+        if (run && run.b === k - 1 && Math.abs(periodAt[k] - run.period) <= Math.max(1.2, run.period * 0.2)) {
+            run.b = k;
+            run.periods.push(periodAt[k]);
+            run.period = medianOf(run.periods);
+        } else {
+            runs.push({ a: k, b: k, period: periodAt[k], periods: [periodAt[k]] });
+        }
+    }
+    const loops = [];
+    for (const run of runs) {
+        if (run.b - run.a + 1 < run.period * 0.8) {
+            continue;
+        }
+        const start = Math.max(loops.length ? loops[loops.length - 1].end : 0, run.a - Math.round(run.period));
+        loops.push({ start, end: run.b + 1, period: run.period, change: '' });
+    }
+    const sameMotion = (one, two) => {
+        const first = grid.slice(one.start, one.start + Math.round(one.period));
+        const second = grid.slice(two.start + Math.min(Math.round(two.period), Math.max(0, two.end - two.start - Math.round(two.period))), two.start + Math.min(two.end - two.start, Math.round(two.period * 2)));
+        if (!first.length || !second.length) {
+            return false;
+        }
+        const reach = Math.max(...first.map(frame => frameGap(frame, first[0])));
+        const level = Math.max(0.01, reach * 0.3);
+        const close = second.filter(frame => Math.min(...first.map(other => frameGap(frame, other))) <= level).length;
+        return close >= second.length * 0.8;
+    };
+    for (let i = loops.length - 1; i > 0; i--) {
+        const one = loops[i - 1];
+        const two = loops[i];
+        if (two.start - one.end <= Math.max(1, Math.round(Math.max(one.period, two.period))) && sameMotion(one, two)) {
+            if (Math.abs(two.period - one.period) > Math.max(0.6, one.period * 0.15)) {
+                one.change = two.period < one.period ? 'faster' : 'slower';
+            }
+            one.end = two.end;
+            loops.splice(i, 1);
+        }
+    }
+    const cutLevel = Math.max(0.45, medianOf(motion.slice(1)) * 4);
+    const cuts = [];
+    motion.forEach((value, k) => {
+        if (k && value >= cutLevel && !loops.some(loop => k > loop.start && k < loop.end)) {
+            cuts.push(k);
+        }
+    });
+    const stillMarks = [];
+    for (let k = 1, from = -1; k <= count; k++) {
+        if (k < count && quiet[k]) {
+            from = from < 0 ? k : from;
+        } else if (from >= 0) {
+            if ((k - from) * step >= 1) {
+                stillMarks.push(Math.max(0, from - Math.round(0.5 / step)), k);
+            }
+            from = -1;
+        }
+    }
+    const pieces = [];
+    const gap = (a, b) => {
+        const marks = [...new Set([a, ...cuts.filter(k => k > a && k < b), ...stillMarks.filter(k => k > a && k < b), b])].sort((x, y) => x - y);
+        for (let i = 0; i + 1 < marks.length; i++) {
+            const x = marks[i];
+            const y = marks[i + 1];
+            const length = (y - x) * step;
+            const calm = quiet.slice(Math.max(1, x), y);
+            const kind = calm.length && calm.filter(Boolean).length >= calm.length * 0.6 ? 'still' : cuts.includes(x) ? 'cut' : 'action';
+            if (kind === 'still') {
+                pieces.push({ start: x, end: y, kind });
+                continue;
+            }
+            const chunks = Math.max(1, Math.ceil(length / Math.max(1, maxPart) - 0.001));
+            for (let c = 0; c < chunks; c++) {
+                const from = x + Math.round((y - x) * c / chunks);
+                const to = x + Math.round((y - x) * (c + 1) / chunks);
+                if (to > from) {
+                    pieces.push({ start: from, end: to, kind: c ? (kind === 'cut' ? 'action' : kind) : kind });
+                }
+            }
+        }
+    };
+    let cursor = 0;
+    for (const loop of loops) {
+        if (loop.start > cursor) {
+            gap(cursor, loop.start);
+        }
+        pieces.push({ ...loop, kind: 'loop' });
+        cursor = loop.end;
+    }
+    if (cursor < count) {
+        gap(cursor, count);
+    }
+    const tiny = Math.max(1, Math.round(0.4 / step));
+    for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i];
+        if (piece.kind === 'loop' || piece.end - piece.start >= tiny) {
+            continue;
+        }
+        const left = pieces[i - 1];
+        const right = pieces[i + 1];
+        if (left && left.kind !== 'loop' && left.end === piece.start) {
+            left.end = piece.end;
+        } else if (right && right.kind !== 'loop' && right.start === piece.end) {
+            right.start = piece.start;
+        }
+        pieces.splice(i, 1);
+        i--;
+    }
+    const seconds = piece => (piece.end - piece.start) * step;
+    let merged = true;
+    while (pieces.length > maxParts && merged) {
+        merged = false;
+        let pick = -1;
+        for (let i = 0; i + 1 < pieces.length; i++) {
+            const one = pieces[i];
+            const two = pieces[i + 1];
+            if (one.kind !== 'loop' && two.kind !== 'loop' && one.end === two.start && (two.end - one.start) * step <= maxPart && (pick < 0 || seconds(one) + seconds(two) < seconds(pieces[pick]) + seconds(pieces[pick + 1]))) {
+                pick = i;
+            }
+        }
+        if (pick >= 0) {
+            pieces[pick].end = pieces[pick + 1].end;
+            pieces[pick].kind = pieces[pick].kind === 'still' && pieces[pick + 1].kind === 'still' ? 'still' : pieces[pick].kind === 'cut' ? 'cut' : 'action';
+            pieces.splice(pick + 1, 1);
+            merged = true;
+        }
+    }
+    let dropped = 0;
+    while (pieces.length > maxParts) {
+        let pick = 0;
+        pieces.forEach((piece, i) => {
+            if (seconds(piece) < seconds(pieces[pick])) {
+                pick = i;
+            }
+        });
+        pieces.splice(pick, 1);
+        dropped++;
+    }
+    const round = value => Math.round(value * 1000) / 1000;
+    const region = piece => [round(piece.start * step), round(Math.min(duration, piece.end * step))];
+    const parts = pieces.map(piece => (piece.kind === 'loop'
+        ? { start: round(piece.start * step), end: round(Math.min(duration, (piece.start + piece.period) * step)), kind: 'loop', cycles: Math.max(2, Math.round((piece.end - piece.start) / piece.period)), period: round(piece.period * step), change: piece.change, region: region(piece) }
+        : piece.kind === 'still' && (piece.end - piece.start) * step > 1.5
+            ? { start: round(piece.start * step), end: round(Math.min(duration, piece.start * step + 1.5)), kind: 'still', region: region(piece) }
+            : { start: round(piece.start * step), end: round(Math.min(duration, piece.end * step)), kind: piece.kind }));
+    return { parts, loops: parts.filter(part => part.kind === 'loop').length, cuts: parts.filter(part => part.kind === 'cut').length, dropped };
 }
 
 async function convertVideoItem(item, onProgress = null) {
@@ -2695,14 +3246,16 @@ function lockedPrompt(locked, prompt) {
     return `The user checked this description of the picture and locked it as correct:\n\n${locked}\n\nRewrite it in the format asked below. Keep every fact it gives and never contradict it; keep its wording where it fits. Look at the picture only to add what the format asks for and the locked description does not say.\n\n${prompt}`;
 }
 
-async function requestDescription(url, tags, blob = null, locked = '') {
+const VIDEO_TAGS_NOTE = 'The tags were taken from the longer video this animation comes from, so some of them may not appear in it. Only describe what you can see; do not explain tags that are not visible.';
+
+async function requestDescription(url, tags, blob = null, locked = '', note = '') {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
     const profile = visionProfileId();
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const asked = String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const asked = `${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}`;
     const prompt = locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
@@ -2747,10 +3300,12 @@ function startDescription(url, postTags, onDone, blob = null, tagsLater = null) 
         return;
     }
     const entry = { url, tags: summaryTags(postTags), text: '', sections: {}, keywords: [], error: '', started: Date.now(), ms: 0, done: false };
-    entry.promise = (tagsLater ? tagsLater.then(tags => {
-        entry.tags = summaryTags(tags);
+    let note = '';
+    entry.promise = (tagsLater ? tagsLater.then(value => {
+        entry.tags = summaryTags(Array.isArray(value) ? value : value?.tags);
+        note = String(value?.note || '');
     }).catch(() => {}) : Promise.resolve())
-        .then(() => requestDescription(url, entry.tags, blob))
+        .then(() => requestDescription(url, entry.tags, blob, '', note))
         .then(({ text, keywords, sections }) => {
             entry.text = text;
             entry.keywords = keywords;
@@ -2806,7 +3361,8 @@ function cleanEntry(entry) {
         kind: entry.kind === 'set' || entry.kind === 'sequence' ? entry.kind : 'single',
         animated: Boolean(entry.animated),
         described: String(entry.described || ''),
-        borrowed: entry.borrowed && typeof entry.borrowed === 'object' && entry.borrowed.site ? { site: String(entry.borrowed.site), id: String(entry.borrowed.id || ''), page: String(entry.borrowed.page || ''), how: String(entry.borrowed.how || ''), alike: Number(entry.borrowed.alike) || 0, at: Number(entry.borrowed.at) || Date.now() } : null,
+        borrowed: entry.borrowed && typeof entry.borrowed === 'object' && entry.borrowed.site ? { site: String(entry.borrowed.site), id: String(entry.borrowed.id || ''), page: String(entry.borrowed.page || ''), how: String(entry.borrowed.how || ''), alike: Number(entry.borrowed.alike) || 0, fromVideo: Boolean(entry.borrowed.fromVideo), at: Number(entry.borrowed.at) || Date.now() } : null,
+        fromVideo: entry.fromVideo && typeof entry.fromVideo === 'object' && Array.isArray(entry.fromVideo.parts) ? { video: String(entry.fromVideo.video || ''), parts: entry.fromVideo.parts.filter(part => part && typeof part === 'object').slice(0, MAX_PARTS).map(part => ({ start: Number(part.start) || 0, end: Number(part.end) || 0, kind: String(part.kind || '') })) } : null,
         huntReport: entry.huntReport && typeof entry.huntReport === 'object' && entry.huntReport.text ? { text: String(entry.huntReport.text), closest: Array.isArray(entry.huntReport.closest) ? entry.huntReport.closest.filter(item => item && item.page).slice(0, 3).map(item => ({ page: String(item.page), id: String(item.id || ''), alike: Number(item.alike) || 0 })) : [], at: Number(entry.huntReport.at) || 0 } : null,
         lock: entry.lock && typeof entry.lock === 'object' && String(entry.lock.text || '').trim() ? { text: String(entry.lock.text), at: Number(entry.lock.at) || Date.now() } : null,
         card: cleanCard(entry.card),
@@ -2979,13 +3535,14 @@ function describedVariant(entry, variant) {
         const index = Math.max(0, entry.variants.findIndex(item => item.id === variant?.id));
         const count = entry.variants.length;
         const current = entry.variants[index];
+        const what = entry.fromVideo ? `${count}-part video (animated GIFs)` : `${count}-picture sequence`;
         const text = index === 0
-            ? `Picture 1 of a ${count}-picture sequence.\n${entry.description}`
-            : `Picture ${index + 1} of a ${count}-picture sequence: ${current.diff || 'the next picture.'}\nThe sequence starts with: ${shortDescription(entry)}`;
+            ? `Picture 1 of a ${what}.\n${entry.description}`
+            : `Picture ${index + 1} of a ${what}: ${current.diff || 'the next picture.'}\nThe sequence starts with: ${shortDescription(entry)}`;
         return readyDescription(current.url, current.tags?.length ? current.tags : entry.tags, entry.description ? text : '');
     }
     const isOther = variant && entry.kind === 'set' && variant.id !== entry.variants[0]?.id;
-    const text = isOther && variant.diff ? `${entry.description}\nThis version: ${variant.diff}` : entry.description;
+    const text = isOther && variant.diff ? `${entry.description}\n${entry.fromVideo ? 'This part' : 'This version'}: ${variant.diff}` : entry.description;
     return readyDescription(variant?.url || entry.url, entry.tags, entry.animated && text ? `An animated picture (GIF).\n${text}` : text);
 }
 
@@ -3067,6 +3624,51 @@ function setPrompt(tags, count) {
     return `You will see ${count} pictures. They are versions of the same scene; picture 1 is the main one. Describe picture 1 as asked below, then add the version lines.\n\n${base}\n\nAfter the Keywords line, add one line per other picture:\n${versions}`;
 }
 
+function videoPartsPrompt(tags, count, sequence) {
+    const base = String(settings().visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
+    const lines = Array.from({ length: count - 1 }, (_, i) => `Picture ${i + 2}: 1 to 2 sentences on what happens in part ${i + 2}${sequence ? ' compared to the part before' : ''} (who, action, expression, framing)`).join('\n');
+    const order = sequence ? 'in the order they happen, and the user will show them one after another to tell a story' : 'and each is a separate moment that the user may show on its own';
+    return `You will see ${count} pictures. Each is a short animation cut from the same video, shown as numbered frames (left to right, then top to bottom); they are parts of that video, ${order}. ${VIDEO_TAGS_NOTE} Describe part 1 as asked below, then add the part lines.\n\n${base}\n\nAfter the Keywords line, add one line per other part:\n${lines}`;
+}
+
+async function partSheet(url, blob = null, maxSide = 768) {
+    try {
+        if (typeof ImageDecoder !== 'function') {
+            throw new Error('no frame decoder');
+        }
+        const data = blob || await (await fetch(url)).blob();
+        const decoder = new ImageDecoder({ data: new Uint8Array(await data.arrayBuffer()), type: 'image/gif' });
+        const images = [];
+        try {
+            await decoder.tracks.ready;
+            await decoder.completed?.catch(() => {});
+            const total = decoder.tracks.selectedTrack?.frameCount || 1;
+            const wanted = Math.min(total, 6, Math.max(2, Math.round(Number(settings().gifFrames) || 3)));
+            const picks = [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (total - 1) / Math.max(1, wanted - 1))))];
+            for (const frameIndex of picks) {
+                images.push((await decoder.decode({ frameIndex })).image);
+            }
+            return await frameSheet(images, maxSide);
+        } finally {
+            images.forEach(image => image.close?.());
+            decoder.close?.();
+        }
+    } catch (error) {
+        console.debug('[Image Search] could not make a frame sheet, sending the first frame', error);
+        return imageDataUrl(url, blob, maxSide);
+    }
+}
+
+async function describePart(entry, index, blob) {
+    const service = ctx().ConnectionManagerRequestService;
+    const image = await partSheet(entry.variants[index].url, blob || null);
+    const sequence = entry.kind === 'sequence';
+    const before = sequence && index > 1 ? entry.variants[index - 1].diff : ([entry.sections?.visual, entry.sections?.action].filter(Boolean).join(' ') || entry.description);
+    const prompt = `This picture shows part ${index + 1} of a video as numbered frames (left to right, then top to bottom). ${sequence ? `The part before it shows: ${before}` : `The video's first part shows: ${before}`}\n\nIn 1 to 2 sentences, say what happens in this part${sequence ? ' compared to the one before' : ''}. Ignore writing in the picture, except onomatopoeia.`;
+    const result = await service.sendRequest(visionProfileId(), [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 160, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+    return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/^\s*\**(part\s*\d+|picture\s*\d+)\**\s*:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
 function sequencePrompt(tags, count) {
     const base = String(settings().visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none');
     const steps = Array.from({ length: count - 1 }, (_, i) => `Picture ${i + 2}: 1 to 2 sentences on what picture ${i + 2} shows and what happens in it compared to the picture before (who, action, expression, framing)`).join('\n');
@@ -3100,16 +3702,20 @@ async function describeSet(entry, blobs = []) {
     }
     const count = Math.min(entry.variants.length, 8);
     const sequence = entry.kind === 'sequence';
+    const video = Boolean(entry.fromVideo);
     const firstTags = sequence && entry.variants[0].tags?.length ? entry.variants[0].tags : entry.tags;
+    const note = video ? VIDEO_TAGS_NOTE : '';
     const locked = Boolean(entry.lock?.text);
     let parsed = null;
     if (!locked) {
         try {
             const images = [];
             for (let i = 0; i < count; i++) {
-                images.push(await imageDataUrl(entry.variants[i].url, blobs[i] || null, count > 3 ? 768 : 1024));
+                const size = count > 3 ? 768 : 1024;
+                images.push(video ? await partSheet(entry.variants[i].url, blobs[i] || null, size) : await imageDataUrl(entry.variants[i].url, blobs[i] || null, size));
             }
-            const content = [{ type: 'text', text: sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count) }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
+            const text = video ? videoPartsPrompt(entry.tags, count, sequence) : sequence ? sequencePrompt(firstTags, count) : setPrompt(entry.tags, count);
+            const content = [{ type: 'text', text }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))];
             const result = await service.sendRequest(profile, [{ role: 'user', content }], Math.max(64, Number(s.visionMaxTokens) || 700) + 80 * count, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
             parsed = parseDescription(String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim());
         } catch (error) {
@@ -3117,11 +3723,11 @@ async function describeSet(entry, blobs = []) {
         }
     }
     if (locked) {
-        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null, entry.lock.text);
+        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null, entry.lock.text, note);
         parsed.variants = {};
     }
     if (!parsed?.text) {
-        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null);
+        parsed = await requestDescription(entry.variants[0].url, firstTags, blobs[0] || null, '', note);
         parsed.variants = {};
     }
     entry.description = parsed.text;
@@ -3132,7 +3738,7 @@ async function describeSet(entry, blobs = []) {
         let diff = parsed.variants?.[i + 1] || (locked ? entry.variants[i].diff || '' : '');
         if (!diff) {
             try {
-                diff = sequence ? await describeStep(entry, i, blobs[i]) : await describeDifference(entry, i, blobs[i]);
+                diff = video ? await describePart(entry, i, blobs[i]) : sequence ? await describeStep(entry, i, blobs[i]) : await describeDifference(entry, i, blobs[i]);
             } catch (error) {
                 console.warn('[Image Search] variant description failed', error);
             }
@@ -3147,7 +3753,7 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     if (isMulti(entry)) {
         await describeSet(entry);
     } else {
-        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '');
+        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '', entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '');
         entry.description = result.text;
         entry.described = visionHash();
         entry.sections = result.sections || {};
@@ -3219,6 +3825,7 @@ async function originalFile(ref) {
 }
 
 const FEW_TAGS = 10;
+const MAX_PARTS = 8;
 const HUNT_WAIT = 25000;
 const HUNT_SKIP = new Set(['sound', 'webm', 'mp4', 'gif', 'tagme', 'artist_request', 'source_request', 'character_request', 'copyright_request']);
 
@@ -3574,7 +4181,7 @@ async function groupTags(match, entry) {
     const group = [...members.values()];
     const video = entryAnimated(entry) ? group.find(isVideoPost) : null;
     if (video) {
-        return { tags: target.engine.postTags(video).map(normalizeTag), note: `tags from its video version #${video.id}` };
+        return { tags: target.engine.postTags(video).map(normalizeTag), note: `tags from its video version #${video.id}`, fromVideo: true };
     }
     return { tags: [...new Set(group.flatMap(member => target.engine.postTags(member).map(normalizeTag)))], note: group.length > 1 ? `tags from its group of ${group.length}` : '' };
 }
@@ -3677,6 +4284,7 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
         const group = await groupTags(match, entry);
         match.tags = group.tags.length ? group.tags : match.tags;
         match.note = group.note;
+        match.fromVideo = Boolean(group.fromVideo);
     }
     const closest = report.closest.sort((a, b) => b.alike - a.alike).slice(0, 3).map(({ page, id, alike }) => ({ page, id, alike }));
     entry.huntReport = { text: huntSummary(report, match), closest: match ? [] : closest, at: Date.now() };
@@ -3684,7 +4292,7 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
         return null;
     }
     entry.tags = summaryTags([...entry.tags, ...match.tags]);
-    entry.borrowed = { site: match.domain, id: match.id, page: match.page, how: match.how, alike: match.alike, at: Date.now() };
+    entry.borrowed = { site: match.domain, id: match.id, page: match.page, how: match.how, alike: match.alike, fromVideo: Boolean(match.fromVideo), at: Date.now() };
     if (entry.card && !entry.card.edited) {
         entry.card.basis = '';
     }
@@ -3946,6 +4554,31 @@ async function saveSet(items, searchTags) {
     return { entry, work };
 }
 
+async function saveVideoParts(item, parts, kind, searchTags) {
+    await loadLibrary();
+    const ids = freshIds(parts.length);
+    const variants = [];
+    const blobs = [];
+    for (let i = 0; i < parts.length; i++) {
+        const url = await uploadImage({ blob: parts[i].gif.blob, format: 'gif' });
+        variants.push({ id: ids[i], url, source: `${item.page}#t=${Math.round(parts[i].start * 100) / 100},${Math.round(parts[i].end * 100) / 100}`, tags: [], diff: '' });
+        blobs.push(parts[i].gif.blob);
+    }
+    const entry = cleanEntry({ id: ids[0], url: variants[0].url, source: variants[0].source, site: hostOf(item.page), tags: summaryTags(item.tags), searchTags, kind: kind === 'set' ? 'set' : 'sequence', variants, animated: true, fromVideo: { video: item.video, parts } });
+    library.deleted.delete(entry.id);
+    library.entries.unshift(entry);
+    await saveLibrary();
+    const work = describeSet(entry, blobs)
+        .then(() => saveLibrary())
+        .then(() => true)
+        .catch(error => {
+            console.warn('[Image Search] describing the video parts failed', error);
+            toastr.warning(`The parts were saved, but describing them failed: ${error?.message || error}`, 'Image Search');
+            return false;
+        });
+    return { entry, work };
+}
+
 async function saveSequence(picks, searchTags) {
     await loadLibrary();
     const variants = [];
@@ -4057,7 +4690,7 @@ async function storePicture(item, searchTags, keep = settings().keepLibrary) {
     let huntLate = false;
     const tagsLater = hunt ? Promise.race([hunt.then(() => 'found'), new Promise(resolve => setTimeout(() => resolve('late'), HUNT_WAIT))]).then(winner => {
         huntLate = winner === 'late';
-        return entry.tags;
+        return { tags: entry.tags, note: entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '' };
     }) : null;
     startDescription(src, item.tags, (text, keywords, sections) => {
         if (entry) {
@@ -4369,7 +5002,7 @@ function catalogLine(entry) {
         return `[pic:${entry.variants[0].id}] ${summary} (picture 1 of a ${entry.variants.length}-picture sequence; show ${later} later, in that order)`;
     }
     if (isMulti(entry)) {
-        return `[pic:${entry.variants[0].id}] ${summary} (other versions: ${entry.variants.slice(1).map(variant => `[pic:${variant.id}]`).join(', ')})`;
+        return `[pic:${entry.variants[0].id}] ${summary} (${entry.fromVideo ? 'other moments of the same video' : 'other versions'}: ${entry.variants.slice(1).map(variant => `[pic:${variant.id}]`).join(', ')})`;
     }
     return `[pic:${entry.id}] ${summary}${entry.animated ? ' (animated)' : ''}`;
 }
@@ -4395,13 +5028,15 @@ function pictureOffer(entry) {
         const steps = entry.variants.map((variant, index) => index === 0
             ? `Picture 1 [pic:${variant.id}]: as described above.`
             : `Picture ${index + 1} [pic:${variant.id}]: ${variant.diff || 'the next picture of the sequence.'}`);
-        return [`Saved picture sequence: ${entry.variants.length} real pictures that tell a story in this order. ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Write the tag on its own line where the picture belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
+        const intro = entry.fromVideo ? `Saved video in parts: ${entry.variants.length} real animated pictures (GIFs) cut from one video, in this order.` : `Saved picture sequence: ${entry.variants.length} real pictures that tell a story in this order.`;
+        return [`${intro} ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Write the tag on its own line where the picture belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
     }
     if (entry.kind === 'set' && entry.variants.length > 1) {
         const versions = entry.variants.map((variant, index) => index === 0
-            ? `Version 1 [pic:${variant.id}]: as described above.`
-            : `Version ${index + 1} [pic:${variant.id}]: ${variant.diff || 'another version of the same picture.'}`);
-        return [`Saved picture set: ${entry.variants.length} real pictures, versions of the same scene. ${SHOW_RULE} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
+            ? `${entry.fromVideo ? 'Part' : 'Version'} 1 [pic:${variant.id}]: as described above.`
+            : `${entry.fromVideo ? 'Part' : 'Version'} ${index + 1} [pic:${variant.id}]: ${variant.diff || (entry.fromVideo ? 'another moment of the same video.' : 'another version of the same picture.')}`);
+        const intro = entry.fromVideo ? `Saved video moments: ${entry.variants.length} real animated pictures (GIFs), separate moments cut from one video.` : `Saved picture set: ${entry.variants.length} real pictures, versions of the same scene.`;
+        return [`${intro} ${SHOW_RULE} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
     }
     return [`Saved picture [pic:${entry.id}], a real ${entry.animated ? 'animated picture (GIF)' : 'picture'}. ${SHOW_RULE} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
 }
@@ -8047,12 +8682,33 @@ async function openPicker(initialTags = null, focus = null) {
         const main = el('div', 'stis-preview-main');
         const isVideo = typeof src !== 'string' && Boolean(src?.video);
         const img = el(isVideo ? 'video' : 'img', 'stis-preview-img');
+        let videoNote = null;
         img.draggable = false;
         if (typeof src === 'string') {
             img.src = src;
         } else if (isVideo) {
-            Object.assign(img, { muted: true, loop: true, playsInline: true, autoplay: true, controls: true, poster: src.img });
-            img.src = proxyUrl(src.video);
+            Object.assign(img, { muted: true, loop: true, playsInline: true, autoplay: true, controls: true });
+            if (needsVideoCopy(src.video)) {
+                videoNote = el('small', 'stis-video-note', 'Loading the video through SillyTavern…');
+                if (agentFor(src.img)['User-Agent']) {
+                    serverImageUrl(src.img).then(url => {
+                        if (!img.src) {
+                            img.poster = url;
+                        }
+                    }).catch(() => {});
+                }
+                videoPlayUrl(src.video).then(url => {
+                    img.src = url;
+                    videoNote?.remove();
+                }).catch(error => {
+                    if (videoNote) {
+                        videoNote.textContent = `Could not load the video: ${error?.message || error}${agentFor(src.video)['User-Agent'] ? '' : ' Add your Danbooru account under Setup in the settings.'}`;
+                    }
+                });
+            } else {
+                img.poster = src.img;
+                img.src = proxyUrl(src.video);
+            }
         } else {
             setPreviewSource(img, src);
         }
@@ -8076,7 +8732,7 @@ async function openPicker(initialTags = null, focus = null) {
         link.rel = 'noopener noreferrer';
         link.hidden = !sourceUrl;
         bar.append(back, prev, position, next, link);
-        main.append(img, bar);
+        main.append(...[img, videoNote, bar].filter(Boolean));
         const below = el('div', 'stis-preview-more');
         ui.preview.append(main, below);
         ui.preview.hidden = false;
@@ -8317,32 +8973,101 @@ async function openPicker(initialTags = null, focus = null) {
         ui.tabLibrary.textContent = `Library (${library.entries.length})${waiting ? ` · saving ${waiting}` : ''}`;
     }
 
-    function clipBar(current, player) {
+    const rangeLoops = new WeakMap();
+
+    function stopRange(video) {
+        const state = rangeLoops.get(video);
+        if (state) {
+            clearInterval(state.timer);
+            rangeLoops.delete(video);
+        }
+    }
+
+    function loopRange(video, start, end) {
+        stopRange(video);
+        const state = { start, end, timer: 0 };
+        state.timer = setInterval(() => {
+            if (!video.isConnected) {
+                stopRange(video);
+                return;
+            }
+            const time = Number(video.currentTime) || 0;
+            if (time >= state.end - 0.03 || time < state.start - 0.3) {
+                video.currentTime = state.start;
+            }
+        }, 40);
+        rangeLoops.set(video, state);
+        try {
+            video.currentTime = start;
+        } catch {
+            return;
+        }
+        Promise.resolve(video.play?.()).catch(() => {});
+    }
+
+    function videoTools(current, player) {
+        const fmt = value => (Math.round((Number(value) || 0) * 10) / 10).toFixed(1);
+        const tools = { step: 0.1, busy: '', playing: -1, cardVideo: null, cards: [], head: null, footText: '', footStatus: null };
+        current.parts = Array.isArray(current.parts) ? current.parts : [];
+        const durationOf = () => current.scan?.duration || (Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0) || Math.max(0, ...current.parts.map(part => part.end));
+        const partColor = index => `hsl(${(index * 67 + 200) % 360}, 65%, 50%)`;
+        const rows = el('div', 'stis-video-tools');
         const clip = el('div', 'stis-clip');
-        const startText = el('span', 'stis-clip-start');
-        const paintStart = () => {
-            startText.textContent = `Start: ${(Number(current.clipStart) || 0).toFixed(1)} s`;
-        };
+        const startInput = el('input', 'text_pole stis-clip-at');
+        Object.assign(startInput, { type: 'number', min: '0', step: '0.1', value: fmt(current.clipStart) });
+        startInput.title = 'Where the GIF starts, in seconds';
         const startHere = el('div', 'menu_button', 'Start here');
         startHere.title = 'Start the GIF where the video is now';
         const length = el('input', 'text_pole stis-clip-len');
         Object.assign(length, { type: 'number', min: '1', max: '30', step: '1', value: String(current.clipSeconds || s.gifSeconds || 6) });
         length.title = 'Seconds of video in the GIF';
+        const playClip = el('div', 'menu_button stis-clip-play', 'Play clip');
+        playClip.title = 'Play only this part of the video, looping';
         const make = el('div', 'menu_button', 'Make GIF');
         const status = el('small', 'stis-clip-status');
+        const clipStart = () => Math.max(0, Number(current.clipStart) || 0);
+        const clipLength = () => Math.min(30, Math.max(1, Number(current.clipSeconds) || Number(length.value) || 6));
+        let madeGif = null;
+        const showVideo = () => {
+            madeGif?.remove();
+            madeGif = null;
+            player.hidden = false;
+        };
         const reset = () => {
             downloads.delete(current.img);
             status.textContent = '';
             make.textContent = 'Make GIF';
+            showVideo();
         };
-        startHere.addEventListener('click', () => {
-            current.clipStart = Math.max(0, Number(player.currentTime) || 0);
-            paintStart();
+        const replayClip = () => {
+            if (rangeLoops.has(player)) {
+                loopRange(player, clipStart(), clipStart() + clipLength());
+            }
+        };
+        const setStart = value => {
+            current.clipStart = Math.max(0, Math.round((Number(value) || 0) * 10) / 10);
+            startInput.value = fmt(current.clipStart);
             reset();
-        });
+            replayClip();
+        };
+        startInput.addEventListener('change', () => setStart(startInput.value));
+        startHere.addEventListener('click', () => setStart(player.currentTime));
         length.addEventListener('input', () => {
             current.clipSeconds = Math.min(30, Math.max(1, Number(length.value) || 6));
             reset();
+            replayClip();
+        });
+        playClip.addEventListener('click', () => {
+            if (rangeLoops.has(player)) {
+                stopRange(player);
+                player.pause?.();
+                playClip.textContent = 'Play clip';
+                return;
+            }
+            stopCard();
+            showVideo();
+            loopRange(player, clipStart(), clipStart() + clipLength());
+            playClip.textContent = 'Stop clip';
         });
         make.addEventListener('click', async () => {
             if (make.textContent === 'Making…') {
@@ -8357,22 +9082,485 @@ async function openPicker(initialTags = null, focus = null) {
             promise.catch(() => downloads.delete(current.img));
             try {
                 const picture = await promise;
-                status.textContent = `GIF ready: ${(picture.blob.size / 1048576).toFixed(1)} MB, ${picture.frames} frames. Use it or save it.`;
+                status.textContent = `GIF ready: ${(picture.blob.size / 1048576).toFixed(1)} MB, ${picture.frames} frames. Use it or save it. `;
                 make.textContent = 'Make again';
                 if (previewState?.variant === current && player.isConnected) {
-                    const gif = el('img', 'stis-preview-img');
-                    gif.alt = '';
-                    gif.src = URL.createObjectURL(picture.blob);
-                    player.replaceWith(gif);
+                    stopRange(player);
+                    player.pause?.();
+                    playClip.textContent = 'Play clip';
+                    madeGif = el('img', 'stis-preview-img');
+                    madeGif.alt = '';
+                    madeGif.src = URL.createObjectURL(picture.blob);
+                    player.before(madeGif);
+                    player.hidden = true;
+                    const back = el('a', 'stis-clip-back', 'Show the video');
+                    back.href = '#';
+                    back.addEventListener('click', event => {
+                        event.preventDefault();
+                        showVideo();
+                        back.remove();
+                    });
+                    status.appendChild(back);
                 }
             } catch (error) {
                 make.textContent = 'Make GIF';
                 status.textContent = `Could not make the GIF: ${error?.message || error}`;
             }
         });
-        paintStart();
-        clip.append(startText, startHere, length, el('span', '', 's'), make, status);
-        return clip;
+        clip.append(el('span', 'stis-clip-start', 'Start'), startInput, el('span', '', 's'), startHere, el('span', '', 'Length'), length, el('span', '', 's'), playClip, make, status);
+
+        const partsRow = el('div', 'stis-clip stis-parts-row');
+        const findParts = el('div', 'menu_button stis-find-parts', 'Find parts');
+        findParts.title = 'Read the whole video, find where loops stop and something changes, and propose parts';
+        const addClip = el('div', 'menu_button stis-add-clip', 'Add clip');
+        addClip.title = 'Add the clip set above (start and length) to the parts';
+        const partsStatus = el('small', 'stis-clip-status stis-parts-status');
+        partsRow.append(findParts, addClip, partsStatus);
+        rows.append(clip, partsRow);
+        const panel = el('div', 'stis-parts');
+
+        const releasePart = part => {
+            if (part.gif?.url) {
+                URL.revokeObjectURL(part.gif.url);
+            }
+            part.gif = null;
+        };
+        const stillAt = time => {
+            const stills = current.scan?.stills || [];
+            let best = null;
+            stills.forEach(still => {
+                if (!best || Math.abs(still.time - time) < Math.abs(best.time - time)) {
+                    best = still;
+                }
+            });
+            return best?.url || '';
+        };
+        const grabStill = () => {
+            try {
+                if (!player.videoWidth) {
+                    return '';
+                }
+                const canvas = document.createElement('canvas');
+                canvas.width = 160;
+                canvas.height = Math.max(1, Math.round(160 * player.videoHeight / player.videoWidth));
+                canvas.getContext('2d').drawImage(player, 0, 0, canvas.width, canvas.height);
+                return canvas.toDataURL('image/jpeg', 0.7);
+            } catch {
+                return '';
+            }
+        };
+        const partNote = part => {
+            const base = part.kind === 'loop' ? `Loop ×${part.cycles}, ${fmt(part.period)} s each${part.change ? `, then ${part.change}` : ''}`
+                : part.kind === 'cut' ? 'After a cut' : part.kind === 'still' ? 'Still' : part.kind === 'hand' ? 'Added by hand' : 'Action';
+            return part.edited ? `${base} (edited)` : base;
+        };
+        const moveHead = time => {
+            const duration = durationOf();
+            if (tools.head && duration) {
+                tools.head.style.left = `${Math.min(100, Math.max(0, time / duration * 100))}%`;
+            }
+        };
+        player.addEventListener('timeupdate', () => {
+            if (tools.playing < 0) {
+                moveHead(Number(player.currentTime) || 0);
+            }
+        });
+
+        function stopCard() {
+            const video = tools.cardVideo;
+            if (video) {
+                stopRange(video);
+                video.pause?.();
+                video.removeAttribute('src');
+                video.load?.();
+                video.remove();
+            }
+            tools.cards.forEach(card => card.classList.remove('stis-part-on'));
+            tools.cardVideo = null;
+            tools.playing = -1;
+        }
+
+        async function playCard(index) {
+            const part = current.parts[index];
+            const card = tools.cards[index];
+            if (!part || !card) {
+                return;
+            }
+            stopCard();
+            stopRange(player);
+            player.pause?.();
+            playClip.textContent = 'Play clip';
+            const video = el('video', 'stis-part-video');
+            Object.assign(video, { muted: true, playsInline: true, controls: false });
+            video.setAttribute('playsinline', '');
+            card.querySelector('.stis-part-media').appendChild(video);
+            card.classList.add('stis-part-on');
+            tools.cardVideo = video;
+            tools.playing = index;
+            video.addEventListener('timeupdate', () => moveHead(Number(video.currentTime) || 0));
+            try {
+                video.src = await videoPlayUrl(current.video);
+                if (tools.cardVideo === video) {
+                    loopRange(video, part.start, part.end);
+                }
+            } catch (error) {
+                if (tools.cardVideo === video) {
+                    stopCard();
+                    partsStatus.textContent = `Could not play the part: ${error?.message || error}`;
+                }
+            }
+        }
+
+        const editable = () => !tools.busy;
+        const changed = (part, edited = true) => {
+            if (part.gif) {
+                releasePart(part);
+                part.changed = true;
+            }
+            part.error = '';
+            part.edited = part.edited || edited;
+            tools.saved = '';
+        };
+        const rerender = index => {
+            const replay = tools.playing === index ? index : -1;
+            stopCard();
+            renderParts();
+            if (replay >= 0) {
+                playCard(replay);
+            }
+        };
+        function movePart(index, edge, delta) {
+            const part = current.parts[index];
+            if (!part || !editable()) {
+                return;
+            }
+            const duration = durationOf() || Infinity;
+            const round = value => Math.round(value * 100) / 100;
+            if (edge === 'start') {
+                part.start = round(Math.max(0, Math.min(part.end - 0.1, part.start + delta)));
+            } else {
+                part.end = round(Math.min(duration, Math.max(part.start + 0.1, part.end + delta)));
+            }
+            part.region = null;
+            changed(part);
+            rerender(index);
+        }
+        function splitPart(index) {
+            const part = current.parts[index];
+            if (!part || !editable()) {
+                return;
+            }
+            if (current.parts.length >= MAX_PARTS) {
+                partsStatus.textContent = `${MAX_PARTS} parts at most.`;
+                return;
+            }
+            const playing = tools.playing === index && tools.cardVideo ? Number(tools.cardVideo.currentTime) : NaN;
+            const at = playing > part.start + 0.1 && playing < part.end - 0.1 ? playing : (part.start + part.end) / 2;
+            const cut = Math.round(at * 100) / 100;
+            stopCard();
+            releasePart(part);
+            const first = { start: part.start, end: cut, kind: 'hand', still: part.still };
+            const second = { start: cut, end: part.end, kind: 'hand', still: current.scan ? stillAt((cut + part.end) / 2) : part.still };
+            current.parts.splice(index, 1, first, second);
+            tools.saved = '';
+            renderParts();
+        }
+        function mergePart(index) {
+            const one = current.parts[index];
+            const two = current.parts[index + 1];
+            if (!one || !two || !editable()) {
+                return;
+            }
+            stopCard();
+            releasePart(one);
+            releasePart(two);
+            current.parts.splice(index, 2, { start: Math.min(one.start, two.start), end: Math.max(one.end, two.end), kind: 'hand', still: one.still });
+            tools.saved = '';
+            renderParts();
+        }
+        function removePart(index) {
+            if (!current.parts[index] || !editable()) {
+                return;
+            }
+            stopCard();
+            releasePart(current.parts[index]);
+            current.parts.splice(index, 1);
+            tools.saved = '';
+            renderParts();
+        }
+
+        async function makeParts(list) {
+            if (tools.busy || !list.length) {
+                return;
+            }
+            tools.busy = 'make';
+            stopCard();
+            list.forEach(part => {
+                releasePart(part);
+                part.error = '';
+            });
+            tools.footText = 'Making the GIFs…';
+            renderParts();
+            const numbers = list.map(part => current.parts.indexOf(part) + 1);
+            try {
+                await makePartGifs(current.video, list.map(part => ({ start: part.start, end: part.end })), (i, share) => {
+                    tools.footText = `Making part ${numbers[i]} (${i + 1} of ${list.length})… ${Math.round(share * 100)}%`;
+                    if (tools.footStatus) {
+                        tools.footStatus.textContent = tools.footText;
+                    }
+                }, (i, made, error) => {
+                    const part = list[i];
+                    if (!current.parts.includes(part)) {
+                        return;
+                    }
+                    if (made) {
+                        part.gif = { blob: made.blob, url: URL.createObjectURL(made.blob), frames: made.frames, size: made.blob.size, how: made.how || '' };
+                        part.changed = false;
+                    } else {
+                        part.error = String(error?.message || error);
+                    }
+                    renderParts();
+                });
+                tools.footText = list.every(part => part.gif) ? 'Check the GIFs, then save.' : 'Some parts could not be made: make them again or remove them.';
+            } catch (error) {
+                tools.footText = `Could not make the GIFs: ${error?.message || error}`;
+            }
+            tools.busy = '';
+            tools.saved = '';
+            renderParts();
+        }
+
+        async function saveParts(kind) {
+            const ready = current.parts.length >= 2 && current.parts.every(part => part.gif);
+            if (tools.busy || !ready || tools.saved) {
+                return;
+            }
+            tools.busy = 'save';
+            tools.footText = 'Saving…';
+            renderParts();
+            try {
+                const { entry, work } = await saveVideoParts(current, current.parts, kind, [...tags]);
+                tools.saved = kind;
+                tools.footText = `Saved in the library as a ${kind} of ${entry.variants.length} GIFs. It is being described.`;
+                updateLibraryTab();
+                work.then(ok => ok && toastr.success(`The ${kind} is described and in the lorebook.`, 'Image Search'));
+            } catch (error) {
+                tools.footText = `Could not save: ${error?.message || error}`;
+            }
+            tools.busy = '';
+            renderParts();
+        }
+
+        function iconButton(icon, title, onClick) {
+            const button = el('span', 'stis-part-btn');
+            button.appendChild(el('i', icon));
+            button.title = title;
+            button.addEventListener('click', onClick);
+            return button;
+        }
+
+        function partCard(part, index) {
+            const card = el('div', 'stis-part');
+            card.style.borderLeftColor = partColor(index);
+            const media = el('div', 'stis-part-media');
+            const picture = part.gif?.url || part.still;
+            if (picture) {
+                const img = el('img');
+                img.alt = '';
+                img.src = picture;
+                media.appendChild(img);
+            } else {
+                media.appendChild(el('i', 'fa-solid fa-film stis-part-blank'));
+            }
+            const play = el('span', 'stis-part-play');
+            play.appendChild(el('i', 'fa-solid fa-play'));
+            media.appendChild(play);
+            media.title = 'Tap to play this part from the video, looping; tap again to stop';
+            media.addEventListener('click', () => (tools.playing === index ? stopCard() : playCard(index)));
+            const info = el('div', 'stis-part-info');
+            const title = el('div', 'stis-part-title');
+            title.append(el('b', '', `Part ${index + 1}`), el('span', 'stis-part-time', ` ${fmt(part.start)}–${fmt(part.end)} s (${fmt(part.end - part.start)} s)`));
+            info.append(title, el('small', 'stis-part-note', partNote(part)));
+            const gifLine = part.error ? `Could not make it: ${part.error}` : part.gif ? `GIF ${(part.gif.size / 1048576).toFixed(1)} MB · ${part.gif.frames} frames${s.debug && part.gif.how ? ` · read by ${part.gif.how}` : ''}` : part.changed ? 'Changed: make it again' : 'GIF not made yet';
+            info.appendChild(el('small', `stis-part-gif${part.error ? ' stis-part-error' : ''}`, gifLine));
+            const controls = el('div', 'stis-part-controls');
+            const nudge = (label, edge, sign) => {
+                const button = el('span', 'stis-part-btn', label);
+                button.title = `${sign < 0 ? 'Earlier' : 'Later'} ${edge} by ${tools.step} s`;
+                button.addEventListener('click', () => movePart(index, edge, sign * tools.step));
+                return button;
+            };
+            controls.append(el('small', '', 'Start'), nudge('−', 'start', -1), nudge('+', 'start', 1), el('small', '', 'End'), nudge('−', 'end', -1), nudge('+', 'end', 1));
+            const split = iconButton('fa-solid fa-scissors', 'Split this part where it is playing, or in the middle', () => splitPart(index));
+            const merge = iconButton('fa-solid fa-link', 'Merge with the next part', () => mergePart(index));
+            merge.hidden = index === current.parts.length - 1;
+            const remake = iconButton('fa-solid fa-rotate', 'Make this GIF again', () => makeParts([part]));
+            remake.hidden = !part.gif && !part.error;
+            const remove = iconButton('fa-solid fa-xmark', 'Remove this part', () => removePart(index));
+            controls.append(split, merge, remake, remove);
+            info.appendChild(controls);
+            card.append(media, info);
+            return card;
+        }
+
+        function renderParts() {
+            stopCard();
+            panel.innerHTML = '';
+            tools.cards = [];
+            tools.head = null;
+            tools.footStatus = null;
+            panel.hidden = !current.parts.length;
+            addClip.classList.toggle('disabled', current.parts.length >= MAX_PARTS);
+            if (!current.parts.length) {
+                return;
+            }
+            const duration = durationOf();
+            const head = el('div', 'stis-parts-head');
+            head.appendChild(el('b', '', `Parts (${current.parts.length})`));
+            const steps = el('span', 'stis-parts-steps');
+            steps.appendChild(el('small', '', 'Step'));
+            [0.1, 1].forEach(value => {
+                const chip = el('span', 'stis-fchip', `${value} s`);
+                chip.classList.toggle('stis-fchip-on', tools.step === value);
+                chip.addEventListener('click', () => {
+                    tools.step = value;
+                    renderParts();
+                });
+                steps.appendChild(chip);
+            });
+            const clear = el('div', 'menu_button stis-parts-clear', 'Clear parts');
+            clear.title = 'Remove every part';
+            clear.addEventListener('click', () => {
+                if (tools.busy) {
+                    return;
+                }
+                if (current.parts.some(part => part.gif) && clear.textContent !== 'Tap again to clear') {
+                    clear.textContent = 'Tap again to clear';
+                    return;
+                }
+                current.parts.forEach(releasePart);
+                current.parts = [];
+                tools.saved = '';
+                tools.footText = '';
+                renderParts();
+            });
+            head.append(steps, clear);
+            const line = el('div', 'stis-timeline');
+            if (duration) {
+                const place = (node, from, to) => {
+                    node.style.left = `${Math.max(0, from / duration * 100)}%`;
+                    node.style.width = `${Math.max(0.8, (to - from) / duration * 100)}%`;
+                };
+                current.parts.forEach((part, index) => {
+                    if (part.region) {
+                        const region = el('div', 'stis-timeline-region');
+                        place(region, part.region[0], part.region[1]);
+                        region.style.background = partColor(index);
+                        line.appendChild(region);
+                    }
+                    const segment = el('div', 'stis-timeline-part');
+                    place(segment, part.start, part.end);
+                    segment.style.background = partColor(index);
+                    segment.title = `Part ${index + 1}: ${fmt(part.start)}–${fmt(part.end)} s`;
+                    segment.addEventListener('click', () => playCard(index));
+                    line.appendChild(segment);
+                });
+                tools.head = el('div', 'stis-timeline-head');
+                line.appendChild(tools.head);
+                moveHead(Number(player.currentTime) || 0);
+            }
+            const list = el('div', 'stis-part-list');
+            current.parts.forEach((part, index) => {
+                const card = partCard(part, index);
+                tools.cards.push(card);
+                list.appendChild(card);
+            });
+            const foot = el('div', 'stis-clip stis-parts-foot');
+            const waiting = current.parts.filter(part => !part.gif);
+            const makeAll = el('div', 'menu_button stis-parts-make', tools.busy === 'make' ? 'Making…' : waiting.length ? `Make GIFs (${waiting.length})` : 'All GIFs made');
+            makeAll.title = 'Make the GIFs of the parts that have none yet';
+            makeAll.classList.toggle('disabled', !waiting.length || Boolean(tools.busy));
+            makeAll.addEventListener('click', () => makeParts(current.parts.filter(part => !part.gif)));
+            const ready = current.parts.length >= 2 && current.parts.every(part => part.gif) && !tools.busy;
+            const saveSequence = el('div', 'menu_button stis-parts-save', tools.saved === 'sequence' ? 'Saved as sequence' : 'Save as sequence');
+            saveSequence.title = 'Parts in order: the AI shows them one after another as the story moves on';
+            const saveSet = el('div', 'menu_button stis-parts-save', tools.saved === 'set' ? 'Saved as set' : 'Save as set');
+            saveSet.title = 'Separate moments: the AI shows whichever part fits';
+            [saveSequence, saveSet].forEach(button => {
+                button.classList.toggle('disabled', !ready || Boolean(tools.saved));
+                button.hidden = !(s.saveLocal && s.keepLibrary);
+            });
+            saveSequence.addEventListener('click', () => saveParts('sequence'));
+            saveSet.addEventListener('click', () => saveParts('set'));
+            const hint = current.parts.length < 2 ? 'Saving needs at least 2 parts.' : current.parts.some(part => !part.gif) ? 'Make the GIFs to check them, then save.' : '';
+            tools.footStatus = el('small', 'stis-clip-status', tools.footText || hint);
+            foot.append(makeAll, saveSequence, saveSet, tools.footStatus);
+            panel.append(head, line, list, foot);
+        }
+
+        let scanStop = false;
+        findParts.addEventListener('click', async () => {
+            if (tools.busy === 'scan') {
+                scanStop = true;
+                findParts.textContent = 'Stopping…';
+                return;
+            }
+            if (tools.busy) {
+                return;
+            }
+            if (current.parts.some(part => part.gif) && findParts.textContent !== 'Tap again to replace the parts') {
+                findParts.textContent = 'Tap again to replace the parts';
+                return;
+            }
+            tools.busy = 'scan';
+            scanStop = false;
+            stopCard();
+            findParts.textContent = 'Stop';
+            partsStatus.textContent = 'Reading the video…';
+            try {
+                const scan = await scanVideo(current.video, share => {
+                    if (!scanStop) {
+                        partsStatus.textContent = `Reading the video… ${Math.round(share * 100)}%`;
+                    }
+                }, () => scanStop || closed || !panel.isConnected);
+                const found = splitVideo(scan, { maxPart: Math.min(30, Math.max(1, Number(s.gifSeconds) || 6)), sense: s.splitSense, maxParts: MAX_PARTS });
+                current.scan = scan;
+                current.parts.forEach(releasePart);
+                current.parts = found.parts.map(part => ({ ...part, still: stillAt((part.start + part.end) / 2) }));
+                tools.saved = '';
+                tools.footText = '';
+                const count = current.parts.length;
+                const loops = found.loops ? `${found.loops} loop${found.loops === 1 ? '' : 's'}` : 'no loop';
+                const left = found.dropped ? ` ${found.dropped} short part${found.dropped === 1 ? ' was' : 's were'} left out (${MAX_PARTS} at most); add ${found.dropped === 1 ? 'it' : 'them'} by hand if needed.` : '';
+                const debug = s.debug ? ` Read ${scan.samples.length} frames by ${scan.how}${scan.rate ? ` at ${scan.rate}×` : ''} in ${(scan.ms / 1000).toFixed(1)} s.` : '';
+                partsStatus.textContent = `Found ${count} part${count === 1 ? '' : 's'}: ${loops}${found.cuts ? `, ${found.cuts} after a cut` : ''}.${left} Tap a part to play it.${debug}`;
+            } catch (error) {
+                partsStatus.textContent = scanStop ? 'Stopped.' : `Could not read the video: ${error?.message || error}`;
+            }
+            tools.busy = '';
+            findParts.textContent = 'Find parts';
+            renderParts();
+        });
+        addClip.addEventListener('click', () => {
+            if (tools.busy) {
+                return;
+            }
+            if (current.parts.length >= MAX_PARTS) {
+                partsStatus.textContent = `${MAX_PARTS} parts at most.`;
+                return;
+            }
+            const start = clipStart();
+            const duration = durationOf();
+            const end = Math.max(start + 0.1, duration ? Math.min(duration, start + clipLength()) : start + clipLength());
+            const near = Math.abs((Number(player.currentTime) || 0) - start) <= clipLength();
+            current.parts.push({ start, end, kind: 'hand', still: current.scan ? stillAt((start + end) / 2) : near ? grabStill() : '' });
+            current.parts.sort((a, b) => a.start - b.start);
+            tools.saved = '';
+            partsStatus.textContent = `Added ${fmt(start)}–${fmt(end)} s.`;
+            renderParts();
+        });
+        renderParts();
+        return { rows, panel };
     }
 
     function showPreview(item, chosen = null) {
@@ -8386,7 +9574,9 @@ async function openPicker(initialTags = null, focus = null) {
         const stripHolder = el('div', 'stis-variant-holder');
         bar.before(stripHolder);
         if (current.video && s.saveLocal) {
-            bar.before(clipBar(current, img));
+            const tools = videoTools(current, img);
+            bar.before(tools.rows);
+            below.appendChild(tools.panel);
         }
         const drawStrip = () => {
             stripHolder.innerHTML = '';
@@ -8967,7 +10157,7 @@ async function openPicker(initialTags = null, focus = null) {
     let touchY = 0;
     ui.preview.addEventListener('touchstart', event => {
         const touch = event.changedTouches[0];
-        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox, .stis-clip, .stis-card, video') ? null : touch.clientX;
+        touchX = event.target?.closest?.('.stis-variants, .stis-entry-info, .stis-tagbox, .stis-clip, .stis-card, .stis-video-tools, .stis-parts, video') ? null : touch.clientX;
         touchY = touch.clientY;
     }, { passive: true });
     ui.preview.addEventListener('touchend', event => {
@@ -9378,6 +10568,7 @@ function buildSettings() {
                         </div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> <span>Include videos</span></label><small class="stis-help">Made into GIFs when you use or save them.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF length (seconds)</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div></div>
+                        <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>Finding parts</span><input type="range" min="1" max="5" step="1" id="st_imagesearch_split_sense"><b id="st_imagesearch_split_sense_value" class="stis-range-value"></b></div><small class="stis-help">How easily "Find parts" sees a loop in a video. Strict finds fewer loops and makes fewer mistakes; loose finds loops that change a little. Parts that are not loops are at most the GIF length above.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF width (px)</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Debug info in the picker</span></label><small class="stis-help">Site search link, filter counts and the tag model's reply.</small></div>
@@ -9595,6 +10786,14 @@ function buildSettings() {
         framesValue.textContent = `${count} frame${count === 1 ? '' : 's'}`;
     };
     bind('st_imagesearch_gif_frames', 'gifFrames', 'number', showFrames);
+    const senseValue = document.getElementById('st_imagesearch_split_sense_value');
+    const senseNames = ['', 'strict', 'a bit strict', 'normal', 'a bit loose', 'loose'];
+    const showSense = () => {
+        senseValue.textContent = senseNames[Math.min(5, Math.max(1, Math.round(Number(s.splitSense) || 3)))];
+    };
+    bind('st_imagesearch_split_sense', 'splitSense', 'number', showSense);
+    document.getElementById('st_imagesearch_split_sense').value = String(Math.min(5, Math.max(1, Math.round(Number(s.splitSense) || 3))));
+    showSense();
     document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3))));
     showFrames();
     bind('st_imagesearch_gif_size', 'gifFrameSize', 'number');

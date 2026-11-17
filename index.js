@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.34.0';
+const VERSION = '2.34.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2345,33 +2345,49 @@ async function videoIntact(blob) {
     return '';
 }
 
+function pageGist(text) {
+    const title = (String(text).match(/<title[^>]*>([^<]*)</i) || [])[1];
+    return (title || String(text).replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
 async function downloadVideo(url) {
     const errors = [];
-    const routes = [fetcherLink(url), proxyUrl(url), proxyUrl(url)].filter(Boolean);
+    const host = hostOf(url);
+    const routes = [fetcherLink(url), proxyUrl(url)].filter(Boolean);
     for (const route of routes) {
-        if (route === routes[routes.length - 1] && errors.length && !/stopped early|damaged|no index/.test(errors[errors.length - 1])) {
-            break;
-        }
-        try {
-            const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
-            if (!response.ok) {
-                throw new Error(`the server answered ${response.status}`);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            let again = false;
+            try {
+                const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
+                if (!response.ok) {
+                    const gist = pageGist(await response.text().catch(() => ''));
+                    again = response.status === 429 || response.status >= 500;
+                    throw new Error(`${host} answered ${response.status}${gist ? ` ("${gist}")` : ''}`);
+                }
+                const blob = await response.blob();
+                const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
+                const isWebm = head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3;
+                const isMp4 = String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
+                if (!isWebm && !isMp4 && !/^video\//.test(blob.type)) {
+                    const text = /^\s*</.test(String.fromCharCode(...head)) ? pageGist(new TextDecoder().decode(await blob.slice(0, 4000).arrayBuffer())) : '';
+                    throw new Error(`${host} sent a page instead of the video${text ? ` ("${text}")` : ''}`);
+                }
+                const broken = await videoIntact(blob);
+                if (broken) {
+                    again = true;
+                    throw new Error(broken);
+                }
+                return blob;
+            } catch (error) {
+                const message = String(error?.message || error);
+                if (errors[errors.length - 1] !== message) {
+                    errors.push(message);
+                }
+                if (!again || attempt === 2) {
+                    break;
+                }
+                await new Promise(resolve => setTimeout(resolve, attempt ? 4000 : 1500));
             }
-            const blob = await response.blob();
-            const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
-            const isWebm = head[0] === 0x1A && head[1] === 0x45 && head[2] === 0xDF && head[3] === 0xA3;
-            const isMp4 = String.fromCharCode(...head.slice(4, 8)) === 'ftyp';
-            if (!isWebm && !isMp4 && !/^video\//.test(blob.type)) {
-                const text = /^\s*</.test(String.fromCharCode(...head)) ? new TextDecoder().decode(await blob.slice(0, 2000).arrayBuffer()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
-                throw new Error(`the site sent a page instead of the video${text ? ` ("${text}")` : ''}`);
-            }
-            const broken = await videoIntact(blob);
-            if (broken) {
-                throw new Error(broken);
-            }
-            return blob;
-        } catch (error) {
-            errors.push(String(error?.message || error));
         }
     }
     throw new Error(`Could not download the video: ${errors.join(' | ')}`);
@@ -9690,7 +9706,14 @@ async function openPicker(initialTags = null, focus = null) {
                 }
             } catch (error) {
                 if (player.isConnected) {
-                    say(`Could not load the video: ${error?.message || error}${needsVideoCopy(url) && !agentFor(url)['User-Agent'] ? ' Add your Danbooru account under Setup in the settings.' : ''}`);
+                    say(`${error?.message || error}${needsVideoCopy(url) && !agentFor(url)['User-Agent'] ? ' Add your Danbooru account under Setup in the settings.' : ''} `);
+                    const retry = el('a', 'stis-clip-back', 'Try again');
+                    retry.href = '#';
+                    retry.addEventListener('click', event => {
+                        event.preventDefault();
+                        copy(true);
+                    });
+                    note.appendChild(retry);
                 }
             }
         };

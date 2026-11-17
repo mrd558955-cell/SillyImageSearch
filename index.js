@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.31.2';
+const VERSION = '2.32.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -96,6 +96,8 @@ const DEFAULTS = {
     includeVideos: true,
     gifSeconds: 6,
     splitSense: 3,
+    videoReader: 'auto',
+    decoderUrl: '',
     gifWidth: 480,
     gifFps: 10,
     wiDisabledByUs: [],
@@ -423,6 +425,17 @@ function danbooruAccount() {
 
 function danbooruAgent() {
     return danbooruIdentity.id ? `SillyImageSearch/${VERSION}; user #${danbooruIdentity.id}` : '';
+}
+
+function canSetAgent() {
+    if (typeof Request !== 'function') {
+        return true;
+    }
+    try {
+        return new Request('https://example.invalid/', { headers: { 'User-Agent': 'check' } }).headers.get('User-Agent') === 'check';
+    } catch {
+        return false;
+    }
 }
 
 function agentFor(url) {
@@ -2566,6 +2579,22 @@ function darkData(data) {
     return top < 30;
 }
 
+function flatData(data) {
+    const low = [255, 255, 255];
+    const high = [0, 0, 0];
+    for (let i = 0; i < data.length; i += 148) {
+        for (let c = 0; c < 3; c++) {
+            low[c] = Math.min(low[c], data[i + c]);
+            high[c] = Math.max(high[c], data[i + c]);
+        }
+    }
+    return high[0] - low[0] <= 10 && high[1] - low[1] <= 10 && high[2] - low[2] <= 10;
+}
+
+function emptyData(data) {
+    return darkData(data) || flatData(data);
+}
+
 async function frameMethods(video, at, width, height) {
     const methods = [...new Set([frameMethod, '2d', 'webgl'].filter(Boolean))];
     const grades = new Map();
@@ -2578,7 +2607,7 @@ async function frameMethods(video, at, width, height) {
         let reader = null;
         try {
             reader = frameReader(video, width, height, method);
-            grades.set(method, darkData(reader.read()) ? 1 : 0);
+            grades.set(method, emptyData(reader.read()) ? 1 : 0);
         } catch {
             grades.set(method, 2);
         } finally {
@@ -2590,11 +2619,8 @@ async function frameMethods(video, at, width, height) {
 }
 
 function noFramesError(errors) {
-    console.warn('[Image Search] no way to read the video frames worked', errors);
-    const firefoxAndroid = /Android/i.test(navigator.userAgent) && /Firefox/i.test(navigator.userAgent);
-    return new Error(firefoxAndroid
-        ? 'Firefox for Android cannot read the pictures of this video (a long-standing Firefox bug). Open SillyTavern in Chrome to make GIFs from videos.'
-        : `the video frames came out black on this device (${errors.join('; ')})`);
+    console.warn('[Image Search] the browser gave no usable video pictures', errors);
+    return new Error(`this browser gives no usable pictures of the video (${errors.slice(0, 4).join('; ')}). Set "Reading videos" to the built-in reader in the settings.`);
 }
 
 async function readFrames(video, { from, to, step, rate = 1, seekStep = step, width, height }, onStart, onFrame, onProgress = null, stopped = null) {
@@ -2623,7 +2649,7 @@ async function readFrames(video, { from, to, step, rate = 1, seekStep = step, wi
                         throw new Error('stopped');
                     }
                     const data = reader.read();
-                    lit = lit || !darkData(data);
+                    lit = lit || !emptyData(data);
                     if (!probe) {
                         probe = data;
                     } else if (!moving) {
@@ -2650,7 +2676,7 @@ async function readFrames(video, { from, to, step, rate = 1, seekStep = step, wi
                 }
                 const label = `${method} by ${pass.how}${pass.rate > 1 ? ` ${pass.rate}x` : ''}`;
                 if (!count || !lit) {
-                    errors.push(`${label}: ${count ? 'black frames' : 'no frames'}`);
+                    errors.push(`${label}: ${count ? 'empty pictures' : 'no pictures'}`);
                 } else if (pass.how === 'seeking') {
                     frameMethod = method;
                     return { how: pass.how, method, moving };
@@ -2694,7 +2720,7 @@ async function videoStill(video, width = 160) {
         try {
             reader = frameReader(video, width, height, method);
             const data = reader.read();
-            if (!darkData(data)) {
+            if (!emptyData(data)) {
                 return pixelsToUrl(data, width, height);
             }
         } catch {
@@ -2748,12 +2774,403 @@ async function gifFromOpen(open, start, end, { fps = 10, width = 480 } = {}, onP
     return { blob: new Blob([data], { type: 'image/gif' }), frames: made, width: w, height: h, how };
 }
 
-async function videoToGif(url, { start = 0, seconds = 6, fps = 10, width = 480 } = {}, onProgress = null) {
-    const open = await openVideo(url);
+const DECODER_BASES = ['https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/', 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd/'];
+
+function decoderBases() {
+    const custom = String(settings().decoderUrl || '').trim();
+    return custom ? [`${custom.replace(/\/+$/, '')}/`] : DECODER_BASES;
+}
+const DECODER_FILES = {
+    'ffmpeg-core.js': { hash: 'b266ab5b952555881dd6310663986994a182acb2b7ff25cf10a25f7a37ac2b21', type: 'text/javascript', size: 112059 },
+    'ffmpeg-core.wasm': { hash: '9f57947a5bd530d8f00c5b3f2cb2a3492faa7e5d823315342d6a8656d0a6b7b7', type: 'application/wasm', size: 32232419 },
+};
+const DECODER_WORKER = `
+let core = null;
+self.onmessage = async ({ data: { id, type, data } }) => {
     try {
-        return await gifFromOpen(open, start, start + seconds, { fps, width }, onProgress);
+        let out = true;
+        if (type === 'load') {
+            importScripts(data.coreURL);
+            core = await self.createFFmpegCore({ mainScriptUrlOrBlob: data.coreURL + '#' + btoa(JSON.stringify({ wasmURL: data.wasmURL, workerURL: '' })) });
+            core.setLogger(entry => self.postMessage({ log: entry.message }));
+        } else if (type === 'exec') {
+            core.setTimeout(-1);
+            core.exec(...data.args);
+            out = core.ret;
+            core.reset();
+        } else if (type === 'write') {
+            core.FS.writeFile(data.path, data.bytes);
+        } else if (type === 'read') {
+            out = core.FS.readFile(data.path);
+        } else if (type === 'delete') {
+            try {
+                core.FS.unlink(data.path);
+            } catch (error) {
+                out = false;
+            }
+        }
+        self.postMessage({ id, ok: true, data: out }, out instanceof Uint8Array ? [out.buffer] : []);
+    } catch (error) {
+        self.postMessage({ id, ok: false, data: String((error && error.message) || error) });
+    }
+};
+`;
+const decoder = { worker: null, ready: null, calls: new Map(), next: 1, log: null, note: null, input: null, name: '', info: null, queue: Promise.resolve() };
+let browserReads = null;
+
+function readerChoice() {
+    const choice = settings().videoReader;
+    return choice === 'browser' || choice === 'software' ? choice : 'auto';
+}
+
+async function canReadFrames(open) {
+    const { video, duration } = open;
+    const width = 64;
+    const height = Math.max(1, Math.round(width * (video.videoHeight || 9) / (video.videoWidth || 16)));
+    for (const share of [0.5, 0.25, 0.75]) {
+        try {
+            await seekVideo(video, duration * share);
+        } catch {
+            continue;
+        }
+        for (const method of ['2d', 'webgl']) {
+            let reader = null;
+            try {
+                reader = frameReader(video, width, height, method);
+                if (!emptyData(reader.read())) {
+                    frameMethod = method;
+                    return true;
+                }
+            } catch {
+                continue;
+            } finally {
+                reader?.close();
+            }
+        }
+    }
+    return false;
+}
+
+async function pickReader(url) {
+    const choice = readerChoice();
+    if (choice !== 'auto') {
+        return choice;
+    }
+    if (await decoderKept()) {
+        return 'software';
+    }
+    if (browserReads === null) {
+        const blob = typeof url === 'string' ? await videoCopy(url) : url;
+        try {
+            const open = await openVideo(blob);
+            try {
+                browserReads = await canReadFrames(open);
+            } finally {
+                open.close();
+            }
+        } catch (error) {
+            console.debug('[Image Search] the browser could not open the video, using the built-in reader', error);
+            return 'software';
+        }
+    }
+    return browserReads ? 'browser' : 'software';
+}
+
+async function decoderKept() {
+    if (decoder.worker) {
+        return true;
+    }
+    if (typeof caches !== 'object') {
+        return false;
+    }
+    try {
+        const store = await caches.open('stis-video-reader');
+        for (const base of decoderBases()) {
+            if (await store.match(`${base}ffmpeg-core.wasm`)) {
+                return true;
+            }
+        }
+    } catch {
+        return false;
+    }
+    return false;
+}
+
+function resetDecoder(reason = 'the video reader stopped') {
+    decoder.worker?.terminate();
+    decoder.calls.forEach(call => call.reject(new Error(reason)));
+    decoder.calls.clear();
+    Object.assign(decoder, { worker: null, ready: null, log: null, input: null, name: '', info: null });
+}
+
+function decoderCall(type, data, transfer = []) {
+    return new Promise((resolve, reject) => {
+        if (!decoder.worker) {
+            reject(new Error('the video reader is not loaded'));
+            return;
+        }
+        const id = decoder.next++;
+        decoder.calls.set(id, { resolve, reject });
+        decoder.worker.postMessage({ id, type, data }, transfer);
+    });
+}
+
+async function decoderAsset(name, onShare = null) {
+    const file = DECODER_FILES[name];
+    const checked = !String(settings().decoderUrl || '').trim() && Boolean(globalThis.crypto?.subtle);
+    const store = typeof caches === 'object' ? await caches.open('stis-video-reader').catch(() => null) : null;
+    const errors = [];
+    const bases = [];
+    for (const base of decoderBases()) {
+        const held = store ? await store.match(`${base}${name}`).catch(() => null) : null;
+        bases[held ? 'unshift' : 'push'](base);
+    }
+    for (const base of bases) {
+        const url = `${base}${name}`;
+        try {
+            let response = store ? await store.match(url).catch(() => null) : null;
+            const kept = Boolean(response);
+            if (!response) {
+                response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`answered ${response.status}`);
+                }
+            }
+            const chunks = [];
+            const stream = response.body?.getReader?.();
+            if (stream) {
+                let got = 0;
+                for (;;) {
+                    const { done, value } = await stream.read();
+                    if (done) {
+                        break;
+                    }
+                    chunks.push(value);
+                    got += value.length;
+                    onShare?.(Math.min(1, got / file.size), kept);
+                }
+            } else {
+                chunks.push(new Uint8Array(await response.arrayBuffer()));
+            }
+            const blob = new Blob(chunks, { type: file.type });
+            if (checked) {
+                const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+                if (digest !== file.hash) {
+                    await store?.delete(url).catch(() => {});
+                    throw new Error('sent a file that is not the expected one');
+                }
+            }
+            if (store && !kept) {
+                await store.put(url, new Response(blob, { headers: { 'Content-Type': file.type } })).catch(() => {});
+            }
+            return URL.createObjectURL(blob);
+        } catch (error) {
+            errors.push(`${hostOf(url)} ${error?.message || error}`);
+        }
+    }
+    throw new Error(errors.join('; '));
+}
+
+function loadDecoder() {
+    if (!decoder.ready) {
+        decoder.ready = (async () => {
+            decoder.note?.('Loading the video reader…');
+            const coreURL = await decoderAsset('ffmpeg-core.js');
+            const wasmURL = await decoderAsset('ffmpeg-core.wasm', (share, kept) => decoder.note?.(kept ? 'Loading the video reader…' : `Downloading the video reader (32 MB, only the first time)… ${Math.round(share * 100)}%`));
+            const worker = new Worker(URL.createObjectURL(new Blob([DECODER_WORKER], { type: 'text/javascript' })));
+            worker.onmessage = ({ data }) => {
+                if (data.log !== undefined) {
+                    decoder.log?.(String(data.log));
+                    return;
+                }
+                const call = decoder.calls.get(data.id);
+                if (!call) {
+                    return;
+                }
+                decoder.calls.delete(data.id);
+                if (data.ok) {
+                    call.resolve(data.data);
+                } else {
+                    call.reject(new Error(data.data));
+                }
+            };
+            worker.onerror = event => resetDecoder(event.message || 'the video reader stopped');
+            decoder.worker = worker;
+            await decoderCall('load', { coreURL, wasmURL });
+        })().catch(error => {
+            resetDecoder();
+            throw new Error(`Could not get the video reader (it is downloaded once, 32 MB): ${error?.message || error}`);
+        });
+    }
+    return decoder.ready;
+}
+
+function decoderTask(task) {
+    const run = decoder.queue.then(task, task);
+    decoder.queue = run.catch(() => {});
+    return run;
+}
+
+async function decoderRun(args, onLine = null) {
+    const lines = [];
+    decoder.log = line => {
+        lines.push(line);
+        onLine?.(line);
+    };
+    try {
+        const code = await decoderCall('exec', { args });
+        return { code, lines };
     } finally {
-        open.close();
+        decoder.log = null;
+    }
+}
+
+async function decoderInput(source) {
+    await loadDecoder();
+    if (decoder.input === source && decoder.info) {
+        return decoder.info;
+    }
+    if (decoder.name) {
+        await decoderCall('delete', { path: decoder.name });
+    }
+    Object.assign(decoder, { input: null, name: '', info: null });
+    const blob = typeof source === 'string' ? await videoCopy(source) : source;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const name = bytes[0] === 0x1A && bytes[1] === 0x45 ? 'in.webm' : 'in.mp4';
+    await decoderCall('write', { path: name, bytes }, [bytes.buffer]);
+    decoder.name = name;
+    const { lines } = await decoderRun(['-hide_banner', '-i', name]);
+    const text = lines.join('\n');
+    const length = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    const size = text.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
+    if (!size) {
+        throw new Error('the video reader found no picture in this file');
+    }
+    decoder.input = source;
+    decoder.info = { duration: length ? Number(length[1]) * 3600 + Number(length[2]) * 60 + Number(length[3]) : 0, width: Number(size[1]), height: Number(size[2]) };
+    return decoder.info;
+}
+
+function decoderClock(line) {
+    const time = line.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    return time ? Number(time[1]) * 3600 + Number(time[2]) * 60 + Number(time[3]) : null;
+}
+
+function softScan(url, onProgress = null, stopped = null) {
+    return decoderTask(async () => {
+        const started = Date.now();
+        const info = await decoderInput(url);
+        const fps = info.duration > 180 ? 15 : info.duration > 60 ? 20 : 30;
+        const width = 160;
+        const height = Math.max(2, Math.round(width * info.height / info.width / 2) * 2);
+        const graph = `[0:v]fps=${fps},split=2[a][b];[a]scale=${SCAN_SIDE}:${SCAN_SIDE}:flags=area,format=rgb24[c];[b]fps=2,scale=${width}:${height},format=rgba[s]`;
+        let halted = false;
+        let run = null;
+        try {
+            run = await decoderRun(['-hide_banner', '-i', decoder.name, '-an', '-filter_complex', graph, '-map', '[c]', '-f', 'rawvideo', 'cells.raw', '-map', '[s]', '-f', 'rawvideo', 'stills.raw'], line => {
+                if (!halted && stopped?.()) {
+                    halted = true;
+                    resetDecoder('stopped');
+                    return;
+                }
+                const time = decoderClock(line);
+                if (time !== null && info.duration) {
+                    onProgress?.(Math.min(1, time / info.duration));
+                }
+            });
+        } catch (error) {
+            throw halted ? new Error('stopped') : error;
+        }
+        const cells = await decoderCall('read', { path: 'cells.raw' });
+        const pictures = await decoderCall('read', { path: 'stills.raw' });
+        await decoderCall('delete', { path: 'cells.raw' });
+        await decoderCall('delete', { path: 'stills.raw' });
+        const size = SCAN_SIDE * SCAN_SIDE * 3;
+        const samples = [];
+        for (let i = 0; (i + 1) * size <= cells.length; i++) {
+            samples.push({ time: i / fps, cells: cells.subarray(i * size, (i + 1) * size) });
+        }
+        if (!samples.length) {
+            throw new Error(`the video reader could not read this video: ${run.lines.slice(-2).join(' ')}`);
+        }
+        const stills = [];
+        for (let i = 0; (i + 1) * width * height * 4 <= pictures.length; i++) {
+            stills.push({ time: i / 2, url: pixelsToUrl(pictures.subarray(i * width * height * 4, (i + 1) * width * height * 4), width, height) });
+        }
+        const first = samples[0].cells;
+        const moving = samples.some(sample => sample.cells.some((value, i) => Math.abs(value - first[i]) > 12));
+        return { duration: info.duration || samples.length / fps, step: 1 / fps, samples, stills, moving, how: 'built-in reader', ms: Date.now() - started };
+    });
+}
+
+function softGif(url, start, end, { fps = 10, width = 480 } = {}, onProgress = null) {
+    return decoderTask(async () => {
+        const info = await decoderInput(url);
+        const total = info.duration || end;
+        const from = Math.max(0, Math.min(start, Math.max(0, total - 0.1)));
+        const length = Math.max(0.05, Math.min(total, end) - from);
+        const rate = Math.min(fps, 600 / length);
+        const count = Math.max(1, Math.round(length * rate));
+        let w = Math.min(width, info.width);
+        const bytes = w * (info.height * w / info.width) * 1.5 * count;
+        const budget = 150 * 1048576;
+        if (bytes > budget) {
+            w *= Math.sqrt(budget / bytes);
+        }
+        w = Math.max(2, Math.round(w / 2) * 2);
+        const graph = `[0:v]fps=${Math.round(rate * 1000) / 1000},scale=${w}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`;
+        let frames = 0;
+        const run = await decoderRun(['-hide_banner', '-ss', from.toFixed(3), '-t', length.toFixed(3), '-i', decoder.name, '-an', '-filter_complex', graph, '-loop', '0', '-f', 'gif', 'out.gif'], line => {
+            const made = line.match(/frame=\s*(\d+)/);
+            if (made) {
+                frames = Number(made[1]);
+            }
+            const time = decoderClock(line);
+            if (time !== null) {
+                onProgress?.(Math.min(1, time / length));
+            }
+        });
+        const data = await decoderCall('read', { path: 'out.gif' }).catch(() => null);
+        await decoderCall('delete', { path: 'out.gif' });
+        if (!data?.length) {
+            throw new Error(`the video reader could not make the GIF: ${run.lines.slice(-2).join(' ')}`);
+        }
+        onProgress?.(1);
+        return { blob: new Blob([data], { type: 'image/gif' }), frames: frames || count, width: w, height: Math.round(info.height * w / info.width / 2) * 2, how: 'built-in reader' };
+    });
+}
+
+async function clipMaker(url) {
+    let reader = await pickReader(url);
+    let open = null;
+    return {
+        async make(start, end, options, onProgress) {
+            if (reader === 'browser') {
+                try {
+                    open = open || await openVideo(url);
+                    return await gifFromOpen(open, start, end, options, onProgress);
+                } catch (error) {
+                    if (readerChoice() === 'browser') {
+                        throw error;
+                    }
+                    console.warn('[Image Search] the browser could not read the video, using the built-in reader', error);
+                    reader = 'software';
+                }
+            }
+            return softGif(url, start, end, options, onProgress);
+        },
+        close() {
+            open?.close();
+        },
+    };
+}
+
+async function videoToGif(url, { start = 0, seconds = 6, fps = 10, width = 480 } = {}, onProgress = null) {
+    const maker = await clipMaker(url);
+    try {
+        return await maker.make(start, start + seconds, { fps, width }, onProgress);
+    } finally {
+        maker.close();
     }
 }
 
@@ -2764,18 +3181,18 @@ function gifOptions() {
 }
 
 async function makePartGifs(url, parts, onProgress = null, onPart = null) {
-    const open = await openVideo(url);
+    const maker = await clipMaker(url);
     try {
         for (let i = 0; i < parts.length; i++) {
             try {
-                const made = await gifFromOpen(open, parts[i].start, parts[i].end, gifOptions(), share => onProgress?.(i, share));
+                const made = await maker.make(parts[i].start, parts[i].end, gifOptions(), share => onProgress?.(i, share));
                 onPart?.(i, made, null);
             } catch (error) {
                 onPart?.(i, null, error);
             }
         }
     } finally {
-        open.close();
+        maker.close();
     }
 }
 
@@ -2812,6 +3229,24 @@ function frameCells(data, width, height) {
 }
 
 async function scanVideo(url, onProgress = null, stopped = null) {
+    if (await pickReader(url) === 'browser') {
+        try {
+            const scan = await browserScan(url, onProgress, stopped);
+            if (scan.moving || scan.duration < 2 || readerChoice() === 'browser') {
+                return scan;
+            }
+            browserReads = false;
+        } catch (error) {
+            if (stopped?.() || readerChoice() === 'browser') {
+                throw error;
+            }
+            console.warn('[Image Search] the browser could not read the video, using the built-in reader', error);
+        }
+    }
+    return softScan(url, onProgress, stopped);
+}
+
+async function browserScan(url, onProgress = null, stopped = null) {
     const started = Date.now();
     const open = await openVideo(url);
     try {
@@ -8243,7 +8678,9 @@ async function openPicker(initialTags = null, focus = null) {
                 const names = { direct: `straight from ${trouble.host}`, site: 'from the site\'s own address (/data)', proxy: 'through SillyTavern\'s server', identified: 'through SillyTavern\'s server, saying who you are', other: 'another way' };
                 row.appendChild(el('small', 'stis-help', `Shown so far: ${routes.map(([route, n]) => `${n} ${names[route]}`).join(', ')}.`));
             }
-            if (DONMAI.test(trouble.host) && !danbooruIdentity.id) {
+            if (DONMAI.test(trouble.host) && !canSetAgent()) {
+                row.appendChild(el('small', 'stis-help', 'This browser does not let SillyTavern tell Danbooru whose program it is (Chrome and browsers built on it refuse), so Danbooru blocks its pictures here. Open SillyTavern in Firefox for Danbooru.'));
+            } else if (DONMAI.test(trouble.host) && !danbooruIdentity.id) {
                 row.appendChild(el('small', 'stis-help', 'Danbooru lets programs through when they say whose they are. Add your Danbooru account under Setup → Danbooru account, then tap Try again.'));
             }
             if (trouble.tries && trouble.cloudflare) {
@@ -9273,6 +9710,12 @@ async function openPicker(initialTags = null, focus = null) {
         const partColor = index => `hsl(${(index * 67 + 200) % 360}, 65%, 50%)`;
         const rows = el('div', 'stis-video-tools');
         const clip = el('div', 'stis-clip');
+        decoder.note = text => {
+            const target = tools.busy === 'scan' ? partsStatus : tools.busy === 'make' ? tools.footStatus : status;
+            if (target?.isConnected && text) {
+                target.textContent = text;
+            }
+        };
         const startInput = el('input', 'text_pole stis-clip-at');
         Object.assign(startInput, { type: 'number', min: '0', step: '0.1', value: fmt(current.clipStart) });
         startInput.title = 'Where the GIF starts, in seconds';
@@ -10831,6 +11274,7 @@ function buildSettings() {
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> <span>Include videos</span></label><small class="stis-help">Made into GIFs when you use or save them.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF length (seconds)</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>Finding parts</span><input type="range" min="1" max="5" step="1" id="st_imagesearch_split_sense"><b id="st_imagesearch_split_sense_value" class="stis-range-value"></b></div><small class="stis-help">How easily "Find parts" sees a loop in a video. Strict finds fewer loops and makes fewer mistakes; loose finds loops that change a little. Parts that are not loops are at most the GIF length above.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Reading videos</span><select id="st_imagesearch_video_reader" class="text_pole"><option value="auto">Automatic</option><option value="browser">The browser</option><option value="software">Built-in reader</option></select></div><small class="stis-help">Making GIFs and finding parts need the pictures of the video. Some browsers cannot give them (Firefox for Android gives black or purple). The built-in reader always works and is faster: it is downloaded once (32 MB) and kept. Automatic uses the built-in reader when the browser cannot give the pictures, or once it has been downloaded.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF width (px)</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Debug info in the picker</span></label><small class="stis-help">Site search link, filter counts and the tag model's reply.</small></div>
@@ -11003,7 +11447,7 @@ function buildSettings() {
     const danbooruStatus = document.getElementById('st_imagesearch_danbooru_status');
     const showIdentity = () => {
         const account = danbooruAccount();
-        danbooruStatus.textContent = !account ? '' : danbooruIdentity.pending ? `Looking up ${account}…` : danbooruIdentity.id && danbooruIdentity.account === account ? `Danbooru sees: ${danbooruAgent()}` : danbooruIdentity.error;
+        danbooruStatus.textContent = !account ? '' : danbooruIdentity.pending ? `Looking up ${account}…` : danbooruIdentity.id && danbooruIdentity.account === account ? (canSetAgent() ? `Danbooru sees: ${danbooruAgent()}` : `Found user #${danbooruIdentity.id}, but this browser (Chrome and browsers built on it) does not let SillyTavern tell Danbooru, so Danbooru will still block pictures here. Use Firefox for Danbooru.`) : danbooruIdentity.error;
     };
     identityWatchers.add(showIdentity);
     let identityTimer = null;
@@ -11059,6 +11503,10 @@ function buildSettings() {
     document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3))));
     showFrames();
     bind('st_imagesearch_gif_size', 'gifFrameSize', 'number');
+    bind('st_imagesearch_video_reader', 'videoReader');
+    if (!document.getElementById('st_imagesearch_video_reader').value) {
+        document.getElementById('st_imagesearch_video_reader').value = 'auto';
+    }
     if (!document.getElementById('st_imagesearch_gif_size').value) {
         document.getElementById('st_imagesearch_gif_size').value = '768';
     }

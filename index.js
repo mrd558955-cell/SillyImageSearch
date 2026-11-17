@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.27.1';
+const VERSION = '2.27.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -6675,15 +6675,28 @@ const thumbTrouble = new Map();
 const thumbWatchers = new Set();
 const CHALLENGE_PAGE = /just a moment|challenge-platform|cf-chl|cf_chl|attention required|cloudflare/i;
 
-function noteThumb(item, img, ok) {
+function thumbRoute(item, via) {
+    const source = String(via || '');
+    if (source.startsWith('/proxy/')) {
+        return 'proxy';
+    }
+    if (item.siteFiles?.thumb && source === item.siteFiles.thumb) {
+        return 'site';
+    }
+    return source.startsWith(item.thumb) ? 'direct' : 'other';
+}
+
+function noteThumb(item, img, ok, via = '') {
     const host = hostOf(item.thumb || '');
     if (!host) {
         return;
     }
-    const trouble = thumbTrouble.get(host) || { host, failed: [], loaded: 0, loadedUrls: new Set(), sample: '', tries: 0, checked: false, cloudflare: false, why: '' };
+    const trouble = thumbTrouble.get(host) || { host, failed: [], loaded: 0, loadedUrls: new Set(), routes: {}, sample: '', tries: 0, checked: false, cloudflare: false, why: '' };
     if (ok) {
         trouble.loaded++;
         trouble.loadedUrls.add(item.thumb);
+        const route = thumbRoute(item, via);
+        trouble.routes[route] = (trouble.routes[route] || 0) + 1;
     } else {
         trouble.failed.push({ img, item });
         trouble.sample = trouble.sample || item.thumb;
@@ -6743,7 +6756,7 @@ function setThumbSource(img, item, fresh = false) {
     img.referrerPolicy = 'no-referrer';
     img.onload = () => {
         img.onload = null;
-        noteThumb(item, img, true);
+        noteThumb(item, img, true, sources[index]);
     };
     img.onerror = () => {
         index++;
@@ -6912,9 +6925,7 @@ async function openPicker(initialTags = null, focus = null) {
     thumbTrouble.clear();
     const awaitingCheck = new Set();
     let checkHost = '';
-    let checkTimer = null;
     const closeCheck = () => {
-        clearTimeout(checkTimer);
         ui.check.hidden = true;
         ui.check.innerHTML = '';
         checkHost = '';
@@ -6923,12 +6934,10 @@ async function openPicker(initialTags = null, focus = null) {
         awaitingCheck.add(trouble.host);
         window.open(freshUrl(lastSample || trouble.sample), '_blank');
     };
-    let checkBase = new Set();
     let lastSample = '';
     const openCheck = trouble => {
         closeCheck();
         checkHost = trouble.host;
-        checkBase = new Set(trouble.loadedUrls);
         const candidates = trouble.failed.map(({ item }) => item.thumb).filter(Boolean);
         const sample = candidates.find(url => url !== lastSample) || candidates[0] || trouble.sample;
         lastSample = sample;
@@ -6943,15 +6952,6 @@ async function openPicker(initialTags = null, focus = null) {
         head.appendChild(done);
         const frame = el('iframe', 'stis-check-frame');
         frame.referrerPolicy = 'no-referrer';
-        let frameLoads = 0;
-        frame.addEventListener('load', () => {
-            frameLoads++;
-            if (frameLoads < 2) {
-                return;
-            }
-            clearTimeout(checkTimer);
-            checkTimer = setTimeout(() => retryThumbs(trouble.host), 1500);
-        });
         const tab = el('a', 'stis-check-tab', 'Stays blank? Open it in a new tab instead');
         tab.href = '#';
         tab.addEventListener('click', event => {
@@ -6980,6 +6980,11 @@ async function openPicker(initialTags = null, focus = null) {
             buttons.append(open, again);
             row.appendChild(buttons);
             row.appendChild(el('small', '', trouble.cloudflare ? 'The check opens right here. When the picture shows in it, tap Done and the others load again.' : 'One of the pictures opens right here. If it shows, tap Done and the others load again.'));
+            const routes = Object.entries(trouble.routes || {}).filter(([, n]) => n);
+            if (routes.length) {
+                const names = { direct: `straight from ${trouble.host}`, site: 'from the site\'s own address (/data)', proxy: 'through SillyTavern\'s server', other: 'another way' };
+                row.appendChild(el('small', 'stis-help', `Shown so far: ${routes.map(([route, n]) => `${n} ${names[route]}`).join(', ')}.`));
+            }
             if (trouble.tries && trouble.cloudflare) {
                 row.appendChild(el('small', 'stis-help', 'Passed the check and still blocked? Some browsers (Firefox, Brave, Safari) keep the pass apart from pictures shown inside another page. In Firefox, tap the shield in the address bar on this page and turn off Enhanced Tracking Protection for it, then pass the check again; or use Chrome.'));
             }
@@ -6991,10 +6996,7 @@ async function openPicker(initialTags = null, focus = null) {
             return;
         }
         renderBlocked();
-        const loadedNow = [...(thumbTrouble.get(checkHost)?.loadedUrls || [])].filter(url => !checkBase.has(url) && url !== lastSample);
-        if (checkHost && loadedNow.length >= 2 && !blockedHosts().some(trouble => trouble.host === checkHost)) {
-            closeCheck();
-        }
+
     };
     const onCheckReturn = () => {
         if (document.visibilityState === 'visible' && awaitingCheck.size && !closed) {

@@ -1537,6 +1537,65 @@ video.stis-preview-img {
     background: rgba(224, 160, 32, 0.12);
 }
 
+.stis-tagfix {
+    margin: 4px 0;
+    padding: 4px 8px;
+    border-left: 3px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+}
+
+.stis-tagfix-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 4px 0;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+.stis-tagfix-tag {
+    font-weight: bold;
+}
+
+.stis-tagfix-why {
+    opacity: 0.8;
+    flex: 1 1 12em;
+}
+
+.stis-tagfix-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+}
+
+.stis-tagfix-in {
+    opacity: 0.7;
+    margin-left: 4px;
+}
+
+.stis-tagfix-item {
+    min-width: 1.8em;
+    text-align: center;
+}
+
+.stis-tagfix-gone .stis-tagfix-tag {
+    text-decoration: line-through;
+    opacity: 0.6;
+}
+
+.stis-tagfix-buttons {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.stis-tagfix-done.disabled {
+    opacity: 0.5;
+}
+
 .stis-attention-fine {
     text-decoration: underline;
     white-space: nowrap;

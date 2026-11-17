@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.37.0';
+const VERSION = '2.38.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -24,6 +24,8 @@ const DEFAULT_TAG_PROMPT = 'You pick image-board (booru) tags to find a picture 
 const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}'];
 const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|inch(es)?|met(er|re)s?|build|muscular|muscles?|slim|slender|thin|skinny|fat|chubby|plump|curvy|stocky|broad|shoulders|beard|mustache|moustache|scars?|tattoos?|horns?|tails?|wings?|ears?|fur|scales|freckles|wears?|wearing|dressed|clothes|clothing|outfit|armou?r|robes?|dress|uniform|coat|cloak|appearance|looks? like|face|body|figure|years? old|elderly|petite|breasts?|hips|thighs|legs|arms|complexion|pale|tanned|dark-skinned)\b/i;
 const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
+const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nGive each item a role and a story line.\nRole: a main role, then a finer one. Main roles: setup (how things are before the action, often a loop or an idle moment), build-up (leading to the action), main action (the key moment), aftermath (the result or the reaction to it), transition (moving on to another scene). The finer role is 1 to 3 words of your own, like idle loop, wind-up, climax, impact, reveal, reaction, calm down. With 3 items, the first is often the setup, the second the main action and the third the aftermath, but go by what the descriptions say.\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Use names only when the tags give them. Only conclude what the descriptions support.\n\nReply with one line per item and nothing else, like:\n1. setup, idle loop: ...\n2. main action, climax: ...';
+const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Use names only when the tags give them. Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
@@ -72,6 +74,11 @@ const DEFAULTS = {
     aiShow: true,
     aiShowDepth: 2,
     groupsInLore: false,
+    groupStory: true,
+    storyPrompt: DEFAULT_STORY_PROMPT,
+    versionsPrompt: DEFAULT_VERSIONS_PROMPT,
+    tagsMatter: '',
+    tagsDontMatter: '',
     groupBlind: true,
     groupReview: true,
     groupImportance: true,
@@ -4243,11 +4250,11 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}${extra.after ? `\n\n${extra.after}` : ''}`;
-    const prompt = locked ? lockedPrompt(locked, asked) : asked;
+    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}`;
+    const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
-        const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300) + (extra.after ? 100 : 0), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+        const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
         return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     };
     let frames = null;
@@ -4360,9 +4367,15 @@ function cleanItem(item, index, entry, grouped) {
         keywords: cleanStrings(item.keywords, 16),
         seen: cleanStrings(item.seen, 60),
         shows: cleanStrings(item.shows, 80),
+        role: cleanRole(item.role),
+        added: cleanStrings(item.added, 40),
         lock: cleanLock(item.lock) || (grouped && index === 0 ? cleanLock(entry.lock) : null),
         card: cleanCard(item.card),
     };
+}
+
+function cleanRole(role) {
+    return role && typeof role === 'object' && String(role.main || '').trim() ? { main: String(role.main).slice(0, 40), sub: String(role.sub || '').slice(0, 40) } : null;
 }
 
 function cleanReport(report) {
@@ -4376,9 +4389,11 @@ function cleanReport(report) {
         missing: cleanStrings(report.missing),
         found: tagMap(report.found),
         notShown: cleanStrings(report.notShown),
-        importance: Array.isArray(report.importance) ? report.importance.filter(item => item && item.tag).slice(0, 60).map(item => ({ tag: String(item.tag), important: Boolean(item.important), why: String(item.why || '').slice(0, 200) })) : [],
+        importance: Array.isArray(report.importance) ? report.importance.filter(item => item && item.tag).slice(0, 60).map(item => ({ tag: String(item.tag), important: Boolean(item.important), why: String(item.why || '').slice(0, 200), by: String(item.by || '') })) : [],
+        decided: report.decided && typeof report.decided === 'object' ? Object.fromEntries(Object.entries(report.decided).filter(([, value]) => value === 'out' || value === 'important').slice(0, 80)) : {},
+        placed: tagMap(report.placed),
         verdict: String(report.verdict || ''),
-        problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
+        problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, about: item.about === 'story' ? 'story' : 'description', problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
         errors: cleanStrings(report.errors, 12),
     };
 }
@@ -4618,8 +4633,8 @@ function describedVariant(entry, variant) {
         const head = entry.kind === 'sequence'
             ? `${entry.fromVideo ? `Part ${index + 1} of a video cut into ${count} parts` : `Picture ${index + 1} of a ${count}-picture sequence`}${moving}.`
             : `One of ${count} ${entry.fromVideo ? 'moments of the same video' : 'versions of the same scene'}${moving}.`;
-        const changed = index > 0 && variant.diff ? `
-${entry.kind === 'sequence' ? `What changed since the ${entry.fromVideo ? 'part' : 'picture'} before` : `How it differs from the first ${entry.fromVideo ? 'moment' : 'version'}`}: ${variant.diff}` : '';
+        const story = itemStory(entry, variant, index);
+        const changed = story ? `\n${story}` : '';
         return readyDescription(variant.url, variant.shows.length ? variant.shows : variant.tags.length ? variant.tags : entry.tags, `${head}\n${variant.description}${changed}`);
     }
     if (entry.kind === 'sequence' && isMulti(entry)) {
@@ -4711,13 +4726,18 @@ async function removeVariant(entry, variant) {
         entry.attention = null;
         entry.variants = [];
     } else if (wasDescribed) {
-        entry.variants[0].diff = '';
+        if (!entry.variants[0].role) {
+            entry.variants[0].diff = '';
+        }
         if (entry.report) {
             entry.report.errors = [...entry.report.errors, `An item was removed after this was described; tap Redo all to check the group again.`].slice(-12);
         }
     }
     await saveLibrary();
     await deleteUnusedFiles([variant.url]);
+    if (wasDescribed && isMulti(entry) && entry.variants.some(item => item.role)) {
+        refreshStory(entry).then(done => (done ? saveLibrary() : null)).catch(error => console.warn('[Image Search] could not write the story lines again', error)).finally(() => groupStep(entry, ''));
+    }
     if (sequence && wasFirst && !wasDescribed) {
         entry.lock = null;
         redoEntry(entry).catch(error => console.warn('[Image Search] could not describe the sequence again', error));
@@ -4887,28 +4907,130 @@ async function findMissingTags(entry, pictures, tags, report) {
     return found;
 }
 
-async function describeItem(entry, index, blob, { note = '', fallback = false } = {}) {
+async function describeItem(entry, index, blob, { note = '', fallback = false, missed = [] } = {}) {
     const item = entry.variants[index];
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
-    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.`];
+    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
     if (before?.description) {
         context.push(`${sequence ? `Item ${index} (the one before it)` : 'Item 1'} was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
+    }
+    const added = item.added.filter(tag => !missed.includes(tag));
+    if (added.length) {
+        context.push(`The user checked this picture and says it shows: ${added.join(', ').replace(/_/g, ' ')}. Include them.`);
     }
     if (note) {
         context.push(`A reviewer noticed a problem in an earlier description of this item: ${note} Look at the picture again and fix it if the reviewer is right.`);
     }
-    const after = index === 0 ? '' : `After the Keywords line, add one more line:\nChanged: 1 to 2 sentences on ${sequence ? 'what happened since the item before (action, pose, expression, framing)' : 'what is different from item 1 (expression, pose, outfit, framing or what is happening)'}.`;
     const own = item.tags.length ? item.tags : entry.tags;
     const tags = fallback || !item.shows.length ? own : item.shows;
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
-    const parsed = await requestDescription(item.url, tags, blob || null, item.lock?.text || '', tagNote, { before: context.join('\n\n'), after });
+    const base = missed.length ? item.lock?.text || item.description : '';
+    const wrap = base ? asked => missedPrompt(base, missed, item, asked) : null;
+    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap });
     item.description = parsed.text;
     item.sections = parsed.sections || {};
     item.keywords = parsed.keywords || [];
-    item.diff = index === 0 ? '' : parsed.changed || item.diff || '';
+    if (base && item.lock) {
+        item.lock = { text: item.description, at: Date.now() };
+    }
     descriptions.set(item.url, describedVariant(entry, item));
     return item;
+}
+
+function missedPrompt(base, missed, item, asked) {
+    const list = missed.join(', ').replace(/_/g, ' ');
+    return `This is the description of this picture:\n\n${base}\n\nThe user says it missed what ${missed.length === 1 ? 'this tag shows' : 'these tags show'}: ${list}. Look at the picture again. Keep every fact the description gives and never contradict it; add what ${missed.length === 1 ? 'the tag shows' : 'the tags show'} where it fits.${item.role ? ` This item is the ${roleText(item.role)} of its group${item.diff ? ` (${item.diff})` : ''}; if what was missed changes what is happening, say what happened.` : ''}\n\nRewrite it in the format asked below.\n\n${asked}`;
+}
+
+function roleText(role) {
+    return role ? [role.main, role.sub].filter(Boolean).join(', ') : '';
+}
+
+function itemStory(entry, item, index) {
+    if (item.role && item.diff) {
+        return `${entry.kind === 'set' && !entry.fromVideo ? 'This version' : 'Story'} (${roleText(item.role)}): ${item.diff}`;
+    }
+    if (index > 0 && item.diff) {
+        return `${entry.kind === 'sequence' ? `What changed since the ${entry.fromVideo ? 'part' : 'picture'} before` : `How it differs from the first ${entry.fromVideo ? 'moment' : 'version'}`}: ${item.diff}`;
+    }
+    return '';
+}
+
+const STORY_ROLES = ['setup', 'build-up', 'main action', 'aftermath', 'transition'];
+const VERSION_ROLES = ['base', 'variation', 'escalation', 'alternate'];
+const PART_HINTS = { loop: 'a loop that repeats', burst: 'fast action with many cuts', cut: 'starts right after a scene cut', still: 'barely moving', hand: 'cut by hand' };
+
+function versionsOnly(entry) {
+    return entry.kind === 'set' && !entry.fromVideo;
+}
+
+function storyPrompt(entry, notes = '') {
+    const versions = versionsOnly(entry);
+    const items = entry.variants.map((item, index) => {
+        const part = entry.fromVideo?.parts[index];
+        const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : '';
+        const tags = (item.shows.length ? item.shows : item.tags.length ? item.tags : entry.tags).concat(item.added.filter(tag => !item.shows.includes(tag)));
+        return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}`;
+    }).join('\n\n');
+    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: entry.tags.join(', ').replace(/_/g, ' ') };
+    const text = String((versions ? settings().versionsPrompt : settings().storyPrompt) || (versions ? DEFAULT_VERSIONS_PROMPT : DEFAULT_STORY_PROMPT)).replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
+    return notes ? `${text}\n\nA reviewer found problems in earlier story lines; fix them: ${notes}` : text;
+}
+
+function parseStory(reply, count, versions) {
+    const roles = versions ? VERSION_ROLES : STORY_ROLES;
+    const lines = new Map();
+    for (const line of String(reply || '').split('\n')) {
+        const match = line.replace(/\*\*/g, '').match(/^\s*[-*•]?\s*(?:item|part|picture|version)?\s*(\d+)\s*[.):-]\s*([^:]{1,60}?)\s*:\s*(.+)$/i);
+        const number = Number(match?.[1]);
+        if (!match || number < 1 || number > count || lines.has(number)) {
+            continue;
+        }
+        const words = match[2].split(/\s*[,/|·–—]\s*/).map(word => word.toLowerCase().replace(/[()"[\]]/g, '').trim()).filter(Boolean);
+        const main = roles.find(role => words[0] === role || words[0]?.replace(/\s+/g, '-') === role || words[0]?.replace(/-/g, ' ') === role) || roles.find(role => words[0]?.includes(role)) || words[0] || '';
+        const text = match[3].replace(/\s+/g, ' ').trim().slice(0, 500);
+        if (main && text) {
+            lines.set(number, { main: main.slice(0, 40), sub: words.slice(1).join(' ').slice(0, 40), text });
+        }
+    }
+    return lines;
+}
+
+async function writeStory(entry, notes = '') {
+    const count = entry.variants.length;
+    const lines = parseStory(await textAsk(storyPrompt(entry, notes), 150 + 100 * count), count, versionsOnly(entry));
+    if (!lines.size) {
+        throw new Error('the answer gave no story lines');
+    }
+    lines.forEach((line, number) => {
+        const item = entry.variants[number - 1];
+        item.role = { main: line.main, sub: line.sub };
+        item.diff = line.text;
+    });
+    entry.variants.forEach(item => descriptions.set(item.url, describedVariant(entry, item)));
+    return lines.size;
+}
+
+function rememberedTags() {
+    const s = settings();
+    return { matter: new Set(normalizeTagList(s.tagsMatter)), dont: new Set(normalizeTagList(s.tagsDontMatter)) };
+}
+
+function rememberTag(tag, important) {
+    const s = settings();
+    const { matter, dont } = rememberedTags();
+    (important ? dont : matter).delete(tag);
+    (important ? matter : dont).add(tag);
+    s.tagsMatter = [...matter].join('\n');
+    s.tagsDontMatter = [...dont].join('\n');
+    for (const [id, value] of [['st_imagesearch_tags_matter', s.tagsMatter], ['st_imagesearch_tags_dont_matter', s.tagsDontMatter]]) {
+        const box = document.getElementById(id);
+        if (box) {
+            box.value = value;
+        }
+    }
+    save();
 }
 
 function jsonIn(text) {
@@ -4926,8 +5048,8 @@ function jsonIn(text) {
 }
 
 async function reviewGroup(entry) {
-    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:`, `Tags given: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, `First look: ${item.seen.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, index ? `Changed: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
-    const prompt = `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Each was written by someone looking at that picture. For each item you get the tags it was given, the tags a first look saw in it, and its description.\n\nLook for these problems:\n- a tag given to an item that its description leaves out or contradicts (only tags about what can be seen);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the Changed lines to explain it;\n- something described that is in neither the item's tags nor its first look, so it may be invented;\n- a Changed line that does not fit the item before.\nOnly report real problems; most items have none.\n\nThen write an overview of the whole group: 1 to 2 sentences on who is in it and what happens from the first item to the last.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "problem": "..."}]}\n\n${blocks}`;
+    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:`, `Tags given: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, `First look: ${item.seen.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
+    const prompt = `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Each was written by someone looking at that picture. For each item you get the tags it was given, the tags a first look saw in it, its description, and its role and story line in the group.\n\nLook for these problems:\n- a tag given to an item that its description leaves out or contradicts (only tags about what can be seen);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- something described that is in neither the item's tags nor its first look, so it may be invented;\n- a role or story line that the descriptions do not support, or that gets the order of events wrong.\nOnly report real problems; most items have none.\n\nThen write an overview of the whole group: 1 to 2 sentences on who is in it and what happens from the first item to the last.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with the role or story line, and "description" for the rest.\n\n${blocks}`;
     const data = jsonIn(await textAsk(prompt, 300 + 80 * entry.variants.length));
     if (!data) {
         throw new Error('the check gave no readable answer');
@@ -4935,14 +5057,19 @@ async function reviewGroup(entry) {
     return {
         overview: String(data.overview || '').replace(/\s+/g, ' ').trim().slice(0, 600),
         keywords: Array.isArray(data.keywords) ? data.keywords.map(word => String(word).toLowerCase().trim()).filter(Boolean).slice(0, 12) : [],
-        problems: Array.isArray(data.problems) ? data.problems.filter(item => item && item.problem).map(item => ({ item: Number(item.item) || 0, problem: String(item.problem).replace(/\s+/g, ' ').trim().slice(0, 300) })) : [],
+        problems: Array.isArray(data.problems) ? data.problems.filter(item => item && item.problem).map(item => ({ item: Number(item.item) || 0, about: String(item.about || '').toLowerCase() === 'story' ? 'story' : 'description', problem: String(item.problem).replace(/\s+/g, ' ').trim().slice(0, 300) })) : [],
     };
 }
 
 function importancePrompt(entry, tags, missing) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}: ${[item.sections?.action, item.diff].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
-    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: tags.join(', ') || 'none', missing: missing.join(', '), overview: entry.description || '' };
-    return String(settings().importancePrompt || DEFAULT_IMPORTANCE_PROMPT).replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
+    const { matter, dont } = rememberedTags();
+    const remembered = [matter.size ? `Tags the user said matter: ${[...matter].slice(0, 40).join(', ')}.` : '', dont.size ? `Tags the user threw out as unimportant: ${[...dont].slice(0, 40).join(', ')}.` : ''].filter(Boolean);
+    const rememberedText = remembered.length ? `${remembered.join(' ')} Judge similar tags the same way.` : '';
+    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: tags.join(', ') || 'none', missing: missing.join(', '), overview: entry.description || '', remembered: rememberedText };
+    const template = String(settings().importancePrompt || DEFAULT_IMPORTANCE_PROMPT);
+    const text = template.replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
+    return rememberedText && !template.includes('{{remembered}}') ? `${text}\n\n${rememberedText}` : text;
 }
 
 async function judgeMissing(entry, tags, missing) {
@@ -4988,7 +5115,7 @@ async function describeSet(entry, blobs = []) {
     }
     const items = entry.variants;
     const count = items.length;
-    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [] };
+    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {} };
     const size = count > 3 ? 768 : 1024;
     const pictures = new Array(count);
     const picture = async index => {
@@ -5010,9 +5137,10 @@ async function describeSet(entry, blobs = []) {
                 }
             });
             const shapes = items.map(item => new Set(item.seen.map(tagShape)));
-            assigned = items.map(() => new Set());
+            assigned = items.map(item => new Set(item.added.filter(tag => checkable.includes(tag))));
             const seenSomewhere = new Set();
             const missing = new Set();
+            assigned.forEach(set => set.forEach(tag => seenSomewhere.add(tag)));
             for (const tag of checkable) {
                 const shape = tagShape(tag);
                 shapes.forEach((set, index) => {
@@ -5082,6 +5210,26 @@ async function describeSet(entry, blobs = []) {
         }
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
+        const storyOn = s.groupStory !== false;
+        const story = async (notes = '') => {
+            groupStep(entry, 'Writing what each item means in the story…');
+            try {
+                await writeStory(entry, notes);
+                report.steps.story = 'on';
+            } catch (error) {
+                report.errors.push(`Story lines: ${error?.message || error}`);
+                report.steps.story = report.steps.story === 'on' ? 'on' : 'failed';
+            }
+        };
+        if (storyOn && items.every(item => item.description)) {
+            await story();
+        } else {
+            items.forEach(item => {
+                item.role = null;
+                item.diff = '';
+            });
+            report.steps.story = storyOn ? 'skipped' : 'off';
+        }
         if (s.groupReview !== false && items.every(item => item.description)) {
             groupStep(entry, 'Checking the descriptions together…');
             try {
@@ -5093,7 +5241,8 @@ async function describeSet(entry, blobs = []) {
                     entry.keywords = review.keywords;
                 }
                 const byItem = new Map();
-                review.problems.filter(problem => problem.item >= 1 && problem.item <= count).forEach(problem => byItem.set(problem.item, [...(byItem.get(problem.item) || []), problem.problem]));
+                const valid = review.problems.filter(problem => problem.item >= 1 && problem.item <= count);
+                valid.filter(problem => problem.about !== 'story').forEach(problem => byItem.set(problem.item, [...(byItem.get(problem.item) || []), problem.problem]));
                 const redone = new Set();
                 for (const [number, problems] of byItem) {
                     if (items[number - 1].lock) {
@@ -5106,7 +5255,11 @@ async function describeSet(entry, blobs = []) {
                         report.errors.push(`Describing item ${number} again: ${error?.message || error}`);
                     }
                 }
-                report.problems = review.problems.filter(problem => problem.item >= 1 && problem.item <= count).map(problem => ({ ...problem, redone: redone.has(problem.item) }));
+                const storyNotes = valid.filter(problem => problem.about === 'story').map(problem => `item ${problem.item}: ${problem.problem}`);
+                if (report.steps.story === 'on' && (redone.size || storyNotes.length)) {
+                    await story(storyNotes.join(' '));
+                }
+                report.problems = valid.map(problem => ({ ...problem, redone: problem.about === 'story' ? report.steps.story === 'on' : redone.has(problem.item) }));
                 report.steps.review = 'on';
             } catch (error) {
                 report.errors.push(`Final check: ${error?.message || error}`);
@@ -5116,16 +5269,24 @@ async function describeSet(entry, blobs = []) {
             report.steps.review = s.groupReview === false ? 'off' : 'skipped';
         }
         if (report.notShown.length && s.groupImportance !== false) {
-            groupStep(entry, `Judging ${report.notShown.length} tag${report.notShown.length === 1 ? '' : 's'} not found…`);
-            try {
-                const judged = await judgeMissing(entry, checkable, report.notShown);
-                report.importance = judged.items;
-                report.verdict = judged.verdict;
-                report.steps.importance = 'on';
-            } catch (error) {
-                report.errors.push(`Judging the tags not found: ${error?.message || error}`);
-                report.steps.importance = 'failed';
+            const { matter, dont } = rememberedTags();
+            report.importance = report.notShown.filter(tag => matter.has(tag) || dont.has(tag)).map(tag => ({ tag, important: matter.has(tag), why: matter.has(tag) ? 'you marked it as important before' : 'you threw it out before', by: 'remembered' }));
+            const ask = report.notShown.filter(tag => !matter.has(tag) && !dont.has(tag));
+            let verdict = '';
+            report.steps.importance = 'remembered';
+            if (ask.length) {
+                groupStep(entry, `Judging ${ask.length} tag${ask.length === 1 ? '' : 's'} not found…`);
+                try {
+                    const judged = await judgeMissing(entry, checkable, ask);
+                    report.importance.push(...judged.items);
+                    verdict = judged.verdict;
+                    report.steps.importance = 'on';
+                } catch (error) {
+                    report.errors.push(`Judging the tags not found: ${error?.message || error}`);
+                    report.steps.importance = 'failed';
+                }
             }
+            report.verdict = verdict === 'needs a look' || report.importance.some(item => item.important) ? 'needs a look' : verdict || (report.steps.importance === 'failed' ? '' : 'fine');
         } else {
             report.steps.importance = report.notShown.length ? 'off' : 'not needed';
         }
@@ -5150,6 +5311,7 @@ async function redoItem(entry, index) {
     groupStep(entry, `Describing item ${index + 1} of ${entry.variants.length}…`);
     try {
         await describeItem(entry, index, null, { fallback: !entry.variants.some(other => other.shows.length) });
+        await refreshStory(entry);
     } finally {
         groupStep(entry, '');
     }
@@ -5158,6 +5320,80 @@ async function redoItem(entry, index) {
     }
     await saveLibrary();
     return entry;
+}
+
+async function refreshStory(entry) {
+    if (settings().groupStory === false || !groupDescribed(entry) || !entry.variants.some(item => item.role)) {
+        return false;
+    }
+    groupStep(entry, 'Writing what each item means in the story…');
+    try {
+        await writeStory(entry);
+        return true;
+    } catch (error) {
+        if (entry.report) {
+            entry.report.errors = [...entry.report.errors, `Story lines: ${error?.message || error}`].slice(-12);
+        }
+        return false;
+    }
+}
+
+async function applyTagChoices(entry, choices) {
+    const report = entry.report;
+    const updates = new Map();
+    const judged = (tag, important, why) => {
+        report.importance = [...report.importance.filter(item => item.tag !== tag), { tag, important, why, by: 'you' }];
+    };
+    for (const [tag, choice] of choices) {
+        if (choice.state === 'out') {
+            const keep = list => list.filter(other => normalizeTag(other) !== tag);
+            entry.tags = keep(entry.tags);
+            entry.variants.forEach(item => {
+                item.tags = keep(item.tags);
+                item.shows = keep(item.shows);
+                item.added = keep(item.added);
+            });
+            report.notShown = report.notShown.filter(other => other !== tag);
+            report.decided[tag] = 'out';
+            judged(tag, false, 'you threw it out');
+            rememberTag(tag, false);
+        } else if (choice.state === 'important') {
+            report.decided[tag] = 'important';
+            judged(tag, true, choice.items.size ? 'you placed it in the items that show it' : 'you marked it as important');
+            rememberTag(tag, true);
+            if (choice.items.size) {
+                const numbers = [...choice.items].filter(number => number >= 1 && number <= entry.variants.length).sort((a, b) => a - b);
+                report.placed[tag] = numbers;
+                report.notShown = report.notShown.filter(other => other !== tag);
+                numbers.forEach(number => updates.set(number - 1, [...(updates.get(number - 1) || []), tag]));
+            }
+        }
+    }
+    const open = report.importance.filter(item => item.important && report.notShown.includes(item.tag) && !report.decided[item.tag]).map(item => item.tag);
+    entry.attention = open.length ? { tags: open, at: Date.now() } : null;
+    report.verdict = open.length ? 'needs a look' : 'fine (sorted by you)';
+    try {
+        for (const [index, tags] of [...updates].sort((a, b) => a[0] - b[0])) {
+            const item = entry.variants[index];
+            groupStep(entry, `Updating item ${index + 1} with ${tags.join(', ').replace(/_/g, ' ')}…`);
+            item.added = [...new Set([...item.added, ...tags])];
+            item.shows = [...new Set([...item.shows, ...tags])];
+            try {
+                await describeItem(entry, index, null, { missed: tags });
+            } catch (error) {
+                report.errors = [...report.errors, `Updating item ${index + 1}: ${error?.message || error}`].slice(-12);
+            }
+        }
+        if (updates.size) {
+            await refreshStory(entry);
+        }
+        entry.variants.forEach(item => descriptions.set(item.url, describedVariant(entry, item)));
+        await saveLibrary();
+        scheduleLorebookSync();
+    } finally {
+        groupStep(entry, '');
+    }
+    return updates.size;
 }
 
 async function redoEntry(entry, { save: saveNow = true } = {}) {
@@ -5710,25 +5946,99 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
     return match;
 }
 
-function attentionBox(entry, onChange) {
-    const box = el('div', 'stis-attention');
-    const important = (entry.report?.importance || []).filter(item => item.important);
-    const reasons = important.length ? important.map(item => `${item.tag.replace(/_/g, ' ')}${item.why ? ` (${item.why})` : ''}`).join('; ') : entry.attention.tags.join(', ').replace(/_/g, ' ');
-    box.appendChild(el('b', '', 'Needs a look. '));
-    box.append(`Tags that matter were not found in any item: ${reasons}.${entry.fromVideo ? ' They may have been cut off when the parts were made: add a part that shows them, or remove the tags.' : ' Check the tags, or add a picture that shows them.'} `);
-    const fine = el('a', 'stis-attention-fine', 'Mark as fine');
-    fine.href = '#';
-    fine.title = 'Clear this flag; it comes back only if the group is described again and the tags still are not found';
-    fine.addEventListener('click', async event => {
-        event.preventDefault();
-        entry.attention = null;
-        if (entry.report) {
-            entry.report.verdict = 'fine (marked by you)';
+function tagPanel(entry, onChange) {
+    const report = entry.report;
+    const box = el('div', `stis-tagfix${entry.attention ? ' stis-attention' : ''}`);
+    const head = el('div', 'stis-tagfix-head');
+    if (entry.attention) {
+        head.appendChild(el('b', '', 'Needs a look. '));
+    }
+    head.append(`Tags not found in any item${entry.fromVideo ? ' (maybe cut off when the parts were made)' : ''}. Throw out the ones that do not matter; for one that matters, tap the items that show it, then Done.`);
+    box.appendChild(head);
+    const choices = new Map();
+    const done = el('div', 'menu_button stis-tagfix-done', 'Done');
+    const changed = () => [...choices].some(([tag, choice]) => choice.state !== (report.decided[tag] === 'important' ? 'important' : '') || choice.items.size);
+    const refresh = () => done.classList.toggle('disabled', !changed());
+    for (const tag of report.notShown) {
+        const judged = report.importance.find(item => item.tag === tag);
+        const choice = { state: report.decided[tag] === 'important' ? 'important' : '', items: new Set() };
+        choices.set(tag, choice);
+        const row = el('div', 'stis-tagfix-row');
+        row.dataset.tag = tag;
+        row.appendChild(el('span', 'stis-tagfix-tag', tag.replace(/_/g, ' ')));
+        if (judged) {
+            row.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'matters' : 'minor'}${judged.why ? `: ${judged.why}` : ''}`));
         }
-        await saveLibrary();
+        const chips = el('div', 'stis-tagfix-chips');
+        const out = el('span', 'stis-fchip stis-tagfix-out', 'Throw out');
+        const keep = el('span', 'stis-fchip stis-tagfix-keep', 'Important');
+        const numbers = entry.variants.map((item, index) => {
+            const chip = el('span', 'stis-fchip stis-tagfix-item', String(index + 1));
+            chip.title = `${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1}: ${shortDescription({ ...entry, sections: item.sections, description: item.description })}`;
+            chip.addEventListener('click', () => {
+                choice.items[choice.items.has(index + 1) ? 'delete' : 'add'](index + 1);
+                if (choice.items.size) {
+                    choice.state = 'important';
+                }
+                paint();
+            });
+            return chip;
+        });
+        const paint = () => {
+            out.classList.toggle('stis-fchip-on', choice.state === 'out');
+            keep.classList.toggle('stis-fchip-on', choice.state === 'important');
+            numbers.forEach((chip, index) => chip.classList.toggle('stis-fchip-on', choice.items.has(index + 1)));
+            row.classList.toggle('stis-tagfix-gone', choice.state === 'out');
+            refresh();
+        };
+        out.addEventListener('click', () => {
+            choice.state = choice.state === 'out' ? '' : 'out';
+            choice.items.clear();
+            paint();
+        });
+        keep.addEventListener('click', () => {
+            choice.state = choice.state === 'important' ? '' : 'important';
+            if (!choice.state) {
+                choice.items.clear();
+            }
+            paint();
+        });
+        chips.append(out, keep, el('small', 'stis-tagfix-in', 'in'), ...numbers);
+        row.appendChild(chips);
+        box.appendChild(row);
+        paint();
+    }
+    const buttons = el('div', 'stis-tagfix-buttons');
+    done.title = 'Throw out and remember the tags you chose, and update the items you placed tags in (keeping their descriptions)';
+    done.addEventListener('click', async () => {
+        if (done.classList.contains('disabled') || groupProgress.has(entry.id)) {
+            return;
+        }
+        done.classList.add('disabled');
+        done.textContent = 'Updating…';
+        try {
+            await applyTagChoices(entry, [...choices].filter(([tag, choice]) => choice.state !== (report.decided[tag] === 'important' ? 'important' : '') || choice.items.size));
+        } catch (error) {
+            toastr.warning(`Could not update the items: ${error?.message || error}`, 'Image Search');
+        }
         onChange?.();
     });
-    box.appendChild(fine);
+    buttons.appendChild(done);
+    if (entry.attention) {
+        const fine = el('a', 'stis-attention-fine', 'Mark as fine');
+        fine.href = '#';
+        fine.title = 'Clear this flag without changing anything; it comes back only if the group is described again and the tags still are not found';
+        fine.addEventListener('click', async event => {
+            event.preventDefault();
+            entry.attention = null;
+            report.verdict = 'fine (marked by you)';
+            await saveLibrary();
+            onChange?.();
+        });
+        buttons.appendChild(fine);
+    }
+    box.appendChild(buttons);
+    refresh();
     return box;
 }
 
@@ -5737,9 +6047,9 @@ function groupReportBox(entry, current) {
     const box = el('details', 'stis-group-report');
     const notShown = report.notShown.length;
     box.appendChild(el('summary', '', `How this was described${notShown ? ` · ${notShown} tag${notShown === 1 ? '' : 's'} not found` : ''}${report.problems.length ? ` · ${report.problems.length} fix${report.problems.length === 1 ? '' : 'es'}` : ''}`));
-    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check' };
+    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
-    const lines = [`First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    const lines = [`First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · story lines: ${step('story')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
     const index = current ? entry.variants.indexOf(current) : -1;
     if (current && index >= 0) {
         lines.push(`${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1} was given ${current.shows.length} tag${current.shows.length === 1 ? '' : 's'}: ${current.shows.join(', ').replace(/_/g, ' ') || 'none (its own or the group\'s tags were used)'}`);
@@ -5754,11 +6064,15 @@ function groupReportBox(entry, current) {
     if (notShown) {
         lines.push(`Not found in any item: ${report.notShown.join(', ').replace(/_/g, ' ')}${entry.fromVideo ? ' (maybe cut off when the parts were made)' : ''}`);
     }
-    report.importance.forEach(item => lines.push(`· ${item.tag.replace(/_/g, ' ')}: ${item.important ? 'matters' : 'minor'}${item.why ? `, ${item.why}` : ''}`));
+    const placed = Object.entries(report.placed);
+    if (placed.length) {
+        lines.push(`Placed by you: ${placed.map(([tag, items]) => `${tag.replace(/_/g, ' ')} (item ${items.join(', ')})`).join('; ')}`);
+    }
+    report.importance.forEach(item => lines.push(`· ${item.tag.replace(/_/g, ' ')}: ${item.important ? 'matters' : 'minor'}${item.why ? `, ${item.why}` : ''}${item.by === 'you' || item.by === 'remembered' ? '' : ' (judged by the AI)'}`));
     if (report.verdict) {
         lines.push(`Verdict: ${report.verdict}`);
     }
-    report.problems.forEach(problem => lines.push(`Final check, item ${problem.item}: ${problem.problem}${problem.redone ? ' (described again)' : entry.variants[problem.item - 1]?.lock ? ' (locked, left as is)' : ''}`));
+    report.problems.forEach(problem => lines.push(`Final check, item ${problem.item}${problem.about === 'story' ? ' (story line)' : ''}: ${problem.problem}${problem.redone ? (problem.about === 'story' ? ' (written again)' : ' (described again)') : entry.variants[problem.item - 1]?.lock ? ' (locked, left as is)' : ''}`));
     report.errors.forEach(error => lines.push(`Problem: ${error}`));
     lines.forEach(line => box.appendChild(el('small', 'stis-group-report-line', line)));
     return box;
@@ -6501,7 +6815,7 @@ function pictureOffer(entry) {
     const tags = tagsLine(entry.tags);
     if (groupDescribed(entry)) {
         const sequence = entry.kind === 'sequence';
-        const lines = entry.variants.map((item, index) => `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1} [pic:${item.id}]: ${[item.sections.action || shortDescription({ ...entry, sections: item.sections, description: item.description }), index > 0 && item.diff ? `Changed: ${item.diff}` : ''].filter(Boolean).join(' ')}`.replace(/\s+/g, ' ').trim());
+        const lines = entry.variants.map((item, index) => `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1} [pic:${item.id}]: ${[item.sections.action || shortDescription({ ...entry, sections: item.sections, description: item.description }), itemStory(entry, item, index)].filter(Boolean).join(' ')}`.replace(/\s+/g, ' ').trim());
         const intro = sequence ? `Saved ${entry.fromVideo ? 'video in parts' : 'picture sequence'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'} that tell a story in this order. ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead.` : `Saved ${entry.fromVideo ? 'video moments' : 'picture set'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'}, versions of one scene. ${SHOW_RULE} If one fits the moment or the user asks for it, show that one.`;
         return [`${intro} Write the tag on its own line where the picture belongs; ${rule}`, entry.description ? `Overview: ${entry.description}` : '', ...lines, tags].filter(Boolean).join('\n');
     }
@@ -6944,7 +7258,7 @@ function meaningText(entry) {
 function cardSource(entry) {
     if (entry.item) {
         const index = entry.variants.indexOf(entry.item);
-        return `Item ${index + 1} of a ${groupWhat(entry)}. ${entry.item.description.replace(/\s+/g, ' ').trim().slice(0, 900)}${entry.item.diff ? ` Changed: ${entry.item.diff.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`;
+        return `Item ${index + 1} of a ${groupWhat(entry)}. ${entry.item.description.replace(/\s+/g, ' ').trim().slice(0, 900)}${itemStory(entry, entry.item, index) ? ` ${itemStory(entry, entry.item, index).replace(/\s+/g, ' ').slice(0, 260)}` : ''}`;
     }
     const parts = [String(entry.description || '').replace(/\s+/g, ' ').trim().slice(0, 900)];
     if (isMulti(entry)) {
@@ -7956,7 +8270,7 @@ function visionHash() {
 }
 
 function describedOld(entry) {
-    return Boolean(entry.description) && (!String(entry.description).trimStart().startsWith('Visual:') || (isMulti(entry) && !groupDescribed(entry)));
+    return Boolean(entry.description) && (!String(entry.description).trimStart().startsWith('Visual:') || (isMulti(entry) && (!groupDescribed(entry) || (settings().groupStory !== false && !entry.variants.some(item => item.role)))));
 }
 
 function chatCharacters() {
@@ -8541,9 +8855,9 @@ function choiceLine(choice) {
     if (view.item) {
         const index = entry.variants.indexOf(view.item);
         const looks = view.card ? cardLine(view.card) : `Looks: ${String(view.sections.visual || view.description).replace(/\s+/g, ' ').trim().slice(0, 320)}`;
-        const happening = [view.sections.action, index > 0 && view.item.diff ? `(since ${entry.kind === 'sequence' ? 'the picture before' : 'the first version'}: ${view.item.diff})` : ''].filter(Boolean).join(' ');
+        const happening = [view.sections.action, itemStory(entry, view.item, index) ? `(${itemStory(entry, view.item, index)})` : ''].filter(Boolean).join(' ');
         const kind = entry.kind === 'sequence' ? ` (picture ${index + 1} of a ${entry.variants.length}-picture story sequence)` : ` (version ${index + 1} of ${entry.variants.length} of one scene)`;
-        return `${looks} | Happening: ${happening.replace(/\s+/g, ' ').trim().slice(0, 260) || 'not described'}${kind}${itemAnimated(entry, view.item) ? ' (animated)' : ''}`;
+        return `${looks} | Happening: ${happening.replace(/\s+/g, ' ').trim().slice(0, 420) || 'not described'}${kind}${itemAnimated(entry, view.item) ? ' (animated)' : ''}`;
     }
     const index = variant ? Math.max(0, entry.variants.indexOf(variant)) : 0;
     const what = index > 0 && variant.diff ? variant.diff : entry.sections?.action || '';
@@ -11544,8 +11858,8 @@ async function openPicker(initialTags = null, focus = null) {
                 info.appendChild(el('div', 'stis-entry-overview', `Overview: ${entry.description}`));
             }
             info.appendChild(el('div', 'stis-entry-text', `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1}:\n${current.description}`));
-            if (index > 0 && current.diff) {
-                info.appendChild(el('div', 'stis-entry-text stis-entry-changed', `Changed: ${current.diff}`));
+            if (itemStory(entry, current, index)) {
+                info.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
             }
         } else {
             info.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
@@ -11569,8 +11883,8 @@ async function openPicker(initialTags = null, focus = null) {
                 }
             });
         }
-        if (entry.attention) {
-            info.appendChild(attentionBox(entry, () => {
+        if (multi && entry.report?.notShown.length) {
+            info.appendChild(tagPanel(entry, () => {
                 if (!closed && previewState?.target === entry) {
                     showEntry(entry, current);
                     renderLibrary();
@@ -12470,7 +12784,7 @@ function buildSettings() {
                             <div id="st_imagesearch_lib_count" class="stis-label">Library</div>
                             <div class="st-imagesearch-row stis-wrap">
                                 <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
-                                <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt, and the sets and sequences that still have one description for all their items">Redo out-of-date descriptions</div>
+                                <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt, and the sets and sequences that still have one description for all their items or no story lines">Redo out-of-date descriptions</div>
                                 <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
                                 <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
                                 <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop after the pictures being worked on now" hidden>Stop</div>
@@ -12495,8 +12809,9 @@ function buildSettings() {
                             <small class="stis-help">{{tags}} is filled in.</small>
                             <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
                         </div>
-                        <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, plus a Changed line. About 2 requests per item, plus 2.</small></div>
+                        <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, then a role and a story line. About 2 requests per item, plus 3.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_blind"> <span>First look without tags</span></label><small class="stis-help">The vision model lists what it sees in each item without the tags, so each tag goes to the items that show it. Tags it misses are looked for again in all items.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_story"> <span>Story lines</span></label><small class="stis-help">One text request (tag profile) reads all the descriptions and gives each item a role (main and finer, like main action, climax) and a line on what the moment means: what was happening, what is happening, and so what. Sets of versions get what each version means compared with version 1.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_review"> <span>Final check</span></label><small class="stis-help">One more request reads all the descriptions together, writes the overview and points out mistakes; items with a mistake are described once more.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_importance"> <span>Judge tags not found</span></label><small class="stis-help">When tags are in no item, the prompt below decides whether they matter. If they do, the group is marked "Needs a look" in the library (filter: Check).</small></div>
                         <div class="stis-set">
@@ -12504,6 +12819,25 @@ function buildSettings() {
                             <textarea id="st_imagesearch_importance_prompt" class="text_pole"></textarea>
                             <small class="stis-help">Filled in: {{kind}} (what the group is), {{count}}, {{items}} (what each item shows), {{tags}} (all its tags), {{missing}} (the tags not found), {{overview}}. The answer needs a "tag: important" or "tag: minor" line per tag and a "Verdict: needs a look" or "Verdict: fine" line.</small>
                             <div id="st_imagesearch_importance_reset" class="menu_button">Reset this prompt</div>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Story prompt (sequences and video parts)</div>
+                            <textarea id="st_imagesearch_story_prompt" class="text_pole"></textarea>
+                            <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
+                            <div id="st_imagesearch_story_reset" class="menu_button">Reset this prompt</div>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Story prompt (sets of versions)</div>
+                            <textarea id="st_imagesearch_versions_prompt" class="text_pole"></textarea>
+                            <small class="stis-help">Same as above, for sets of versions of one picture.</small>
+                            <div id="st_imagesearch_versions_reset" class="menu_button">Reset this prompt</div>
+                        </div>
+                        <div class="stis-set">
+                            <div class="stis-label">Tags that matter</div>
+                            <textarea id="st_imagesearch_tags_matter" class="text_pole" placeholder="one per line"></textarea>
+                            <div class="stis-label">Tags that do not matter</div>
+                            <textarea id="st_imagesearch_tags_dont_matter" class="text_pole" placeholder="one per line"></textarea>
+                            <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Throw out). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
                         </div>
                     </div>
                 </details>
@@ -12670,7 +13004,19 @@ function buildSettings() {
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');
+    bind('st_imagesearch_group_story', 'groupStory', 'checked');
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
+    bind('st_imagesearch_story_prompt', 'storyPrompt');
+    bind('st_imagesearch_versions_prompt', 'versionsPrompt');
+    bind('st_imagesearch_tags_matter', 'tagsMatter');
+    bind('st_imagesearch_tags_dont_matter', 'tagsDontMatter');
+    for (const [id, key, value] of [['st_imagesearch_story_reset', 'storyPrompt', DEFAULT_STORY_PROMPT], ['st_imagesearch_versions_reset', 'versionsPrompt', DEFAULT_VERSIONS_PROMPT]]) {
+        document.getElementById(id).addEventListener('click', () => {
+            s[key] = value;
+            document.getElementById(id.replace('_reset', '_prompt')).value = value;
+            save();
+        });
+    }
     bind('st_imagesearch_group_importance', 'groupImportance', 'checked');
     bind('st_imagesearch_importance_prompt', 'importancePrompt');
     document.getElementById('st_imagesearch_importance_reset').addEventListener('click', () => {

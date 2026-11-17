@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.41.0';
+const VERSION = '2.41.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -26,7 +26,7 @@ const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|i
 const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
 const OLD_NAMES_RULE = 'Use names only when the tags give them.';
 const NO_NAMES_RULE = 'Never use names for people or characters, even when the tags give them (a character tag is only a hint): say he, she or they, or describe the person (the blond boy in orange). If a text you are given uses names, replace them the same way.';
-const ACTORS_RULE = 'Start the description (the Visual line, if there is one) with how many people or characters can be seen, counting anyone only partly in view, like "Two people:" or "One person:".';
+const ACTORS_RULE = 'Start the description (the Visual line, if there is one) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Two people (one only partly in view):". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
 const PREV_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nGive each item a role and a story line.\nRole: a main role, then a finer one. Main roles: setup (how things are before the action, often a loop or an idle moment), build-up (leading to the action), main action (the key moment), aftermath (the result or the reaction to it), transition (moving on to another scene). The finer role is 1 to 3 words of your own, like idle loop, wind-up, climax, impact, reveal, reaction, calm down. With 3 items, the first is often the setup, the second the main action and the third the aftermath, but go by what the descriptions say.\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per item and nothing else, like:\n1. setup, idle loop: ...\n2. main action, climax: ...';
 const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst give the shape of the whole group, then a role and a story line for each item.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension rising toward an action or the climax), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between actions: catching breath, a standoff, a loop that holds the moment), climax (the single most intense moment of the whole group), aftermath (the result or the reaction after the climax), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, reaction, calm down.\nGuidelines:\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: a loop at the start is usually the setup, a loop between actions is a pause, a loop at the end can be the aftermath.\n- There is at most one climax. It is usually the last item or the one before it; an action earlier on is just an action unless nothing after it comes close.\n- Not every group has an aftermath. Use it only for an item that comes after the climax and shows its result or a reaction. If the group ends on the peak, the last item is the climax.\n- Judge each item by what it shows and by the items around it, not by its position.\nExamples: setup, climax, aftermath (a short scene with one peak); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); setup, action, action, transition (no real peak, so no climax).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with the shape line, then one line per item, and nothing else, like:\nShape: setup → action → pause → climax\n1. setup, idle loop: ...\n2. action, first clash: ...';
 const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
@@ -4254,6 +4254,31 @@ function parseDescription(raw) {
     return { text, sections, keywords, variants, changed };
 }
 
+function peopleHint(tags) {
+    const names = { girl: 'girl', boy: 'boy', other: 'other character' };
+    const counted = [];
+    let solo = false;
+    let focus = false;
+    for (const tag of (tags || []).map(normalizeTag)) {
+        const number = tag.match(/^(\d+)\+?(girl|boy|other)s?$/);
+        const many = tag.match(/^multiple_(girl|boy|other)s$/);
+        if (number) {
+            counted.push(`${number[1]} ${names[number[2]]}${number[1] === '1' ? '' : 's'}`);
+        } else if (many) {
+            counted.push(`several ${names[many[1]]}s`);
+        } else if (tag === 'solo') {
+            solo = true;
+        } else if (tag === 'solo_focus') {
+            focus = true;
+        }
+    }
+    const text = [...new Set(counted)].join(', ');
+    if (focus) {
+        return `${text ? `${text}; ` : ''}solo focus (one main person, but someone else is there too)`;
+    }
+    return text || (solo ? 'solo (one person)' : '');
+}
+
 function lockedPrompt(locked, prompt) {
     return `The user checked this description of the picture and locked it as correct:\n\n${locked}\n\nRewrite it in the format asked below. Keep every fact it gives and never contradict it; keep its wording where it fits. Look at the picture only to add what the format asks for and the locked description does not say.\n\n${prompt}`;
 }
@@ -4267,7 +4292,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}\n\n${ACTORS_RULE} ${NO_NAMES_RULE}`;
+    const people = peopleHint(extra.peopleTags || tags);
+    const count = people ? ` The site's tags say: ${people}${extra.peopleTags ? ' (for the whole group, so not everyone may be in this item)' : ''}. If they count more people than you first notice, look again for someone only partly in view before you give the count.` : '';
+    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}\n\n${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
     const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
@@ -4795,7 +4822,7 @@ async function partSheet(url, blob = null, maxSide = 768) {
     }
 }
 
-const BLIND_PROMPT = 'List what you can see in this picture as image-board tags (Danbooru style: lowercase English words joined by underscores, like long_hair, school_uniform, holding_sword). Give 15 to 30 tags covering: how many people (1girl, 2boys, solo), each person\'s hair colour, length and style, eye colour, skin, clothing and accessories, objects held or used, pose and action, facial expression, the place and background, and the shot (close-up, upper_body, full_body). Only what is clearly visible. Reply with only the tags, separated by commas.';
+const BLIND_PROMPT = 'List what you can see in this picture as image-board tags (Danbooru style: lowercase English words joined by underscores, like long_hair, school_uniform, holding_sword). Give 15 to 30 tags covering: how many people (1girl, 2boys, solo; count anyone only partly in view, like an arm or a figure in the shadows), each person\'s hair colour, length and style, eye colour, skin, clothing and accessories, objects held or used, pose and action, facial expression, the place and background, and the shot (close-up, upper_body, full_body). Only what is clearly visible. Reply with only the tags, separated by commas.';
 const SERIES_TAG = /_\((series|anime|manga|game|novel|comic|film|movie|franchise|cartoon)\)$/;
 const groupProgress = new Map();
 const groupListeners = new Map();
@@ -4950,7 +4977,7 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
     const base = missed.length ? item.lock?.text || item.description : '';
     const wrap = base ? asked => missedPrompt(base, missed, item, asked, why) : null;
-    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap });
+    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags });
     item.description = parsed.text;
     item.sections = parsed.sections || {};
     item.keywords = parsed.keywords || [];

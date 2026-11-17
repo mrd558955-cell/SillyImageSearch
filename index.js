@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.27.2';
+const VERSION = '2.28.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -80,6 +80,8 @@ const DEFAULTS = {
     meaningModel: '',
     pickShortlist: 30,
     openSections: ['setup'],
+    danbooruAccount: '',
+    danbooruIds: {},
     pickWindow: true,
     pickWithUser: true,
     pickFocus: 'char',
@@ -403,11 +405,86 @@ async function rawFetch(url, options) {
     }
 }
 
+const DONMAI = /(^|\.)donmai\.us$/;
+const danbooruIdentity = { account: '', id: '', error: '', pending: null };
+const identityWatchers = new Set();
+
+function danbooruAccount() {
+    const typed = String(settings().danbooruAccount || '').trim();
+    if (typed) {
+        return typed;
+    }
+    const entry = siteEntries().find(site => DONMAI.test(site.domain));
+    return entry ? String(new URLSearchParams(entry.extra.replace(/^&+/, '')).get('login') || '').trim() : '';
+}
+
+function danbooruAgent() {
+    return danbooruIdentity.id ? `SillyImageSearch/${VERSION}; user #${danbooruIdentity.id}` : '';
+}
+
+function agentFor(url) {
+    return DONMAI.test(hostOf(url)) && danbooruIdentity.id && danbooruIdentity.account === danbooruAccount() ? { 'User-Agent': danbooruAgent() } : {};
+}
+
+function resolveDanbooruId({ again = false } = {}) {
+    const account = danbooruAccount();
+    const tell = () => identityWatchers.forEach(watch => watch());
+    if (!account) {
+        Object.assign(danbooruIdentity, { account: '', id: '', error: '', pending: null });
+        tell();
+        return Promise.resolve('');
+    }
+    if (danbooruIdentity.account === account && (danbooruIdentity.pending || danbooruIdentity.id || (danbooruIdentity.error && !again))) {
+        return danbooruIdentity.pending || Promise.resolve(danbooruIdentity.id);
+    }
+    const number = account.match(/^(?:user\s*)?#?(\d+)$/i);
+    const cached = settings().danbooruIds?.[account.toLowerCase()];
+    if (number || cached) {
+        Object.assign(danbooruIdentity, { account, id: String(number ? number[1] : cached), error: '', pending: null });
+        tell();
+        return Promise.resolve(danbooruIdentity.id);
+    }
+    Object.assign(danbooruIdentity, { account, id: '', error: '' });
+    danbooruIdentity.pending = (async () => {
+        try {
+            const wanted = account.toLowerCase().replace(/ /g, '_');
+            const result = await request(`https://danbooru.donmai.us/users.json?search%5Bname%5D=${encodeURIComponent(wanted)}&only=id,name&limit=5`, { identify: false });
+            const user = (Array.isArray(result.data) ? result.data : []).find(item => String(item?.name || '').toLowerCase() === wanted);
+            if (!user) {
+                danbooruIdentity.error = result.ok ? `Danbooru has no account called ${account}.` : `Danbooru answered ${result.status} when looking up ${account}.`;
+                return '';
+            }
+            danbooruIdentity.id = String(user.id);
+            const s = settings();
+            s.danbooruIds = { ...(s.danbooruIds || {}), [account.toLowerCase()]: danbooruIdentity.id };
+            save();
+            return danbooruIdentity.id;
+        } catch (error) {
+            danbooruIdentity.error = `Could not look up ${account}: ${error?.message || error}`;
+            return '';
+        } finally {
+            danbooruIdentity.pending = null;
+            tell();
+        }
+    })();
+    tell();
+    return danbooruIdentity.pending;
+}
+
+async function agentHeaders(url) {
+    if (!DONMAI.test(hostOf(url)) || !danbooruAccount()) {
+        return {};
+    }
+    await resolveDanbooruId();
+    return agentFor(url);
+}
+
 async function request(url, options = {}) {
     const s = settings();
+    const { identify = true, ...rest } = options;
     if (!s.useProxy) {
         try {
-            return await rawFetch(url, options);
+            return await rawFetch(url, rest);
         } catch (error) {
             if (error?.message === 'Request timed out.') {
                 throw error;
@@ -416,7 +493,8 @@ async function request(url, options = {}) {
     }
     let result;
     try {
-        result = await rawFetch(proxyUrl(url), { ...options, headers: { ...ctx().getRequestHeaders(), ...(options.headers || {}) } });
+        const agent = identify ? await agentHeaders(url) : {};
+        result = await rawFetch(proxyUrl(url), { ...rest, headers: { ...ctx().getRequestHeaders(), ...agent, ...(rest.headers || {}) } });
     } catch (error) {
         throw new BlockedError(`Could not reach ${hostOf(url)}: ${error?.message || error}`);
     }
@@ -1027,6 +1105,9 @@ async function loadMore(browse) {
         const entry = siteEntries().find(e => e.domain === browse.domain);
         if (!entry) {
             throw new Error(`${browse.domain} is not in the approved sites.`);
+        }
+        if (DONMAI.test(entry.domain)) {
+            await resolveDanbooruId();
         }
         const engineName = await engineOf(entry, browse.required.length ? browse.required : browse.tags);
         browse.engine = engineName;
@@ -1865,11 +1946,12 @@ function fetcherLink(url) {
 
 async function fetchImageBlob(downloadUrl, variant, route) {
     const headers = ctx().getRequestHeaders();
+    const agent = route === 'proxy' ? await agentHeaders(decodeURIComponent(downloadUrl.replace(/^\/proxy\//, ''))) : {};
     let response;
     try {
         response = route === 'fetcher'
             ? await fetch(downloadUrl)
-            : await fetch(downloadUrl, { headers: { ...headers, ...variant } });
+            : await fetch(downloadUrl, { headers: { ...headers, ...variant, ...agent } });
     } catch (error) {
         throw new Error(`Could not download the picture: ${error?.message || error}`);
     }
@@ -2185,7 +2267,7 @@ async function downloadVideo(url) {
     const routes = [fetcherLink(url), proxyUrl(url)].filter(Boolean);
     for (const route of routes) {
         try {
-            const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: ctx().getRequestHeaders() });
+            const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
             if (!response.ok) {
                 throw new Error(`the server answered ${response.status}`);
             }
@@ -6676,6 +6758,9 @@ const thumbWatchers = new Set();
 const CHALLENGE_PAGE = /just a moment|challenge-platform|cf-chl|cf_chl|attention required|cloudflare/i;
 
 function thumbRoute(item, via) {
+    if (typeof via === 'function') {
+        return 'identified';
+    }
     const source = String(via || '');
     if (source.startsWith('/proxy/')) {
         return 'proxy';
@@ -6718,7 +6803,7 @@ async function checkBlockedHost(trouble) {
     }
     trouble.checked = true;
     try {
-        const result = await rawFetch(proxyUrl(trouble.sample), { headers: ctx().getRequestHeaders() });
+        const result = await rawFetch(proxyUrl(trouble.sample), { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(trouble.sample) } });
         trouble.cloudflare = CHALLENGE_PAGE.test(String(result.text || '').slice(0, 20000));
         trouble.why = trouble.cloudflare ? 'its image server asks for a Cloudflare check' : result.ok ? '' : `its image server answered ${result.status}`;
     } catch (error) {
@@ -6749,43 +6834,77 @@ function freshUrl(url) {
     return `${url}${url.includes('?') ? '&' : '?'}_r=${Date.now().toString(36)}`;
 }
 
-function setThumbSource(img, item, fresh = false) {
-    const site = item.siteFiles?.thumb || '';
-    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb), proxyUrl(item.thumb), site ? proxyUrl(site) : ''].filter(Boolean);
+const serverImages = new Map();
+
+function serverImageUrl(url) {
+    if (!serverImages.has(url)) {
+        const promise = fetchImageBlob(proxyUrl(url), {}, 'proxy').then(({ blob }) => URL.createObjectURL(blob));
+        promise.catch(() => serverImages.delete(url));
+        serverImages.set(url, promise);
+        while (serverImages.size > 300) {
+            const [oldest, old] = serverImages.entries().next().value;
+            serverImages.delete(oldest);
+            old.then(objectUrl => URL.revokeObjectURL?.(objectUrl)).catch(() => {});
+        }
+    }
+    return serverImages.get(url);
+}
+
+function cycleSources(img, sources, { loaded = null, failed = null } = {}) {
     let index = 0;
     img.referrerPolicy = 'no-referrer';
-    img.onload = () => {
-        img.onload = null;
-        noteThumb(item, img, true, sources[index]);
+    const show = () => {
+        const source = sources[index];
+        if (typeof source === 'function') {
+            source().then(url => {
+                img.src = url;
+            }, next);
+        } else {
+            img.src = source;
+        }
     };
-    img.onerror = () => {
+    const next = () => {
         index++;
         if (index < sources.length) {
-            img.src = sources[index];
+            show();
         } else {
             img.onerror = null;
             img.onload = null;
-            img.closest('.stis-cell')?.classList.add('stis-broken');
-            noteThumb(item, img, false);
+            failed?.();
         }
     };
-    img.src = sources[0];
+    img.onload = () => {
+        img.onload = null;
+        loaded?.(sources[index]);
+    };
+    img.onerror = next;
+    if (sources.length) {
+        show();
+    } else {
+        failed?.();
+    }
+}
+
+function setThumbSource(img, item, fresh = false) {
+    const site = item.siteFiles?.thumb || '';
+    const identified = Boolean(agentFor(item.thumb)['User-Agent']);
+    const server = identified ? () => serverImageUrl(item.thumb) : proxyUrl(item.thumb);
+    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb), server, site && !identified ? proxyUrl(site) : ''].filter(Boolean);
+    cycleSources(img, sources, {
+        loaded: via => noteThumb(item, img, true, via),
+        failed: () => {
+            img.closest('.stis-cell')?.classList.add('stis-broken');
+            noteThumb(item, img, false);
+        },
+    });
 }
 
 function setPreviewSource(img, item) {
     const site = item.siteFiles || {};
-    const sources = [...new Set([item.anim, item.img, item.anim ? site.full : '', site.img, fetcherLink(item.img), proxyUrl(item.img), site.img ? proxyUrl(site.img) : '', item.thumb, site.thumb].filter(Boolean))];
-    let index = 0;
-    img.referrerPolicy = 'no-referrer';
-    img.onerror = () => {
-        index++;
-        if (index < sources.length) {
-            img.src = sources[index];
-        } else {
-            img.onerror = null;
-        }
-    };
-    img.src = sources[0];
+    const identified = Boolean(agentFor(item.img || item.thumb)['User-Agent']);
+    const server = identified ? [() => serverImageUrl(item.anim || item.img)] : [proxyUrl(item.img), site.img ? proxyUrl(site.img) : ''];
+    const sources = [...new Set([item.anim, item.img, item.anim ? site.full : '', site.img, fetcherLink(item.img), ...server, item.thumb, site.thumb, identified ? () => serverImageUrl(item.thumb) : ''].filter(Boolean))];
+    cycleSources(img, sources);
 }
 
 function bindPress(cell, onTap, onLong) {
@@ -6982,8 +7101,11 @@ async function openPicker(initialTags = null, focus = null) {
             row.appendChild(el('small', '', trouble.cloudflare ? 'The check opens right here. When the picture shows in it, tap Done and the others load again.' : 'One of the pictures opens right here. If it shows, tap Done and the others load again.'));
             const routes = Object.entries(trouble.routes || {}).filter(([, n]) => n);
             if (routes.length) {
-                const names = { direct: `straight from ${trouble.host}`, site: 'from the site\'s own address (/data)', proxy: 'through SillyTavern\'s server', other: 'another way' };
+                const names = { direct: `straight from ${trouble.host}`, site: 'from the site\'s own address (/data)', proxy: 'through SillyTavern\'s server', identified: 'through SillyTavern\'s server, saying who you are', other: 'another way' };
                 row.appendChild(el('small', 'stis-help', `Shown so far: ${routes.map(([route, n]) => `${n} ${names[route]}`).join(', ')}.`));
+            }
+            if (DONMAI.test(trouble.host) && !danbooruIdentity.id) {
+                row.appendChild(el('small', 'stis-help', 'Danbooru lets programs through when they say whose they are. Add your Danbooru account under Setup → Danbooru account, then tap Try again.'));
             }
             if (trouble.tries && trouble.cloudflare) {
                 row.appendChild(el('small', 'stis-help', 'Passed the check and still blocked? Some browsers (Firefox, Brave, Safari) keep the pass apart from pictures shown inside another page. In Firefox, tap the shield in the address bar on this page and turn off Enhanced Tracking Protection for it, then pass the check again; or use Chrome.'));
@@ -8903,6 +9025,11 @@ function buildSettings() {
                             <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
                         </div>
                         <div class="stis-set">
+                            <div class="st-imagesearch-row"><span>Danbooru account</span><input type="text" id="st_imagesearch_danbooru_account" class="text_pole" placeholder="name or user ID"></div>
+                            <small class="stis-help">Danbooru asks programs to say whose they are, and puts programs that pretend to be a browser through a check. With your account, SillyTavern's server tells Danbooru it is SillyImageSearch for your account number, as Danbooru asks. Your name is enough; no API key is needed. Works in Firefox; Chrome does not let pages say this.</small>
+                            <small id="st_imagesearch_danbooru_status" class="stis-help"></small>
+                        </div>
+                        <div class="stis-set">
                             <div class="stis-label">Tag model</div>
                             <select id="st_imagesearch_profile" class="text_pole"></select>
                             <small id="st_imagesearch_profile_note" class="stis-help"></small>
@@ -9125,7 +9252,20 @@ function buildSettings() {
             onChatChanged();
         }
     });
+    const danbooruStatus = document.getElementById('st_imagesearch_danbooru_status');
+    const showIdentity = () => {
+        const account = danbooruAccount();
+        danbooruStatus.textContent = !account ? '' : danbooruIdentity.pending ? `Looking up ${account}…` : danbooruIdentity.id && danbooruIdentity.account === account ? `Danbooru sees: ${danbooruAgent()}` : danbooruIdentity.error;
+    };
+    identityWatchers.add(showIdentity);
+    let identityTimer = null;
+    bind('st_imagesearch_danbooru_account', 'danbooruAccount', 'value', () => {
+        clearTimeout(identityTimer);
+        identityTimer = setTimeout(() => resolveDanbooruId({ again: true }), 700);
+    });
+    showIdentity();
     bind('st_imagesearch_sites', 'sites', 'value', () => {
+        resolveDanbooruId().catch(() => {});
         s.engines = {};
         s.termLimits = {};
         clearTagCache();
@@ -9557,7 +9697,7 @@ function sectionSummary(section) {
     const count = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
     if (section === 'setup') {
         const name = document.getElementById('st_imagesearch_profile')?.selectedOptions?.[0]?.textContent?.trim();
-        return [count(siteEntries().length, 'site'), s.tagProfile ? `tag model: ${name || 'chosen'}` : 'no tag model yet', s.enabled ? '' : 'turned off'].filter(Boolean).join(' · ');
+        return [count(siteEntries().length, 'site'), s.tagProfile ? `tag model: ${name || 'chosen'}` : 'no tag model yet', danbooruIdentity.id ? `Danbooru: user #${danbooruIdentity.id}` : '', s.enabled ? '' : 'turned off'].filter(Boolean).join(' · ');
     }
     if (section === 'picker') {
         return `${Number.isFinite(Number(s.requiredCount)) ? Number(s.requiredCount) : 2} required · up to ${maxSuggested()} suggested`;
@@ -9647,6 +9787,7 @@ jQuery(() => {
     applyReferrerPolicy();
     settings();
     buildSettings();
+    resolveDanbooruId().catch(() => {});
     c.setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
     scheduleLorebookSync();
     refreshCleanup();

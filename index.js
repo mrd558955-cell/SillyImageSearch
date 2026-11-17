@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.32.0';
+const VERSION = '2.32.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2620,7 +2620,9 @@ async function frameMethods(video, at, width, height) {
 
 function noFramesError(errors) {
     console.warn('[Image Search] the browser gave no usable video pictures', errors);
-    return new Error(`this browser gives no usable pictures of the video (${errors.slice(0, 4).join('; ')}). Set "Reading videos" to the built-in reader in the settings.`);
+    return new Error(decoder.failed
+        ? `the built-in video reader could not be downloaded (${decoder.failed}), and this browser gives no usable pictures of the video (${errors.slice(0, 3).join('; ')})`
+        : `this browser gives no usable pictures of the video (${errors.slice(0, 3).join('; ')}). Set "Reading videos" to Automatic or the built-in reader in the settings.`);
 }
 
 async function readFrames(video, { from, to, step, rate = 1, seekStep = step, width, height }, onStart, onFrame, onProgress = null, stopped = null) {
@@ -2815,85 +2817,26 @@ self.onmessage = async ({ data: { id, type, data } }) => {
     }
 };
 `;
-const decoder = { worker: null, ready: null, calls: new Map(), next: 1, log: null, note: null, input: null, name: '', info: null, queue: Promise.resolve() };
-let browserReads = null;
+const decoder = { worker: null, ready: null, calls: new Map(), next: 1, log: null, note: null, input: null, name: '', info: null, failed: '', queue: Promise.resolve() };
 
 function readerChoice() {
     const choice = settings().videoReader;
     return choice === 'browser' || choice === 'software' ? choice : 'auto';
 }
 
-async function canReadFrames(open) {
-    const { video, duration } = open;
-    const width = 64;
-    const height = Math.max(1, Math.round(width * (video.videoHeight || 9) / (video.videoWidth || 16)));
-    for (const share of [0.5, 0.25, 0.75]) {
-        try {
-            await seekVideo(video, duration * share);
-        } catch {
-            continue;
-        }
-        for (const method of ['2d', 'webgl']) {
-            let reader = null;
-            try {
-                reader = frameReader(video, width, height, method);
-                if (!emptyData(reader.read())) {
-                    frameMethod = method;
-                    return true;
-                }
-            } catch {
-                continue;
-            } finally {
-                reader?.close();
-            }
-        }
-    }
-    return false;
-}
-
-async function pickReader(url) {
+async function pickReader() {
     const choice = readerChoice();
     if (choice !== 'auto') {
         return choice;
     }
-    if (await decoderKept()) {
-        return 'software';
-    }
-    if (browserReads === null) {
-        const blob = typeof url === 'string' ? await videoCopy(url) : url;
-        try {
-            const open = await openVideo(blob);
-            try {
-                browserReads = await canReadFrames(open);
-            } finally {
-                open.close();
-            }
-        } catch (error) {
-            console.debug('[Image Search] the browser could not open the video, using the built-in reader', error);
-            return 'software';
-        }
-    }
-    return browserReads ? 'browser' : 'software';
-}
-
-async function decoderKept() {
-    if (decoder.worker) {
-        return true;
-    }
-    if (typeof caches !== 'object') {
-        return false;
-    }
     try {
-        const store = await caches.open('stis-video-reader');
-        for (const base of decoderBases()) {
-            if (await store.match(`${base}ffmpeg-core.wasm`)) {
-                return true;
-            }
-        }
-    } catch {
-        return false;
+        await loadDecoder();
+        return 'software';
+    } catch (error) {
+        console.warn('[Image Search] the built-in video reader could not be loaded, using the browser', error);
+        decoder.failed = String(error?.message || error);
+        return 'browser';
     }
-    return false;
 }
 
 function resetDecoder(reason = 'the video reader stopped') {
@@ -3140,24 +3083,34 @@ function softGif(url, start, end, { fps = 10, width = 480 } = {}, onProgress = n
     });
 }
 
+function softStill(url, time, width = 160) {
+    return decoderTask(async () => {
+        const info = await decoderInput(url);
+        const height = Math.max(2, Math.round(width * info.height / info.width / 2) * 2);
+        await decoderRun(['-hide_banner', '-ss', Math.max(0, time).toFixed(3), '-i', decoder.name, '-an', '-frames:v', '1', '-vf', `scale=${width}:${height}`, '-f', 'rawvideo', '-pix_fmt', 'rgba', 'still.raw']);
+        const data = await decoderCall('read', { path: 'still.raw' }).catch(() => null);
+        await decoderCall('delete', { path: 'still.raw' });
+        return data?.length >= width * height * 4 ? pixelsToUrl(data.subarray(0, width * height * 4), width, height) : '';
+    });
+}
+
+async function partStill(url, player, time) {
+    if (await pickReader() === 'software') {
+        return softStill(url, time);
+    }
+    return Math.abs((Number(player.currentTime) || 0) - time) < 0.6 ? videoStill(player) : '';
+}
+
 async function clipMaker(url) {
-    let reader = await pickReader(url);
+    const reader = await pickReader();
     let open = null;
     return {
         async make(start, end, options, onProgress) {
-            if (reader === 'browser') {
-                try {
-                    open = open || await openVideo(url);
-                    return await gifFromOpen(open, start, end, options, onProgress);
-                } catch (error) {
-                    if (readerChoice() === 'browser') {
-                        throw error;
-                    }
-                    console.warn('[Image Search] the browser could not read the video, using the built-in reader', error);
-                    reader = 'software';
-                }
+            if (reader === 'software') {
+                return softGif(url, start, end, options, onProgress);
             }
-            return softGif(url, start, end, options, onProgress);
+            open = open || await openVideo(url);
+            return gifFromOpen(open, start, end, options, onProgress);
         },
         close() {
             open?.close();
@@ -3229,21 +3182,7 @@ function frameCells(data, width, height) {
 }
 
 async function scanVideo(url, onProgress = null, stopped = null) {
-    if (await pickReader(url) === 'browser') {
-        try {
-            const scan = await browserScan(url, onProgress, stopped);
-            if (scan.moving || scan.duration < 2 || readerChoice() === 'browser') {
-                return scan;
-            }
-            browserReads = false;
-        } catch (error) {
-            if (stopped?.() || readerChoice() === 'browser') {
-                throw error;
-            }
-            console.warn('[Image Search] the browser could not read the video, using the built-in reader', error);
-        }
-    }
-    return softScan(url, onProgress, stopped);
+    return await pickReader() === 'software' ? softScan(url, onProgress, stopped) : browserScan(url, onProgress, stopped);
 }
 
 async function browserScan(url, onProgress = null, stopped = null) {
@@ -10248,15 +10187,14 @@ async function openPicker(initialTags = null, focus = null) {
             const start = clipStart();
             const duration = durationOf();
             const end = Math.max(start + 0.1, duration ? Math.min(duration, start + clipLength()) : start + clipLength());
-            const near = Math.abs((Number(player.currentTime) || 0) - start) <= clipLength();
-            const part = { start, end, kind: 'hand', still: current.scan ? stillAt((start + end) / 2) : '' };
+            const part = { start, end, kind: 'hand', still: current.scan?.how === 'built-in reader' ? stillAt((start + end) / 2) : '' };
             current.parts.push(part);
             current.parts.sort((a, b) => a.start - b.start);
             tools.saved = '';
             partsStatus.textContent = `Added ${fmt(start)}–${fmt(end)} s.`;
             renderParts();
-            if (!part.still && near) {
-                videoStill(player).then(url => {
+            if (!part.still) {
+                partStill(current.video, player, (start + end) / 2).then(url => {
                     if (url && current.parts.includes(part) && !part.still) {
                         part.still = url;
                         renderParts();
@@ -11274,7 +11212,7 @@ function buildSettings() {
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_videos"> <span>Include videos</span></label><small class="stis-help">Made into GIFs when you use or save them.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF length (seconds)</span><input type="number" min="1" max="30" id="st_imagesearch_gif_seconds" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>Finding parts</span><input type="range" min="1" max="5" step="1" id="st_imagesearch_split_sense"><b id="st_imagesearch_split_sense_value" class="stis-range-value"></b></div><small class="stis-help">How easily "Find parts" sees a loop in a video. Strict finds fewer loops and makes fewer mistakes; loose finds loops that change a little. Parts that are not loops are at most the GIF length above.</small></div>
-                        <div class="stis-set"><div class="st-imagesearch-row"><span>Reading videos</span><select id="st_imagesearch_video_reader" class="text_pole"><option value="auto">Automatic</option><option value="browser">The browser</option><option value="software">Built-in reader</option></select></div><small class="stis-help">Making GIFs and finding parts need the pictures of the video. Some browsers cannot give them (Firefox for Android gives black or purple). The built-in reader always works and is faster: it is downloaded once (32 MB) and kept. Automatic uses the built-in reader when the browser cannot give the pictures, or once it has been downloaded.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Reading videos</span><select id="st_imagesearch_video_reader" class="text_pole"><option value="auto">Automatic</option><option value="browser">The browser</option><option value="software">Built-in reader</option></select></div><small class="stis-help">Making GIFs and finding parts need the pictures of the video. Some browsers cannot give them (Firefox for Android gives black or purple). The built-in reader always works and is faster: it is downloaded once (32 MB) and kept. Automatic uses it, and uses the browser only if it cannot be downloaded.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF width (px)</span><input type="number" min="120" max="1280" id="st_imagesearch_gif_width" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Video GIF frames per second</span><input type="number" min="2" max="30" id="st_imagesearch_gif_fps" class="text_pole"></div></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_debug"> <span>Debug info in the picker</span></label><small class="stis-help">Site search link, filter counts and the tag model's reply.</small></div>

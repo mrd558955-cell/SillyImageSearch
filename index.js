@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.29.0';
+const VERSION = '2.30.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -80,6 +80,8 @@ const DEFAULTS = {
     meaningModel: '',
     pickShortlist: 30,
     openSections: ['setup'],
+    libOrder: 'fit',
+    libSmall: false,
     danbooruAccount: '',
     danbooruIds: {},
     pickWindow: true,
@@ -7223,6 +7225,10 @@ async function openPicker(initialTags = null, focus = null) {
         libSearch: el('input', 'text_pole stis-lib-search'),
         libGrid: el('div', 'stis-grid'),
         libFilters: el('div', 'stis-lib-filters'),
+        libBar: el('div', 'stis-lib-bar'),
+        libOrder: el('div', 'stis-lib-order'),
+        libSize: el('div', 'menu_button stis-lib-size'),
+        libClear: el('div', 'menu_button stis-lib-clear', 'Clear all'),
         selectToggle: el('div', 'menu_button stis-tab stis-select-btn'),
         sites: el('div', 'stis-sites'),
         favs: el('div', 'stis-favs'),
@@ -7242,7 +7248,9 @@ async function openPicker(initialTags = null, focus = null) {
     ui.selectBar.hidden = true;
     ui.sites.hidden = true;
     ui.favs.hidden = true;
-    ui.libraryView.append(ui.libSearch, ui.libFilters, ui.libGrid);
+    ui.libClear.title = 'Remove the search and every filter, and show the whole library';
+    ui.libBar.append(ui.libOrder, ui.libClear, ui.libSize);
+    ui.libraryView.append(ui.libSearch, ui.libBar, ui.libFilters, ui.libGrid);
     ui.libraryView.hidden = true;
     ui.input.type = 'text';
     ui.input.placeholder = 'add tag (-tag to exclude), Enter';
@@ -8717,6 +8725,36 @@ async function openPicker(initialTags = null, focus = null) {
         ui.libFilters.hidden = !ui.libFilters.childElementCount;
     }
 
+    const LIB_ORDERS = [['fit', 'Best fit', 'Pictures that fit the chat and the tags first'], ['new', 'Newest', 'Last saved first'], ['used', 'Last used', 'Last sent first']];
+
+    function renderLibBar() {
+        ui.libOrder.innerHTML = '';
+        ui.libOrder.appendChild(el('small', 'stis-lib-filter-label', 'Order'));
+        const order = LIB_ORDERS.some(([key]) => key === s.libOrder) ? s.libOrder : 'fit';
+        for (const [key, label, title] of LIB_ORDERS) {
+            const chip = el('span', 'stis-fchip', label);
+            chip.title = title;
+            chip.classList.toggle('stis-fchip-on', key === order);
+            chip.addEventListener('click', () => {
+                s.libOrder = key;
+                save();
+                ui.libGrid.scrollTop = 0;
+                renderLibrary();
+            });
+            ui.libOrder.appendChild(chip);
+        }
+        ui.libClear.hidden = !libFilter.size && !ui.libSearch.value.trim();
+        ui.libSize.innerHTML = '';
+        ui.libSize.appendChild(el('i', s.libSmall ? 'fa-solid fa-table-cells-large' : 'fa-solid fa-table-cells'));
+        ui.libSize.title = s.libSmall ? 'Bigger pictures, 2 per row' : 'Smaller pictures, 3 per row';
+        ui.libGrid.classList.toggle('stis-grid-small', Boolean(s.libSmall));
+    }
+
+    function orderEntries(ranked) {
+        const time = entry => (s.libOrder === 'used' ? entry.lastUsed || 0 : entry.added || 0);
+        return s.libOrder === 'new' || s.libOrder === 'used' ? [...ranked].sort((a, b) => time(b.entry) - time(a.entry) || (b.entry.added || 0) - (a.entry.added || 0)) : ranked;
+    }
+
     async function renderLibrary() {
         await loadLibrary();
         if (closed) {
@@ -8724,6 +8762,7 @@ async function openPicker(initialTags = null, focus = null) {
         }
         updateLibraryTab();
         renderLibFilters();
+        renderLibBar();
         const scroll = ui.libGrid.scrollTop;
         ui.libGrid.innerHTML = '';
         const query = [...wordsOf(ui.libSearch.value)];
@@ -8740,9 +8779,10 @@ async function openPicker(initialTags = null, focus = null) {
                 return [...libFilter].every(key => facets.includes(key));
             });
         }
+        ranked = orderEntries(ranked);
         libraryOrder = ranked.map(({ entry }) => entry);
         if (!ranked.length) {
-            const message = library.broken ? 'The library could not be read.' : library.entries.length ? 'Nothing matches.' : 'Pictures you pick are saved here.';
+            const message = library.broken ? 'The library could not be read.' : library.entries.length ? 'Nothing matches. Clear all shows the whole library.' : 'Pictures you pick are saved here.';
             ui.libGrid.appendChild(el('div', 'stis-status', message));
             return;
         }
@@ -8856,6 +8896,18 @@ async function openPicker(initialTags = null, focus = null) {
     ui.libSearch.addEventListener('input', () => {
         clearTimeout(libTimer);
         libTimer = setTimeout(renderLibrary, 250);
+    });
+    ui.libClear.addEventListener('click', () => {
+        clearTimeout(libTimer);
+        ui.libSearch.value = '';
+        libFilter.clear();
+        ui.libGrid.scrollTop = 0;
+        renderLibrary();
+    });
+    ui.libSize.addEventListener('click', () => {
+        s.libSmall = !s.libSmall;
+        save();
+        renderLibBar();
     });
     ui.libSearch.addEventListener('keydown', event => {
         if (event.key === 'Enter') {

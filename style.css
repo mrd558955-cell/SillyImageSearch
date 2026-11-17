@@ -759,13 +759,15 @@ video.stis-preview-img {
 
 .stis-video-work {
     position: fixed;
-    left: 0;
-    top: 0;
-    width: 2px;
-    height: 2px;
-    opacity: 0.01;
+    left: 8px;
+    top: 8px;
+    width: 72px;
+    max-height: 96px;
+    border-radius: 6px;
+    background: #000;
+    box-shadow: 0 0 0 1px var(--SmartThemeBorderColor);
     pointer-events: none;
-    z-index: -1;
+    z-index: 50;
 }
 
 .stis-video-note {

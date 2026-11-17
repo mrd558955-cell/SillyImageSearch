@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.31.1';
+const VERSION = '2.31.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2359,7 +2359,7 @@ async function openVideo(source) {
     video.preload = 'auto';
     video.setAttribute('playsinline', '');
     video.className = 'stis-video-work';
-    document.body.appendChild(video);
+    ([...document.querySelectorAll('dialog[open]')].pop() || document.body).appendChild(video);
     const close = () => {
         video.pause?.();
         video.removeAttribute('src');
@@ -2601,11 +2601,20 @@ async function readFrames(video, { from, to, step, rate = 1, seekStep = step, wi
     const methods = await frameMethods(video, (from + to) / 2, width, height);
     const errors = [];
     const span = Math.max(0.05, to - from);
-    for (const how of ['playing', 'seeking']) {
+    const passes = [{ how: 'playing', rate }, ...(rate > 1 ? [{ how: 'playing', rate: 1, whenSparse: true }] : []), { how: 'seeking', rate: 0 }];
+    let sparse = false;
+    for (const pass of passes) {
+        if (pass.whenSparse && !sparse) {
+            continue;
+        }
         for (const method of methods) {
             let reader = null;
             let count = 0;
             let lit = false;
+            let moving = false;
+            let probe = null;
+            let last = from;
+            let widest = 0;
             try {
                 reader = frameReader(video, width, height, method);
                 onStart();
@@ -2615,28 +2624,50 @@ async function readFrames(video, { from, to, step, rate = 1, seekStep = step, wi
                     }
                     const data = reader.read();
                     lit = lit || !darkData(data);
+                    if (!probe) {
+                        probe = data;
+                    } else if (!moving) {
+                        for (let i = 0; i < data.length; i += 148) {
+                            if (Math.abs(data[i] - probe[i]) > 12) {
+                                moving = true;
+                                break;
+                            }
+                        }
+                    }
+                    widest = Math.max(widest, time - last);
+                    last = time;
                     count++;
                     onFrame(time, data);
                     onProgress?.(Math.min(1, (time - from) / span));
                 };
-                if (how === 'playing') {
-                    await playThrough(video, from, to, step, take, rate);
+                if (pass.how === 'playing') {
+                    await playThrough(video, from, to, step, take, pass.rate);
                 } else {
                     for (let time = from; time < to - seekStep * 0.25; time += seekStep) {
                         await seekVideo(video, time);
                         take(time);
                     }
                 }
-                if (lit && (how === 'seeking' || count >= Math.max(1, span / step * 0.3))) {
+                const label = `${method} by ${pass.how}${pass.rate > 1 ? ` ${pass.rate}x` : ''}`;
+                if (!count || !lit) {
+                    errors.push(`${label}: ${count ? 'black frames' : 'no frames'}`);
+                } else if (pass.how === 'seeking') {
                     frameMethod = method;
-                    return { how, method };
+                    return { how: pass.how, method, moving };
+                } else if (!moving && span >= 2) {
+                    errors.push(`${label}: the picture did not change`);
+                } else if (count < span / step * 0.3 || last < to - Math.max(1, span * 0.04) || widest > Math.max(1, step * 8)) {
+                    sparse = true;
+                    errors.push(`${label}: parts of the video were skipped`);
+                } else {
+                    frameMethod = method;
+                    return { how: pass.how, method, moving };
                 }
-                errors.push(`${method} by ${how}: ${count ? (lit ? 'too few frames' : 'black frames') : 'no frames'}`);
             } catch (error) {
                 if (stopped?.()) {
                     throw new Error('stopped');
                 }
-                errors.push(`${method} by ${how}: ${error?.message || error}`);
+                errors.push(`${method} by ${pass.how}: ${error?.message || error}`);
             } finally {
                 reader?.close();
             }
@@ -2748,29 +2779,36 @@ async function makePartGifs(url, parts, onProgress = null, onPart = null) {
     }
 }
 
-const SCAN_SIDE = 24;
+const SCAN_SIDE = 20;
 
-function grayCells(data, width, height) {
-    const gray = new Uint8Array(SCAN_SIDE * SCAN_SIDE);
+function frameCells(data, width, height) {
+    const cells = new Uint8Array(SCAN_SIDE * SCAN_SIDE * 3);
     for (let cy = 0; cy < SCAN_SIDE; cy++) {
         const y0 = Math.floor(cy * height / SCAN_SIDE);
         const y1 = Math.max(y0 + 1, Math.floor((cy + 1) * height / SCAN_SIDE));
         for (let cx = 0; cx < SCAN_SIDE; cx++) {
             const x0 = Math.floor(cx * width / SCAN_SIDE);
             const x1 = Math.max(x0 + 1, Math.floor((cx + 1) * width / SCAN_SIDE));
-            let sum = 0;
+            let red = 0;
+            let green = 0;
+            let blue = 0;
             let n = 0;
             for (let y = y0; y < y1; y++) {
                 for (let x = x0; x < x1; x++) {
                     const i = (y * width + x) * 4;
-                    sum += data[i + 3] ? (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8 : 0;
+                    red += data[i];
+                    green += data[i + 1];
+                    blue += data[i + 2];
                     n++;
                 }
             }
-            gray[cy * SCAN_SIDE + cx] = n ? Math.round(sum / n) : 0;
+            const at = (cy * SCAN_SIDE + cx) * 3;
+            cells[at] = Math.round(red / n);
+            cells[at + 1] = Math.round(green / n);
+            cells[at + 2] = Math.round(blue / n);
         }
     }
-    return gray;
+    return cells;
 }
 
 async function scanVideo(url, onProgress = null, stopped = null) {
@@ -2788,31 +2826,32 @@ async function scanVideo(url, onProgress = null, stopped = null) {
         let samples = [];
         let stills = [];
         let nextStill = 0;
-        const { how, method } = await readFrames(video, { from: 0, to: duration, step, rate, seekStep: 1 / 8, width, height }, () => {
+        const { how, method, moving } = await readFrames(video, { from: 0, to: duration, step, rate, seekStep: 1 / 8, width, height }, () => {
             samples = [];
             stills = [];
             nextStill = 0;
         }, (time, data) => {
-            samples.push({ time, gray: grayCells(data, width, height) });
+            samples.push({ time, cells: frameCells(data, width, height) });
             if (time >= nextStill) {
                 stills.push({ time, url: pixelsToUrl(data, width, height) });
                 nextStill = time + 0.5;
             }
         }, onProgress, stopped);
-        return { duration, step: how === 'seeking' ? 1 / 8 : step, samples, stills, how: `${how}, ${method}`, rate: how === 'playing' ? video.playbackRate || rate : 0, ms: Date.now() - started };
+        return { duration, step: how === 'seeking' ? 1 / 8 : step, samples, stills, moving, how: `${how}, ${method}`, ms: Date.now() - started };
     } finally {
         open.close();
     }
 }
 
 function frameGap(a, b) {
-    let changed = 0;
+    let sum = 0;
     for (let i = 0; i < a.length; i++) {
-        if (Math.abs(a[i] - b[i]) > 5) {
-            changed++;
+        const gap = a[i] > b[i] ? a[i] - b[i] : b[i] - a[i];
+        if (gap > 5) {
+            sum += gap - 5;
         }
     }
-    return changed / a.length;
+    return sum * 3 / a.length;
 }
 
 function medianOf(values) {
@@ -2824,97 +2863,168 @@ function medianOf(values) {
 }
 
 function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
-    const { duration, step } = scan;
+    const { duration } = scan;
     const samples = [...(scan.samples || [])].sort((a, b) => a.time - b.time);
-    if (!samples.length || !duration || !step) {
-        return { parts: [], loops: 0, cuts: 0, dropped: 0 };
+    if (samples.length < 2 || !duration) {
+        return { parts: [], loops: 0, cuts: 0, dropped: 0, longest: maxPart };
     }
+    const spacing = medianOf(samples.slice(1).map((sample, i) => sample.time - samples[i].time));
+    const step = Math.max(Number(scan.step) || 0, spacing, Math.sqrt(duration * 0.000029), 0.01);
     const count = Math.max(2, Math.ceil(duration / step - 0.001));
     const grid = [];
     for (let k = 0, j = 0; k < count; k++) {
         const time = k * step;
-        while (j + 1 < samples.length && Math.abs(samples[j + 1].time - time) <= Math.abs(samples[j].time - time)) {
+        while (j + 1 < samples.length && samples[j + 1].time <= time) {
             j++;
         }
-        grid.push(samples[j].gray);
+        const one = samples[j];
+        const two = samples[j + 1];
+        if (!two || one.time >= time || two.time - one.time > step * 3) {
+            grid.push(two && Math.abs(two.time - time) < Math.abs(one.time - time) ? two.cells : one.cells);
+            continue;
+        }
+        const share = (time - one.time) / (two.time - one.time);
+        if (share < 0.02) {
+            grid.push(one.cells);
+            continue;
+        }
+        const mixed = new Uint8Array(one.cells.length);
+        for (let i = 0; i < mixed.length; i++) {
+            mixed[i] = one.cells[i] + (two.cells[i] - one.cells[i]) * share + 0.5;
+        }
+        grid.push(mixed);
     }
     const ratio = [0.2, 0.27, 0.35, 0.45, 0.55][Math.min(5, Math.max(1, Math.round(Number(sense) || 3))) - 1];
+    const hold = ratio + 0.2;
+    const floor = 0.06;
     const minLag = Math.max(2, Math.round(0.25 / step));
-    const maxLag = Math.max(minLag, Math.round(6 / step));
-    const motion = grid.map((frame, k) => (k ? frameGap(frame, grid[k - 1]) : 0));
-    const repeat = new Array(count).fill(false);
-    const lagAt = new Array(count).fill(0);
-    const quiet = new Array(count).fill(false);
+    const maxLag = Math.max(minLag, Math.min(count - 1, Math.round(6 / step)));
+    const width = maxLag + 1;
+    const raw = new Float32Array(count * width);
     for (let k = 1; k < count; k++) {
         const top = Math.min(maxLag, k);
-        const gaps = [0];
         for (let lag = 1; lag <= top; lag++) {
-            gaps.push(frameGap(grid[k], grid[k - lag]));
+            raw[k * width + lag] = frameGap(grid[k], grid[k - lag]);
         }
-        quiet[k] = Math.max(...gaps.slice(1, Math.max(2, Math.round(0.5 / step) + 1))) < 0.008;
-        if (quiet[k] || top < minLag) {
-            continue;
+    }
+    const half = Math.max(1, Math.round(0.35 / step));
+    const smooth = new Float32Array(count * width).fill(Infinity);
+    const sums = new Float64Array(count + 1);
+    for (let lag = 1; lag <= maxLag; lag++) {
+        sums[lag] = 0;
+        for (let k = lag; k < count; k++) {
+            sums[k + 1] = sums[k] + raw[k * width + lag];
         }
-        let reach = Math.max(...gaps.slice(1, minLag));
+        for (let k = lag; k < count; k++) {
+            const from = Math.max(lag, k - half);
+            const to = Math.min(count - 1, k + half);
+            smooth[k * width + lag] = (sums[to + 1] - sums[from]) / (to - from + 1);
+        }
+    }
+    const peakBelow = (k, lag) => {
+        let peak = 0;
+        for (let l = 1; l < lag; l++) {
+            peak = Math.max(peak, smooth[k * width + l]);
+        }
+        return peak;
+    };
+    const candidate = k => {
+        const top = Math.min(maxLag, k);
+        let peak = peakBelow(k, Math.min(minLag, top + 1));
         for (let lag = minLag; lag <= top; lag++) {
-            if (reach >= 0.015 && gaps[lag] <= ratio * reach) {
+            const value = smooth[k * width + lag];
+            if (peak >= floor && value <= ratio * peak) {
                 let low = lag;
-                while (low < top && gaps[low + 1] < gaps[low]) {
+                while (low < top && smooth[k * width + low + 1] < smooth[k * width + low]) {
                     low++;
                 }
-                const left = gaps[low - 1];
-                const right = low < top ? gaps[low + 1] : left;
-                const bend = left - 2 * gaps[low] + right;
-                const shift = bend > 0 ? Math.max(-0.5, Math.min(0.5, (left - right) / (2 * bend))) : 0;
-                repeat[k] = true;
-                lagAt[k] = low + shift;
-                break;
+                for (const divide of [3, 2]) {
+                    const part = Math.round(low / divide);
+                    if (part < minLag) {
+                        continue;
+                    }
+                    for (let l = Math.max(minLag, part - 1); l <= part + 1; l++) {
+                        if (smooth[k * width + l] <= hold * peakBelow(k, l) && peakBelow(k, l) >= floor) {
+                            return { lag: l, peak: peakBelow(k, l) };
+                        }
+                    }
+                }
+                return { lag: low, peak: peakBelow(k, low) };
             }
-            reach = Math.max(reach, gaps[lag]);
+            peak = Math.max(peak, value);
         }
-    }
-    const smooth = repeat.map((_, k) => {
-        let yes = 0;
-        let all = 0;
-        for (let i = Math.max(0, k - 2); i <= Math.min(count - 1, k + 2); i++) {
-            all++;
-            yes += repeat[i] ? 1 : 0;
-        }
-        return yes * 2 > all;
-    });
-    const periodAt = smooth.map((on, k) => {
-        if (!on) {
-            return 0;
-        }
-        const near = [];
-        for (let i = Math.max(0, k - 4); i <= Math.min(count - 1, k + 4); i++) {
-            if (lagAt[i]) {
-                near.push(lagAt[i]);
-            }
-        }
-        return medianOf(near);
-    });
+        return null;
+    };
     const runs = [];
-    for (let k = 0; k < count; k++) {
-        if (!periodAt[k]) {
-            continue;
+    const close = run => {
+        if (run && run.b - run.a + 1 >= Math.max(minLag, run.first * 0.8)) {
+            runs.push(run);
         }
-        const run = runs[runs.length - 1];
-        if (run && run.b === k - 1 && Math.abs(periodAt[k] - run.period) <= Math.max(1.2, run.period * 0.2)) {
-            run.b = k;
-            run.periods.push(periodAt[k]);
-            run.period = medianOf(run.periods);
-        } else {
-            runs.push({ a: k, b: k, period: periodAt[k], periods: [periodAt[k]] });
+    };
+    let run = null;
+    for (let k = 1; k < count; k++) {
+        if (run) {
+            let best = Infinity;
+            let bestLag = run.lag;
+            for (let lag = Math.max(minLag, run.lag - 1); lag <= Math.min(maxLag, k, run.lag + 1); lag++) {
+                if (smooth[k * width + lag] < best) {
+                    best = smooth[k * width + lag];
+                    bestLag = lag;
+                }
+            }
+            const peak = peakBelow(k, bestLag);
+            const drifted = Math.abs(bestLag - run.first) > Math.max(1.5, run.first * 0.2);
+            if (!drifted && peak >= floor * 0.5 && best <= hold * peak) {
+                run.b = k;
+                run.lag = bestLag;
+                run.lags.push(bestLag);
+                run.peaks.push(peak);
+                continue;
+            }
+            close(run);
+            run = null;
+        }
+        const found = candidate(k);
+        if (found) {
+            run = { a: k, b: k, lag: found.lag, first: found.lag, lags: [found.lag], peaks: [found.peak] };
         }
     }
+    close(run);
     const loops = [];
-    for (const run of runs) {
-        if (run.b - run.a + 1 < run.period * 0.8) {
-            continue;
+    for (const item of runs) {
+        const lag = Math.round(medianOf(item.lags));
+        const level = hold * medianOf(item.peaks);
+        const near = k => {
+            let best = Infinity;
+            for (let l = Math.max(1, lag - 1); l <= Math.min(maxLag, k, lag + 1); l++) {
+                best = Math.min(best, raw[k * width + l]);
+            }
+            return best;
+        };
+        let { a, b } = item;
+        const edge = loops.length ? loops[loops.length - 1].end : 0;
+        while (b + 1 < count && (near(b + 1) <= level || (b + 2 < count && near(b + 2) <= level))) {
+            b++;
         }
-        const start = Math.max(loops.length ? loops[loops.length - 1].end : 0, run.a - Math.round(run.period));
-        loops.push({ start, end: run.b + 1, period: run.period, change: '' });
+        while (a - 1 >= Math.max(lag, edge) && (near(a - 1) <= level || (a - 2 >= Math.max(lag, edge) && near(a - 2) <= level))) {
+            a--;
+        }
+        let before = 0;
+        let at = 0;
+        let after = 0;
+        for (let k = a; k <= b; k++) {
+            if (lag > 1 && lag + 1 <= Math.min(maxLag, k)) {
+                before += smooth[k * width + lag - 1];
+                at += smooth[k * width + lag];
+                after += smooth[k * width + lag + 1];
+            }
+        }
+        const bend = before - 2 * at + after;
+        const period = lag + (bend > 0 ? Math.max(-0.5, Math.min(0.5, (before - after) / (2 * bend))) : 0);
+        const start = Math.max(loops.length ? loops[loops.length - 1].end : 0, a - Math.round(period));
+        if (b + 1 - start >= period * 1.5) {
+            loops.push({ start, end: b + 1, period, change: '' });
+        }
     }
     const sameMotion = (one, two) => {
         const first = grid.slice(one.start, one.start + Math.round(one.period));
@@ -2923,27 +3033,44 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
             return false;
         }
         const reach = Math.max(...first.map(frame => frameGap(frame, first[0])));
-        const level = Math.max(0.01, reach * 0.3);
-        const close = second.filter(frame => Math.min(...first.map(other => frameGap(frame, other))) <= level).length;
-        return close >= second.length * 0.8;
+        const level = Math.max(0.1, reach * 0.45);
+        const alike = second.filter(frame => Math.min(...first.map(other => frameGap(frame, other))) <= level).length;
+        return alike >= second.length * 0.7;
     };
     for (let i = loops.length - 1; i > 0; i--) {
         const one = loops[i - 1];
         const two = loops[i];
-        if (two.start - one.end <= Math.max(1, Math.round(Math.max(one.period, two.period))) && sameMotion(one, two)) {
-            if (Math.abs(two.period - one.period) > Math.max(0.6, one.period * 0.15)) {
-                one.change = two.period < one.period ? 'faster' : 'slower';
-            }
+        if (two.start - one.end > Math.max(1, Math.round(Math.max(one.period, two.period))) || !sameMotion(one, two)) {
+            continue;
+        }
+        const [short, long] = one.period <= two.period ? [one.period, two.period] : [two.period, one.period];
+        const times = Math.round(long / short);
+        if (Math.abs(long - short * times) <= Math.max(0.6, long * 0.12) && times <= 3) {
             one.end = two.end;
+            one.period = short;
             loops.splice(i, 1);
+        } else {
+            two.change = two.period < one.period ? 'faster' : 'slower';
         }
     }
-    const cutLevel = Math.max(0.45, medianOf(motion.slice(1)) * 4);
+    const motion = grid.map((frame, k) => (k ? raw[k * width + 1] : 0));
+    const cutLevel = Math.max(12, medianOf(motion.slice(1)) * 5);
     const cuts = [];
     motion.forEach((value, k) => {
-        if (k && value >= cutLevel && !loops.some(loop => k > loop.start && k < loop.end)) {
+        if (k && value >= cutLevel && value >= 3 * Math.max(k > 1 ? motion[k - 1] : 0, k + 1 < count ? motion[k + 1] : 0) && !loops.some(loop => k > loop.start && k < loop.end)) {
             cuts.push(k);
         }
+    });
+    const calmSpan = Math.max(1, Math.round(0.5 / step));
+    const quiet = grid.map((frame, k) => {
+        if (!k) {
+            return false;
+        }
+        let top = 0;
+        for (let lag = 1; lag <= Math.min(calmSpan, k); lag++) {
+            top = Math.max(top, raw[k * width + lag]);
+        }
+        return top < 0.02;
     });
     const stillMarks = [];
     for (let k = 1, from = -1; k <= count; k++) {
@@ -2951,80 +3078,73 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
             from = from < 0 ? k : from;
         } else if (from >= 0) {
             if ((k - from) * step >= 1) {
-                stillMarks.push(Math.max(0, from - Math.round(0.5 / step)), k);
+                stillMarks.push(Math.max(0, from - calmSpan), k);
             }
             from = -1;
         }
     }
-    const pieces = [];
-    const gap = (a, b) => {
-        const marks = [...new Set([a, ...cuts.filter(k => k > a && k < b), ...stillMarks.filter(k => k > a && k < b), b])].sort((x, y) => x - y);
-        for (let i = 0; i + 1 < marks.length; i++) {
-            const x = marks[i];
-            const y = marks[i + 1];
-            const length = (y - x) * step;
-            const calm = quiet.slice(Math.max(1, x), y);
-            const kind = calm.length && calm.filter(Boolean).length >= calm.length * 0.6 ? 'still' : cuts.includes(x) ? 'cut' : 'action';
-            if (kind === 'still') {
-                pieces.push({ start: x, end: y, kind });
-                continue;
-            }
-            const chunks = Math.max(1, Math.ceil(length / Math.max(1, maxPart) - 0.001));
-            for (let c = 0; c < chunks; c++) {
-                const from = x + Math.round((y - x) * c / chunks);
-                const to = x + Math.round((y - x) * (c + 1) / chunks);
-                if (to > from) {
-                    pieces.push({ start: from, end: to, kind: c ? (kind === 'cut' ? 'action' : kind) : kind });
+    const tiny = Math.max(1, Math.round(0.4 / step));
+    const build = limit => {
+        const pieces = [];
+        const gap = (a, b) => {
+            const marks = [...new Set([a, ...cuts.filter(k => k > a && k < b), ...stillMarks.filter(k => k > a && k < b), b])].sort((x, y) => x - y);
+            for (let i = 0; i + 1 < marks.length; i++) {
+                const x = marks[i];
+                const y = marks[i + 1];
+                const calm = quiet.slice(Math.max(1, x), y);
+                const kind = calm.length && calm.filter(Boolean).length >= calm.length * 0.6 ? 'still' : cuts.includes(x) ? 'cut' : 'action';
+                if (kind === 'still') {
+                    pieces.push({ start: x, end: y, kind });
+                    continue;
+                }
+                const chunks = Math.max(1, Math.ceil((y - x) * step / Math.max(1, limit) - 0.001));
+                for (let c = 0; c < chunks; c++) {
+                    const from = x + Math.round((y - x) * c / chunks);
+                    const to = x + Math.round((y - x) * (c + 1) / chunks);
+                    if (to > from) {
+                        pieces.push({ start: from, end: to, kind: c ? (kind === 'cut' ? 'action' : kind) : kind });
+                    }
                 }
             }
+        };
+        let cursor = 0;
+        for (const loop of loops) {
+            if (loop.start > cursor) {
+                gap(cursor, loop.start);
+            }
+            pieces.push({ ...loop, kind: 'loop' });
+            cursor = loop.end;
         }
+        if (cursor < count) {
+            gap(cursor, count);
+        }
+        for (let i = 0; i < pieces.length; i++) {
+            const piece = pieces[i];
+            if (piece.kind === 'loop' || piece.end - piece.start >= tiny) {
+                continue;
+            }
+            const left = pieces[i - 1];
+            const right = pieces[i + 1];
+            if (left && left.kind !== 'loop' && left.end === piece.start) {
+                left.end = piece.end;
+            } else if (right && right.kind !== 'loop' && right.start === piece.end) {
+                right.start = piece.start;
+            }
+            pieces.splice(i, 1);
+            i--;
+        }
+        return pieces;
     };
-    let cursor = 0;
-    for (const loop of loops) {
-        if (loop.start > cursor) {
-            gap(cursor, loop.start);
+    let longest = Math.max(1, maxPart);
+    let pieces = build(longest);
+    for (const factor of [1.5, 2, 3, 5]) {
+        if (pieces.length <= maxParts || longest >= 30) {
+            break;
         }
-        pieces.push({ ...loop, kind: 'loop' });
-        cursor = loop.end;
-    }
-    if (cursor < count) {
-        gap(cursor, count);
-    }
-    const tiny = Math.max(1, Math.round(0.4 / step));
-    for (let i = 0; i < pieces.length; i++) {
-        const piece = pieces[i];
-        if (piece.kind === 'loop' || piece.end - piece.start >= tiny) {
-            continue;
-        }
-        const left = pieces[i - 1];
-        const right = pieces[i + 1];
-        if (left && left.kind !== 'loop' && left.end === piece.start) {
-            left.end = piece.end;
-        } else if (right && right.kind !== 'loop' && right.start === piece.end) {
-            right.start = piece.start;
-        }
-        pieces.splice(i, 1);
-        i--;
+        longest = Math.min(30, Math.max(1, maxPart) * factor);
+        pieces = build(longest);
     }
     const seconds = piece => (piece.end - piece.start) * step;
-    let merged = true;
-    while (pieces.length > maxParts && merged) {
-        merged = false;
-        let pick = -1;
-        for (let i = 0; i + 1 < pieces.length; i++) {
-            const one = pieces[i];
-            const two = pieces[i + 1];
-            if (one.kind !== 'loop' && two.kind !== 'loop' && one.end === two.start && (two.end - one.start) * step <= maxPart && (pick < 0 || seconds(one) + seconds(two) < seconds(pieces[pick]) + seconds(pieces[pick + 1]))) {
-                pick = i;
-            }
-        }
-        if (pick >= 0) {
-            pieces[pick].end = pieces[pick + 1].end;
-            pieces[pick].kind = pieces[pick].kind === 'still' && pieces[pick + 1].kind === 'still' ? 'still' : pieces[pick].kind === 'cut' ? 'cut' : 'action';
-            pieces.splice(pick + 1, 1);
-            merged = true;
-        }
-    }
     let dropped = 0;
     while (pieces.length > maxParts) {
         let pick = 0;
@@ -3043,7 +3163,7 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8 } = {}) {
         : piece.kind === 'still' && (piece.end - piece.start) * step > 1.5
             ? { start: round(piece.start * step), end: round(Math.min(duration, piece.start * step + 1.5)), kind: 'still', region: region(piece) }
             : { start: round(piece.start * step), end: round(Math.min(duration, piece.end * step)), kind: piece.kind }));
-    return { parts, loops: parts.filter(part => part.kind === 'loop').length, cuts: parts.filter(part => part.kind === 'cut').length, dropped };
+    return { parts, loops: parts.filter(part => part.kind === 'loop').length, cuts: parts.filter(part => part.kind === 'cut').length, dropped, longest };
 }
 
 async function convertVideoItem(item, onProgress = null) {
@@ -9277,7 +9397,7 @@ async function openPicker(initialTags = null, focus = null) {
         };
 
         const partNote = part => {
-            const base = part.kind === 'loop' ? `Loop ×${part.cycles}, ${fmt(part.period)} s each${part.change ? `, then ${part.change}` : ''}`
+            const base = part.kind === 'loop' ? `Loop ×${part.cycles}, ${fmt(part.period)} s each${part.change ? `: the loop before, ${part.change}` : ''}`
                 : part.kind === 'cut' ? 'After a cut' : part.kind === 'still' ? 'Still' : part.kind === 'hand' ? 'Added by hand' : 'Action';
             return part.edited ? `${base} (edited)` : base;
         };
@@ -9650,7 +9770,10 @@ async function openPicker(initialTags = null, focus = null) {
                         partsStatus.textContent = `Reading the video… ${Math.round(share * 100)}%`;
                     }
                 }, () => scanStop || closed || !panel.isConnected);
-                const found = splitVideo(scan, { maxPart: Math.min(30, Math.max(1, Number(s.gifSeconds) || 6)), sense: s.splitSense, maxParts: MAX_PARTS });
+                partsStatus.textContent = 'Finding the parts…';
+                await new Promise(resolve => setTimeout(resolve, 30));
+                const maxPart = Math.min(30, Math.max(1, Number(s.gifSeconds) || 6));
+                const found = splitVideo(scan, { maxPart, sense: s.splitSense, maxParts: MAX_PARTS });
                 current.scan = scan;
                 current.parts.forEach(releasePart);
                 current.parts = found.parts.map(part => ({ ...part, still: stillAt((part.start + part.end) / 2) }));
@@ -9659,8 +9782,11 @@ async function openPicker(initialTags = null, focus = null) {
                 const count = current.parts.length;
                 const loops = found.loops ? `${found.loops} loop${found.loops === 1 ? '' : 's'}` : 'no loop';
                 const left = found.dropped ? ` ${found.dropped} short part${found.dropped === 1 ? ' was' : 's were'} left out (${MAX_PARTS} at most); add ${found.dropped === 1 ? 'it' : 'them'} by hand if needed.` : '';
-                const debug = s.debug ? ` Read ${scan.samples.length} frames by ${scan.how}${scan.rate ? ` at ${scan.rate}×` : ''} in ${(scan.ms / 1000).toFixed(1)} s.` : '';
-                partsStatus.textContent = `Found ${count} part${count === 1 ? '' : 's'}: ${loops}${found.cuts ? `, ${found.cuts} after a cut` : ''}.${left} Tap a part to play it.${debug}`;
+                const longer = found.longest > maxPart ? ` Parts are up to ${Math.round(found.longest)} s long so the whole video fits in ${MAX_PARTS} parts.` : '';
+                const read = ` Read ${scan.samples.length} pictures in ${Math.round(scan.ms / 1000)} s (${scan.how}).`;
+                partsStatus.textContent = scan.moving === false
+                    ? `The picture never changed while the video was read, so there is nothing to split. If the video does move, this browser is not giving its pictures: try Chrome.${read}`
+                    : `Found ${count} part${count === 1 ? '' : 's'}: ${loops}${found.cuts ? `, ${found.cuts} after a cut` : ''}.${left}${longer} Tap a part to play it.${read}`;
             } catch (error) {
                 partsStatus.textContent = scanStop ? 'Stopped.' : `Could not read the video: ${error?.message || error}`;
             }

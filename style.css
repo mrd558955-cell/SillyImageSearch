@@ -1524,3 +1524,32 @@ video.stis-preview-img {
     opacity: 0.85;
     margin-right: 4px;
 }
+
+.stis-cell[hidden] {
+    display: none;
+}
+
+.stis-cell-checking {
+    opacity: 0.45;
+}
+
+.stis-set-badge-anim {
+    background: var(--SmartThemeQuoteColor, #e18a24);
+    color: #fff;
+}
+
+.stis-variant-anim {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    padding: 0 4px;
+    border-radius: 6px;
+    font-size: 0.65em;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    pointer-events: none;
+}
+
+.stis-anim-chip {
+    flex: none;
+}

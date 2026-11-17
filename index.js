@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.34.1';
+const VERSION = '2.35.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -970,6 +970,10 @@ const families = new Map();
 
 function familyKey(item) {
     return `${item.domain}:${item.root || item.postId || item.img}`;
+}
+
+function animatedItem(item) {
+    return Boolean(item?.video || item?.anim);
 }
 
 function mayHaveFamily(item) {
@@ -9402,16 +9406,111 @@ async function openPicker(initialTags = null, focus = null) {
         tagsChanged();
     };
 
+    let animOnly = false;
+    const hiddenAnim = family => family.members.filter(member => member !== family.rep && animatedItem(member) && !animatedItem(family.rep));
+    const groupPending = family => !family.loaded && family.members.some(mayHaveFamily) && supportsFamily(family.rep);
+    const showFamilyCell = family => {
+        if (!family.cell) {
+            return;
+        }
+        const animated = family.members.some(animatedItem);
+        const pending = groupPending(family);
+        family.cell.hidden = animOnly && !animated && !pending;
+        family.cell.classList.toggle('stis-cell-checking', animOnly && !animated && pending);
+    };
     const familyBadge = family => {
         const count = family.members.length;
-        const more = family.members.some(mayHaveFamily) && !family.loaded;
+        const more = groupPending(family) || (family.members.some(mayHaveFamily) && !family.loaded);
+        const inside = hiddenAnim(family);
         family.badge.innerHTML = '';
         family.badge.hidden = count < 2 && !more;
+        family.badge.classList.toggle('stis-set-badge-anim', inside.length > 0);
         if (!family.badge.hidden) {
             family.badge.appendChild(el('i', 'fa-solid fa-clone'));
             family.badge.appendChild(document.createTextNode(` ${count}${more ? '+' : ''}`));
+            if (inside.length) {
+                family.badge.appendChild(document.createTextNode(' '));
+                family.badge.appendChild(el('i', 'fa-solid fa-play'));
+            }
+        }
+        family.badge.title = inside.length ? `This group has ${inside.length === 1 ? (inside[0].video ? 'a video' : 'an animated picture') : `${inside.length} videos or animated pictures`}: open it to see` : '';
+        showFamilyCell(family);
+        updateAnimChip();
+    };
+    const mergeFamily = (family, members) => {
+        family.loaded = true;
+        const seen = new Set(family.members.map(member => member.img));
+        members.forEach(member => {
+            if (!seen.has(member.img)) {
+                seen.add(member.img);
+                family.members.push(member);
+            }
+        });
+        familyBadge(family);
+    };
+    const groupQueue = [];
+    let groupBusy = 0;
+    const nextGroup = () => {
+        while (groupBusy < 2 && groupQueue.length && !closed) {
+            const family = groupQueue.shift();
+            if (family.loaded || !family.cell?.isConnected) {
+                family.checking = false;
+                continue;
+            }
+            groupBusy++;
+            fetchFamily(family.rep)
+                .then(members => mergeFamily(family, members))
+                .catch(() => {
+                    family.loaded = true;
+                    familyBadge(family);
+                })
+                .finally(() => {
+                    family.checking = false;
+                    groupBusy--;
+                    nextGroup();
+                });
         }
     };
+    const checkGroup = family => {
+        if (family.checking || !groupPending(family)) {
+            return;
+        }
+        family.checking = true;
+        groupQueue.push(family);
+        nextGroup();
+    };
+    const groupCells = new WeakMap();
+    const groupWatch = typeof IntersectionObserver === 'function'
+        ? new IntersectionObserver(entries => entries.forEach(entry => {
+            const family = entry.isIntersecting && groupCells.get(entry.target);
+            if (family) {
+                groupCells.delete(entry.target);
+                groupWatch.unobserve(entry.target);
+                checkGroup(family);
+            }
+        }), { rootMargin: '300px' })
+        : { observe: cell => groupCells.get(cell) && checkGroup(groupCells.get(cell)), unobserve() {}, disconnect() {} };
+    const animChip = el('span', 'stis-fchip stis-anim-chip');
+    animChip.title = 'Show only videos, GIFs and groups that have one inside';
+    animChip.addEventListener('click', () => {
+        animOnly = !animOnly;
+        gridFamilies.forEach(family => {
+            showFamilyCell(family);
+            if (animOnly && groupPending(family)) {
+                checkGroup(family);
+            }
+        });
+        updateAnimChip();
+    });
+    function updateAnimChip() {
+        animChip.classList.toggle('stis-fchip-on', animOnly);
+        animChip.innerHTML = '';
+        animChip.appendChild(el('i', 'fa-solid fa-play'));
+        const shown = [...gridFamilies.values()].filter(family => family.members.some(animatedItem)).length;
+        const checking = [...gridFamilies.values()].filter(groupPending).length;
+        animChip.appendChild(document.createTextNode(` Animated only${animOnly ? ` (${shown}${checking ? `, checking ${checking} groups` : ''})` : ''}`));
+    }
+    ui.lookBar.prepend(animChip);
 
     const renderNew = () => {
         if (!browse) {
@@ -9458,9 +9557,13 @@ async function openPicker(initialTags = null, focus = null) {
                     lengthWatch.observe(cell);
                 }
             }
-            const family = { rep: item, members: [item], badge, loaded: false };
+            const family = { rep: item, members: [item], badge, loaded: false, cell };
             gridFamilies.set(key, family);
             familyBadge(family);
+            if (groupPending(family)) {
+                groupCells.set(cell, family);
+                groupWatch.observe(cell);
+            }
             reps.push(item);
             const choice = itemPick(item);
             cell.appendChild(orderBadge(choice));
@@ -9533,6 +9636,8 @@ async function openPicker(initialTags = null, focus = null) {
         rendered = 0;
         reps = [];
         gridFamilies = new Map();
+        groupQueue.length = 0;
+        updateAnimChip();
         saveButtons = new Map();
         ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
         ui.grid.scrollTop = 0;
@@ -9815,6 +9920,12 @@ async function openPicker(initialTags = null, focus = null) {
             thumb.classList.toggle('stis-variant-on', member === current);
             thumb.addEventListener('click', () => onChoose(member));
             wrap.appendChild(thumb);
+            if (animatedItem(member)) {
+                const mark = el('span', 'stis-variant-anim');
+                mark.appendChild(el('i', 'fa-solid fa-play'));
+                mark.title = member.video ? 'Video' : 'Animated';
+                wrap.appendChild(mark);
+            }
             if (numbered) {
                 wrap.appendChild(el('span', 'stis-variant-num', String(index + 1)));
             }
@@ -10714,15 +10825,7 @@ async function openPicker(initialTags = null, focus = null) {
         drawStrip();
         if (family && !family.loaded && supportsFamily(item)) {
             const loadFamily = () => fetchFamily(item).then(members => {
-                family.loaded = true;
-                const seen = new Set(family.members.map(member => member.img));
-                members.forEach(member => {
-                    if (!seen.has(member.img)) {
-                        seen.add(member.img);
-                        family.members.push(member);
-                    }
-                });
-                familyBadge(family);
+                mergeFamily(family, members);
                 if (!closed && previewState?.target === item && previewState.variant === current) {
                     drawStrip();
                 }
@@ -11440,6 +11543,8 @@ async function openPicker(initialTags = null, focus = null) {
             state.pickerOpen = false;
             lengthWatch.disconnect();
             lengthQueue.length = 0;
+            groupWatch.disconnect();
+            groupQueue.length = 0;
             releaseMedia(ui.root);
             decoder.note = null;
             idleDecoder(5000);

@@ -1553,3 +1553,17 @@ video.stis-preview-img {
 .stis-anim-chip {
     flex: none;
 }
+
+.stis-length-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    font-size: 0.9em;
+}
+
+.stis-length-input {
+    width: 4.2em;
+    margin: 0;
+    padding: 2px 4px;
+}

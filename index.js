@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.35.0';
+const VERSION = '2.36.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -81,6 +81,8 @@ const DEFAULTS = {
     pickShortlist: 30,
     openSections: ['setup'],
     libOrder: 'fit',
+    videoMin: 0,
+    videoMax: 0,
     libSmall: false,
     danbooruAccount: '',
     danbooruIds: {},
@@ -2503,9 +2505,7 @@ async function nextLength() {
         if (!videoLengths.has(url)) {
             videoLengths.set(url, await probeLength(url));
         }
-        if (videoLengths.get(url)) {
-            show(videoLengths.get(url));
-        }
+        show(videoLengths.get(url) || 0);
     }
     lengthBusy = false;
 }
@@ -9409,15 +9409,49 @@ async function openPicker(initialTags = null, focus = null) {
     let animOnly = false;
     const hiddenAnim = family => family.members.filter(member => member !== family.rep && animatedItem(member) && !animatedItem(family.rep));
     const groupPending = family => !family.loaded && family.members.some(mayHaveFamily) && supportsFamily(family.rep);
+    const lengthLimits = () => ({ min: Math.max(0, Number(s.videoMin) || 0), max: Math.max(0, Number(s.videoMax) || 0) });
+    const videoFits = item => {
+        if (!item?.video) {
+            return true;
+        }
+        const { min, max } = lengthLimits();
+        if (!min && !max) {
+            return true;
+        }
+        const seconds = videoLength(item);
+        if (!seconds) {
+            return videoLengths.has(item.video) || needsVideoCopy(item.video) ? true : null;
+        }
+        return seconds >= min && (!max || seconds <= max);
+    };
     const showFamilyCell = family => {
         if (!family.cell) {
             return;
         }
-        const animated = family.members.some(animatedItem);
+        const fits = videoFits(family.rep);
+        const animated = family.members.some(member => animatedItem(member) && videoFits(member) !== false);
         const pending = groupPending(family);
-        family.cell.hidden = animOnly && !animated && !pending;
-        family.cell.classList.toggle('stis-cell-checking', animOnly && !animated && pending);
+        const waitAnim = animOnly && !animated && pending;
+        family.cell.hidden = fits === false || (animOnly && !animated && !pending);
+        family.cell.classList.toggle('stis-cell-checking', !family.cell.hidden && (waitAnim || fits === null));
     };
+    const lengthBox = el('span', 'stis-length-filter');
+    const lengthInput = (key, label) => {
+        const input = el('input', 'text_pole stis-length-input');
+        Object.assign(input, { type: 'number', min: '0', step: '1', placeholder: 'any', inputMode: 'numeric' });
+        input.value = Number(s[key]) > 0 ? String(s[key]) : '';
+        input.title = label;
+        input.addEventListener('change', () => {
+            s[key] = Math.max(0, Math.round(Number(input.value) || 0));
+            input.value = s[key] ? String(s[key]) : '';
+            save();
+            gridFamilies.forEach(showFamilyCell);
+            updateAnimChip();
+        });
+        return input;
+    };
+    lengthBox.append(el('i', 'fa-solid fa-film'), el('span', '', ' Videos'), lengthInput('videoMin', 'Hide videos shorter than this many seconds (empty: no limit)'), el('span', '', 'to'), lengthInput('videoMax', 'Hide videos longer than this many seconds (empty: no limit)'), el('span', '', 's'));
+    lengthBox.title = 'Only show videos whose length is in this range, in seconds; videos whose length is not known yet stay dimmed until it is';
     const familyBadge = family => {
         const count = family.members.length;
         const more = groupPending(family) || (family.members.some(mayHaveFamily) && !family.loaded);
@@ -9506,11 +9540,11 @@ async function openPicker(initialTags = null, focus = null) {
         animChip.classList.toggle('stis-fchip-on', animOnly);
         animChip.innerHTML = '';
         animChip.appendChild(el('i', 'fa-solid fa-play'));
-        const shown = [...gridFamilies.values()].filter(family => family.members.some(animatedItem)).length;
+        const shown = [...gridFamilies.values()].filter(family => !family.cell?.hidden && family.members.some(member => animatedItem(member) && videoFits(member) !== false)).length;
         const checking = [...gridFamilies.values()].filter(groupPending).length;
         animChip.appendChild(document.createTextNode(` Animated only${animOnly ? ` (${shown}${checking ? `, checking ${checking} groups` : ''})` : ''}`));
     }
-    ui.lookBar.prepend(animChip);
+    ui.lookBar.prepend(animChip, lengthBox);
 
     const renderNew = () => {
         if (!browse) {
@@ -9543,8 +9577,13 @@ async function openPicker(initialTags = null, focus = null) {
                 play.title = 'Video: made into a GIF when you use or save it';
                 const length = el('span', 'stis-video-length');
                 const showLength = seconds => {
-                    length.textContent = lengthText(seconds);
-                    length.hidden = false;
+                    length.textContent = seconds ? lengthText(seconds) : '';
+                    length.hidden = !seconds;
+                    const known = gridFamilies.get(key);
+                    if (known) {
+                        showFamilyCell(known);
+                        updateAnimChip();
+                    }
                 };
                 length.hidden = true;
                 Object.defineProperty(showLength, 'isConnected', { get: () => play.isConnected });

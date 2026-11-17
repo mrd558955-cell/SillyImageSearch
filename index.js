@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.43.0';
+const VERSION = '2.44.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -26,7 +26,8 @@ const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|i
 const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
 const OLD_NAMES_RULE = 'Use names only when the tags give them.';
 const NO_NAMES_RULE = 'Never use names for people or characters, even when the tags give them (a character tag is only a hint): say he, she or they, or describe the person (the blond boy in orange). If a text you are given uses names, replace them the same way.';
-const ACTORS_RULE = 'Start the description (the Visual line, if there is one) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Two people (one only partly in view):". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
+const ACTORS_RULE = 'Begin the Visual line (keep its "Visual:" label) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Visual: Two people (one only partly in view): …". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
+const PICTURE_FIRST = 'The picture comes first: describe what you actually see. Tags, notes and earlier descriptions only support it; where they do not match the picture, follow the picture, and mention something that cannot be seen only as likely off screen or implied, in a few words, without changing what is visibly happening.';
 const PREV_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nGive each item a role and a story line.\nRole: a main role, then a finer one. Main roles: setup (how things are before the action, often a loop or an idle moment), build-up (leading to the action), main action (the key moment), aftermath (the result or the reaction to it), transition (moving on to another scene). The finer role is 1 to 3 words of your own, like idle loop, wind-up, climax, impact, reveal, reaction, calm down. With 3 items, the first is often the setup, the second the main action and the third the aftermath, but go by what the descriptions say.\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per item and nothing else, like:\n1. setup, idle loop: ...\n2. main action, climax: ...';
 const V241_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst give the shape of the whole group, then a role and a story line for each item.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension rising toward an action or the climax), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between actions: catching breath, a standoff, a loop that holds the moment), climax (the single most intense moment of the whole group), aftermath (the result or the reaction after the climax), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, reaction, calm down.\nGuidelines:\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: a loop at the start is usually the setup, a loop between actions is a pause, a loop at the end can be the aftermath.\n- There is at most one climax. It is usually the last item or the one before it; an action earlier on is just an action unless nothing after it comes close.\n- Not every group has an aftermath. Use it only for an item that comes after the climax and shows its result or a reaction. If the group ends on the peak, the last item is the climax.\n- Judge each item by what it shows and by the items around it, not by its position.\nExamples: setup, climax, aftermath (a short scene with one peak); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); setup, action, action, transition (no real peak, so no climax).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with the shape line, then one line per item, and nothing else, like:\nShape: setup → action → pause → climax\n1. setup, idle loop: ...\n2. action, first clash: ...';
 const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst rate each item, then give the shape of the whole group, then a role and a story line for each item.\nIntensity: rate each item from 1 to 10 for how intense the moment is. Intensity is the peak of emotion, not just of action: a fierce blow, a confession, a reconciliation hug, a goodbye or someone breaking into tears can all be a 9 or a 10. Calm, ordinary or waiting moments are low. Compare the items with each other, not with other stories.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension or feeling rising toward the peak), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between two higher moments: catching breath, a standoff, a loop that holds the moment), climax (the item where the intensity peaks), aftermath (after the climax: its result, or the reaction to it, with the intensity coming down), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, embrace, tears, reaction, calm down.\nGuidelines:\n- Decide the climax from the intensity: it is the item with the highest one, and there is at most one. It can be anywhere, also the first item, and in a sad or tender scene it is the most emotional moment, not the most active one.\n- An item after the climax that shows its result or a reaction is the aftermath, even if something still moves in it. A group that ends on the peak has no aftermath.\n- Item 1 is not always the setup: a group can start in the middle of things, with a build-up or an action.\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: it can be a setup, a pause or an aftermath depending on what it shows.\nExamples: setup, climax, aftermath; build-up, climax, aftermath (starts in the middle of things); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); climax, aftermath, aftermath (starts at the peak); setup, build-up, climax (a tearful goodbye).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one rating line per item, then the shape line, then one line per item, and nothing else, like:\nIntensity 1: 4, they size each other up\nIntensity 2: 9, the decisive blow\nIntensity 3: 5, she staggers back, hurt\nShape: build-up → climax → aftermath\n1. build-up, sizing up: ...\n2. climax, finishing blow: ...';
@@ -4251,6 +4252,10 @@ function parseDescription(raw) {
             sections[label] = content.slice(0, 700);
         }
     });
+    const lead = String(plain).replace(/\s+/g, ' ').trim();
+    if (lead && Object.keys(sections).length && !/^(sure|okay|ok|certainly|of course|here('s| is| are))\b/i.test(lead) && lead.length <= 600) {
+        sections.visual = sections.visual ? `${lead.replace(/[:\s]+$/, ':')} ${sections.visual}`.slice(0, 900) : lead.slice(0, 700);
+    }
     const text = renderSections(sections) || String(plain).replace(/\s+/g, ' ').trim().slice(0, 1500);
     return { text, sections, keywords, variants, changed };
 }
@@ -4301,7 +4306,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     }
     const people = peopleHint(extra.peopleTags || tags);
     const count = people ? ` The site's tags say: ${people}${extra.peopleTags ? ' (for the whole group, so not everyone may be in this item)' : ''}. If they count more people than you first notice, look again for someone only partly in view before you give the count.` : '';
-    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}\n\n${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
+    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}\n\n${PICTURE_FIRST} ${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
     const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
@@ -4420,11 +4425,67 @@ function cleanItem(item, index, entry, grouped) {
         shows: cleanStrings(item.shows, 80),
         role: cleanRole(item.role),
         added: cleanStrings(item.added, 40),
+        fixes: cleanFixes(item.fixes),
         deduced: Array.isArray(item.deduced) ? item.deduced.filter(d => d && d.tag).slice(0, 20).map(d => ({ tag: String(d.tag), why: String(d.why || '').slice(0, 300) })) : [],
         before: item.before && typeof item.before === 'object' && item.before.description ? { description: String(item.before.description), sections: cleanSections(item.before.sections), keywords: cleanStrings(item.before.keywords, 16) } : null,
         lock: cleanLock(item.lock) || (grouped && index === 0 ? cleanLock(entry.lock) : null),
         card: cleanCard(item.card),
     };
+}
+
+function cleanFixes(fixes) {
+    return Array.isArray(fixes) ? fixes.filter(fix => fix && fix.text).slice(-6).map(fix => ({ text: String(fix.text).slice(0, 600), tags: cleanStrings(fix.tags, 10), at: Number(fix.at) || Date.now() })) : [];
+}
+
+function fixesNote(fixes) {
+    return fixes?.length ? `The user corrected an earlier description of this picture: ${fixes.slice(-3).map(fix => `"${fix.text}"${fix.tags.length ? ` (it shows: ${fix.tags.join(', ').replace(/_/g, ' ')})` : ''}`).join('; ')}. Keep these corrections.` : '';
+}
+
+function correctionPrompt(base, fix, asked) {
+    return `This is the description of this picture:\n\n${base}\n\nThe user checked it against the picture and says: "${fix.text}"${fix.tags.length ? `\nThe user also says it shows: ${fix.tags.join(', ').replace(/_/g, ' ')}.` : ''}\nLook at the picture again and rewrite the description so it follows the user's correction. The correction wins over the tags and over the earlier description; keep everything else that is right.\n\nRewrite it in the format asked below.\n\n${asked}`;
+}
+
+async function correctDescription(entry, item, text, tags = []) {
+    const fix = { text: String(text).replace(/\s+/g, ' ').trim().slice(0, 600), tags: [...new Set(tags.map(normalizeTag).filter(Boolean))].slice(0, 10), at: Date.now() };
+    if (!fix.text) {
+        return entry;
+    }
+    if (item) {
+        const index = entry.variants.indexOf(item);
+        item.fixes = [...item.fixes, fix].slice(-6);
+        item.added = [...new Set([...item.added, ...fix.tags])];
+        item.shows = [...new Set([...item.shows, ...fix.tags])];
+        if (entry.report) {
+            fix.tags.filter(tag => entry.report.notShown.includes(tag)).forEach(tag => {
+                entry.report.notShown = entry.report.notShown.filter(other => other !== tag);
+                entry.report.placed[tag] = [...new Set([...(entry.report.placed[tag] || []), index + 1])].sort((a, b) => a - b);
+            });
+        }
+        groupStep(entry, `Correcting item ${index + 1}…`);
+        try {
+            await describeItem(entry, index, null, { correction: fix });
+            await refreshStory(entry);
+        } finally {
+            groupStep(entry, '');
+        }
+        fix.tags.forEach(tag => saveTagNote(tag, { note: plainNote(fix.text, entry), lasts: false, role: roleText(item.role), story: item.diff || '', kind: groupWhat(entry) }));
+    } else {
+        entry.fixes = [...entry.fixes, fix].slice(-6);
+        entry.tags = [...new Set([...entry.tags, ...fix.tags])];
+        const base = entry.lock?.text || entry.description;
+        const result = await requestDescription(entry.url, entry.tags, null, '', entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', { wrap: base ? asked => correctionPrompt(base, fix, asked) : null });
+        entry.description = result.text;
+        entry.sections = result.sections || {};
+        entry.keywords = result.keywords || [];
+        if (entry.lock) {
+            entry.lock = { text: entry.description, at: Date.now() };
+        }
+        descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
+        fix.tags.forEach(tag => saveTagNote(tag, { note: fix.text, lasts: false, role: '', story: '', kind: 'single picture' }));
+    }
+    await saveLibrary();
+    scheduleLorebookSync();
+    return entry;
 }
 
 function cleanRole(role) {
@@ -4476,6 +4537,7 @@ function cleanEntry(entry) {
         fromVideo: entry.fromVideo && typeof entry.fromVideo === 'object' && Array.isArray(entry.fromVideo.parts) ? { video: String(entry.fromVideo.video || ''), duration: Number(entry.fromVideo.duration) || 0, parts: entry.fromVideo.parts.filter(part => part && typeof part === 'object').slice(0, MAX_PARTS).map(part => ({ start: Number(part.start) || 0, end: Number(part.end) || 0, kind: String(part.kind || '') })) } : null,
         huntReport: entry.huntReport && typeof entry.huntReport === 'object' && entry.huntReport.text ? { text: String(entry.huntReport.text), closest: Array.isArray(entry.huntReport.closest) ? entry.huntReport.closest.filter(item => item && item.page).slice(0, 3).map(item => ({ page: String(item.page), id: String(item.id || ''), alike: Number(item.alike) || 0 })) : [], at: Number(entry.huntReport.at) || 0 } : null,
         lock: grouped ? null : cleanLock(entry.lock),
+        fixes: grouped ? [] : cleanFixes(entry.fixes),
         card: cleanCard(entry.card),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map((v, index) => cleanItem(v, index, entry, grouped)) : [],
         fileTags: cleanStrings(entry.fileTags, 40),
@@ -4980,7 +5042,7 @@ async function findMissingTags(entry, pictures, tags, report) {
     return found;
 }
 
-async function describeItem(entry, index, blob, { note = '', fallback = false, missed = [], why = {}, trusted = true } = {}) {
+async function describeItem(entry, index, blob, { note = '', fallback = false, missed = [], why = {}, trusted = true, correction = null } = {}) {
     const item = entry.variants[index];
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
@@ -4994,7 +5056,11 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     }
     const added = item.added.filter(tag => !missed.includes(tag)).concat(item.deduced.map(d => d.tag).filter(tag => !missed.includes(tag) && !item.added.includes(tag)));
     if (added.length) {
-        context.push(`The user checked this picture and says it shows: ${added.join(', ').replace(/_/g, ' ')}. Include them.`);
+        context.push(`The user checked this picture and says it shows: ${added.join(', ').replace(/_/g, ' ')}. Mention them as far as the picture allows; never let them change what is visibly happening.`);
+    }
+    const fixes = fixesNote(item.fixes.filter(fix => fix !== correction));
+    if (fixes) {
+        context.push(fixes);
     }
     if (note) {
         context.push(`A reviewer noticed a problem in an earlier description of this item: ${note} Look at the picture again and fix it if the reviewer is right.`);
@@ -5002,8 +5068,8 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const own = item.tags.length ? item.tags : entry.tags;
     const tags = fallback || !item.shows.length ? own : item.shows;
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
-    const base = missed.length ? item.lock?.text || item.description : '';
-    const wrap = base ? asked => missedPrompt(base, missed, item, asked, why) : null;
+    const base = missed.length || correction ? item.lock?.text || item.description : '';
+    const wrap = !base ? null : correction ? asked => correctionPrompt(base, correction, asked) : asked => missedPrompt(base, missed, item, asked, why);
     const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags });
     item.description = parsed.text;
     item.sections = parsed.sections || {};
@@ -5018,7 +5084,7 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
 function missedPrompt(base, missed, item, asked, why = {}) {
     const list = missed.join(', ').replace(/_/g, ' ');
     const reasons = missed.filter(tag => why[tag]).map(tag => `${tag.replace(/_/g, ' ')}: ${why[tag]}`);
-    return `This is the description of this picture:\n\n${base}\n\nThe user says it missed what ${missed.length === 1 ? 'this tag shows' : 'these tags show'}: ${list}.${reasons.length ? ` Why: ${reasons.join('; ')}. It may happen off screen or only be implied; then say what most likely happened rather than describing it as seen.` : ''} Look at the picture again. Keep every fact the description gives and never contradict it; add what ${missed.length === 1 ? 'the tag shows' : 'the tags show'} where it fits.${item.role ? ` This item is the ${roleText(item.role)} of its group${item.diff ? ` (${item.diff})` : ''}; if what was missed changes what is happening, say what happened.` : ''}\n\nRewrite it in the format asked below.\n\n${asked}`;
+    return `This is the description of this picture:\n\n${base}\n\nThe user says it missed what ${missed.length === 1 ? 'this tag shows' : 'these tags show'}: ${list}.${reasons.length ? ` Why: ${reasons.join('; ')}. It may happen off screen or only be implied; then say what most likely happened rather than describing it as seen.` : ''} Look at the picture again. Keep every fact the description gives and never contradict it; add what ${missed.length === 1 ? 'the tag shows' : 'the tags show'} only as far as the picture allows: if the picture does not show it, mention it briefly as likely off screen or implied, and keep describing what is visibly happening.${item.role ? ` This item is the ${roleText(item.role)} of its group${item.diff ? ` (${item.diff})` : ''}; if what was missed changes what is happening, say what happened.` : ''}\n\nRewrite it in the format asked below.\n\n${asked}`;
 }
 
 function roleText(role) {
@@ -5210,7 +5276,7 @@ function renderTagNotes() {
 function deducePrompt(entry, tags) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${[item.diff, item.sections?.action ? `Action: ${item.sections.action}` : ''].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
     const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
-    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none`;
+    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none`;
 }
 
 async function deduceTags(entry, tags) {
@@ -5735,7 +5801,7 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     if (isMulti(entry)) {
         await describeSet(entry);
     } else {
-        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '', entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '');
+        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '', [entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', fixesNote(entry.fixes)].filter(Boolean).join('\n\n'));
         entry.description = result.text;
         entry.described = visionHash();
         entry.sections = result.sections || {};
@@ -12355,6 +12421,8 @@ async function openPicker(initialTags = null, focus = null) {
                 info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
             }
         }
+        const fixSpot = el('div', 'stis-fix-spot');
+        info.appendChild(fixSpot);
         if (multi) {
             const progress = el('small', 'stis-group-progress', groupProgress.get(entry.id) || '');
             progress.hidden = !progress.textContent;
@@ -12476,7 +12544,54 @@ async function openPicker(initialTags = null, focus = null) {
             renderLibrary();
         });
         remove.title = sequence ? 'Delete the sequence; pictures also saved on their own are kept' : 'Delete from the library, the lorebook and the disk';
-        bar.append(...[redo, redoAll, lock].filter(Boolean));
+        const fixButton = el('div', 'menu_button', 'Correct');
+        fixButton.title = itemized ? 'Tell the AI what is wrong in this item\'s description; only this item is rewritten, and your correction is kept for later redos' : 'Tell the AI what is wrong in this description; it is rewritten, and your correction is kept for later redos';
+        fixButton.classList.toggle('disabled', (multi && !itemized) || !(itemized ? current.description : entry.description));
+        fixButton.addEventListener('click', () => {
+            if (fixButton.classList.contains('disabled')) {
+                return;
+            }
+            if (fixSpot.childElementCount) {
+                fixSpot.innerHTML = '';
+                return;
+            }
+            const form = el('div', 'stis-fix-form');
+            const what = el('textarea', 'text_pole stis-fix-text');
+            what.rows = 3;
+            what.placeholder = 'What is wrong? e.g. she is not hurt here, she is laughing; the man behind her holds a sword';
+            const tagBox = el('input', 'text_pole stis-fix-tags');
+            tagBox.type = 'text';
+            tagBox.placeholder = 'Tags it shows (optional), e.g. laughing, sword';
+            const send = el('div', 'menu_button stis-fix-send', 'Send');
+            const cancel = el('div', 'menu_button', 'Cancel');
+            cancel.addEventListener('click', () => {
+                fixSpot.innerHTML = '';
+            });
+            send.addEventListener('click', async () => {
+                if (send.classList.contains('disabled') || !what.value.trim() || groupProgress.has(entry.id)) {
+                    return;
+                }
+                send.classList.add('disabled');
+                send.textContent = 'Correcting…';
+                try {
+                    await correctDescription(entry, itemized ? current : null, what.value, normalizeTagList(tagBox.value));
+                    if (!closed && previewState?.target === entry) {
+                        showEntry(entry, current);
+                        renderLibrary();
+                    }
+                } catch (error) {
+                    send.classList.remove('disabled');
+                    send.textContent = 'Send';
+                    toastr.warning(`Could not correct the description: ${error?.message || error}`, 'Image Search');
+                }
+            });
+            const row = el('div', 'stis-fix-buttons');
+            row.append(send, cancel);
+            form.append(what, tagBox, row);
+            fixSpot.appendChild(form);
+            what.focus();
+        });
+        bar.append(...[redo, redoAll, lock, fixButton].filter(Boolean));
         if (!multi) {
             const huntLabel = 'Find tags';
             const hunt = el('div', 'menu_button', huntLabel);

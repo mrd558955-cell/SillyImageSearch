@@ -1673,6 +1673,19 @@ video.stis-preview-img {
     gap: 6px;
 }
 
+.stis-tagfix-def,
+.stis-tag-def {
+    display: block;
+    font-style: italic;
+    border-left: 2px solid var(--SmartThemeBorderColor);
+    padding-left: 6px;
+}
+
+.stis-tag-def-source {
+    font-size: 0.85em;
+    text-decoration: underline;
+}
+
 .stis-tagfix-summary {
     cursor: pointer;
     font-size: 0.9em;

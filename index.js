@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.45.0';
+const VERSION = '2.46.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -88,6 +88,7 @@ const DEFAULTS = {
     tagsDontMatter: '',
     tagNotes: {},
     fixLog: [],
+    tagDefinitions: {},
     groupBlind: true,
     groupReview: true,
     groupImportance: true,
@@ -223,6 +224,9 @@ function settings() {
         if (typeof s[key] === 'string' && s[key].includes(OLD_NAMES_RULE)) {
             s[key] = s[key].replace(OLD_NAMES_RULE, 'Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange).');
         }
+    }
+    if (!s.tagDefinitions || typeof s.tagDefinitions !== 'object' || Array.isArray(s.tagDefinitions)) {
+        s.tagDefinitions = {};
     }
     if (!Array.isArray(s.fixLog)) {
         s.fixLog = [];
@@ -4499,7 +4503,7 @@ function rememberFix(entry, item, before, fix) {
     const kind = item ? groupWhat(entry) : 'single picture';
     if (fix.tags.length) {
         fix.tags.forEach(tag => {
-            rememberTag(tag, true);
+            rememberTag(tag, true, entry.site);
             saveTagNote(tag, { note: item ? plainNote(fix.text, entry) : fix.text, fromFix: true, lasts: false, role: item ? roleText(item.role) : '', story: item?.diff || '', kind });
         });
         return;
@@ -5052,9 +5056,10 @@ function tagHints(tags) {
         const notes = tagNotesFor(tag);
         const seen = notes.filter(note => !note.wrong && note.note).slice(-3).map(note => note.note);
         const wrong = notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note);
-        return seen.length || wrong.length ? `- ${tag.replace(/_/g, ' ')}: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : '';
+        const parts = [definitionLine(tag), seen.length || wrong.length ? `The user's notes: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : ''].filter(Boolean);
+        return parts.length ? `- ${tag.replace(/_/g, ' ')}: ${parts.join(' ')}` : '';
     }).filter(Boolean);
-    return lines.length ? `\n\nWhat the user said about some of these tags in earlier pictures, as hints on how they show (count a tag only if this picture shows it or clear signs of it):\n${lines.join('\n')}` : '';
+    return lines.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints on how they show (count a tag only if this picture shows it or clear signs of it):\n${lines.join('\n')}` : '';
 }
 
 async function findMissingTags(entry, pictures, tags, report) {
@@ -5140,7 +5145,8 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
 function missedPrompt(base, missed, item, asked, why = {}) {
     const list = missed.join(', ').replace(/_/g, ' ');
     const reasons = missed.filter(tag => why[tag]).map(tag => `${tag.replace(/_/g, ' ')}: ${why[tag]}`);
-    return `This is the description of this picture:\n\n${base}\n\nThe user says it missed what ${missed.length === 1 ? 'this tag shows' : 'these tags show'}: ${list}.${reasons.length ? ` Why: ${reasons.join('; ')}. It may happen off screen or only be implied; then say what most likely happened rather than describing it as seen.` : ''} Look at the picture again. Keep every fact the description gives and never contradict it; add what ${missed.length === 1 ? 'the tag shows' : 'the tags show'} only as far as the picture allows: if the picture does not show it, mention it briefly as likely off screen or implied, and keep describing what is visibly happening.${item.role ? ` This item is the ${roleText(item.role)} of its group${item.diff ? ` (${item.diff})` : ''}; if what was missed changes what is happening, say what happened.` : ''}\n\nRewrite it in the format asked below.\n\n${asked}`;
+    const meanings = missed.filter(definitionLine).map(tag => `${tag.replace(/_/g, ' ')}: ${definitionLine(tag)}`);
+    return `This is the description of this picture:\n\n${base}\n\nThe user says it missed what ${missed.length === 1 ? 'this tag shows' : 'these tags show'}: ${list}.${meanings.length ? ` What ${missed.length === 1 ? 'it means' : 'they mean'} (copied from the site's wiki): ${meanings.join('; ')}.` : ''}${reasons.length ? ` Why: ${reasons.join('; ')}. It may happen off screen or only be implied; then say what most likely happened rather than describing it as seen.` : ''} Look at the picture again. Keep every fact the description gives and never contradict it; add what ${missed.length === 1 ? 'the tag shows' : 'the tags show'} only as far as the picture allows: if the picture does not show it, mention it briefly as likely off screen or implied, and keep describing what is visibly happening.${item.role ? ` This item is the ${roleText(item.role)} of its group${item.diff ? ` (${item.diff})` : ''}; if what was missed changes what is happening, say what happened.` : ''}\n\nRewrite it in the format asked below.\n\n${asked}`;
 }
 
 function roleText(role) {
@@ -5333,7 +5339,8 @@ function renderTagNotes() {
 function deducePrompt(entry, tags) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${[item.diff, item.sections?.action ? `Action: ${item.sections.action}` : ''].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
     const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : note.fromFix ? `the user corrected a description${note.role ? ` of the ${note.role} item of a ${note.kind || 'group'}` : ''}${note.story ? ` ("${note.story}")` : ''}, saying it shows this tag: "${note.note}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
-    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none, because ...`;
+    const definitions = tags.map(tag => (definitionLine(tag) ? `- ${tag.replace(/_/g, ' ')}: ${definitionLine(tag)}` : '')).filter(Boolean);
+    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.${definitions.length ? `\nWhat the tags mean, copied from the site's wiki (read this first):\n${definitions.join('\n')}` : ''}${notes.length ? `\nWhat the user said about such tags before:\n${notes.join('\n')}` : ''}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none, because ...`;
 }
 
 async function deduceTags(entry, tags, report = null) {
@@ -5391,13 +5398,215 @@ async function placeDeduced(entry, report, found) {
     return updates.size;
 }
 
+const WIKI_SOURCES = {
+    danbooru: {
+        url: (origin, tag) => `${origin}/wiki_pages/${encodeURIComponent(tag)}.json`,
+        page: (origin, tag) => `${origin}/wiki_pages/${encodeURIComponent(tag)}`,
+        read: data => (data && !Array.isArray(data) && !data.is_deleted ? data.body : ''),
+        alias: (origin, tag) => `${origin}/tag_aliases.json?search%5Bantecedent_name%5D=${encodeURIComponent(tag)}&search%5Bstatus%5D=active&limit=1`,
+    },
+    e621: {
+        url: (origin, tag) => `${origin}/wiki_pages.json?search%5Btitle%5D=${encodeURIComponent(tag)}&limit=1`,
+        page: (origin, tag) => `${origin}/wiki_pages/show_or_new?title=${encodeURIComponent(tag)}`,
+        read: (data, tag) => (Array.isArray(data) ? data.find(page => normalizeTag(page.title) === tag)?.body || '' : ''),
+        alias: (origin, tag) => `${origin}/tag_aliases.json?search%5Bantecedent_name%5D=${encodeURIComponent(tag)}&search%5Bstatus%5D=active&limit=1`,
+    },
+    moebooru: {
+        url: (origin, tag) => `${origin}/wiki.json?query=${encodeURIComponent(tag)}&limit=10`,
+        page: (origin, tag) => `${origin}/wiki/show?title=${encodeURIComponent(tag)}`,
+        read: (data, tag) => (Array.isArray(data) ? data.find(page => normalizeTag(page.title) === tag)?.body || '' : ''),
+    },
+    philomena: {
+        url: (origin, tag) => `${origin}/api/v1/json/tags/${philomenaSlug(tag)}`,
+        page: (origin, tag) => `${origin}/tags/${philomenaSlug(tag)}`,
+        read: data => data?.tag?.description || data?.tag?.short_description || '',
+    },
+};
+
+function philomenaSlug(tag) {
+    const swaps = { '-': '-dash-', '/': '-fwslash-', '\\': '-bwslash-', ':': '-colon-', '.': '-dot-', '+': '-plus-' };
+    return encodeURIComponent(tag.replace(/_/g, ' ').replace(/[-/\\:.+]/g, char => swaps[char])).replace(/%20/g, '+');
+}
+
+function definitionText(body) {
+    const lines = String(body || '').replace(/\r/g, '').split('\n');
+    const kept = [];
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (/^h[1-6]\.\s/i.test(line) || /^#{1,6}\s/.test(line)) {
+            if (kept.some(text => text)) {
+                break;
+            }
+            continue;
+        }
+        if (!line && kept.some(text => text)) {
+            if (kept.join(' ').length > 120) {
+                break;
+            }
+            continue;
+        }
+        if (/^\*+\s/.test(line) || /^(see also|related tags?)\b/i.test(line)) {
+            if (kept.some(text => text)) {
+                break;
+            }
+            continue;
+        }
+        kept.push(line);
+    }
+    const text = kept.join(' ')
+        .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2')
+        .replace(/\[\[([^\]]+)\]\]/g, (all, name) => name.replace(/_/g, ' '))
+        .replace(/\{\{([^}]+)\}\}/g, (all, name) => name.replace(/_/g, ' '))
+        .replace(/"([^"]+)":\[?(https?:\/\/[^\s\]]+|\/[^\s\]]+)\]?/g, '$1')
+        .replace(/\[url=[^\]]*\]([^[]*)\[\/url\]/gi, '$1')
+        .replace(/\[\/?(b|i|u|s|tn|spoiler|code|quote|expand)[^\]]*\]/gi, '')
+        .replace(/<\/?[a-z][^>]*>/gi, '')
+        .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (text.length <= 500) {
+        return text;
+    }
+    const cut = text.slice(0, 500);
+    const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+    return end > 150 ? cut.slice(0, end + 1) : `${cut.trimEnd()}…`;
+}
+
+const definitionJobs = new Map();
+let definitionTimer = null;
+
+async function wikiDefinition(domain, engineName, tag) {
+    const source = WIKI_SOURCES[engineName];
+    const origin = `https://${domain}`;
+    const read = async name => {
+        const result = await request(source.url(origin, name));
+        if (result.status === 404) {
+            return '';
+        }
+        if (!result.ok) {
+            throw new Error(`${domain} answered ${result.status}`);
+        }
+        return definitionText(source.read(result.data, name));
+    };
+    let name = tag;
+    let text = await read(name);
+    if (!text && source.alias) {
+        const alias = await request(source.alias(origin, tag));
+        const target = Array.isArray(alias.data) ? normalizeTag(alias.data[0]?.consequent_name || '') : '';
+        if (target && target !== tag) {
+            name = target;
+            text = await read(name);
+        }
+    }
+    return text ? { text, site: domain, url: source.page(origin, name), title: name, at: Date.now() } : null;
+}
+
+async function findDefinition(tag, site = '') {
+    const tries = [];
+    const own = siteEntries().find(entry => entry.domain === site);
+    if (own) {
+        const engineName = await engineOf(own, [tag]).catch(() => '');
+        if (WIKI_SOURCES[engineName]) {
+            tries.push([own.domain, engineName]);
+        }
+    }
+    if (!tries.some(([domain]) => DONMAI.test(domain))) {
+        tries.push(['danbooru.donmai.us', 'danbooru']);
+    }
+    let failure = null;
+    for (const [domain, engineName] of tries) {
+        try {
+            const found = await wikiDefinition(domain, engineName, tag);
+            if (found) {
+                return found;
+            }
+        } catch (error) {
+            failure = error;
+        }
+    }
+    if (failure && tries.length === 1) {
+        throw failure;
+    }
+    return { none: true, at: Date.now(), site: tries.map(([domain]) => domain).join(', ') };
+}
+
+function tagDefinition(tag) {
+    const found = settings().tagDefinitions?.[tag];
+    return found && !found.none && found.text ? found : null;
+}
+
+async function ensureDefinitions(tags, site = '', { again = false } = {}) {
+    const s = settings();
+    const all = s.tagDefinitions && typeof s.tagDefinitions === 'object' ? s.tagDefinitions : (s.tagDefinitions = {});
+    const month = 30 * 24 * 3600 * 1000;
+    const wanted = [...new Set(tags.map(normalizeTag).filter(Boolean))].filter(tag => again || !all[tag] || (all[tag].none && Date.now() - (all[tag].at || 0) > month));
+    await eachLimit(wanted, 2, async tag => {
+        if (!definitionJobs.has(tag)) {
+            definitionJobs.set(tag, findDefinition(tag, site).then(found => {
+                all[tag] = found;
+                save();
+                renderDefinitions();
+            }).catch(error => console.warn(`[Image Search] no definition for ${tag}`, error)).finally(() => definitionJobs.delete(tag)));
+        }
+        await definitionJobs.get(tag);
+    });
+    return Object.fromEntries(tags.map(tag => [tag, tagDefinition(tag)]).filter(([, found]) => found));
+}
+
+function definitionLine(tag) {
+    const found = tagDefinition(tag);
+    return found ? `Definition (${found.site} wiki): "${found.text}"` : '';
+}
+
+function renderDefinitions() {
+    const box = document.getElementById('st_imagesearch_tag_definitions');
+    if (!box) {
+        return;
+    }
+    box.innerHTML = '';
+    const s = settings();
+    const tags = [...new Set([...normalizeTagList(s.tagsMatter), ...Object.keys(s.tagDefinitions || {})])].sort();
+    if (!tags.length) {
+        box.appendChild(el('small', 'stis-help', 'None yet. A tag gets its definition from the site\'s wiki as soon as it is in "Tags that matter".'));
+        return;
+    }
+    for (const tag of tags) {
+        const found = s.tagDefinitions?.[tag];
+        const row = el('div', 'stis-tag-note');
+        const head = el('div', 'stis-tag-note-head');
+        head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
+        if (found?.url) {
+            const link = el('a', 'stis-tag-def-source', `${found.site} wiki${found.title && found.title !== tag ? ` (${found.title.replace(/_/g, ' ')})` : ''}`);
+            link.href = found.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            head.appendChild(link);
+        }
+        const again = el('a', 'stis-tag-note-remove', 'Fetch again');
+        again.href = '#';
+        again.title = 'Copy the definition from the wiki again';
+        again.addEventListener('click', event => {
+            event.preventDefault();
+            again.textContent = 'Fetching…';
+            ensureDefinitions([tag], '', { again: true }).finally(renderDefinitions);
+        });
+        head.appendChild(again);
+        row.appendChild(head);
+        row.appendChild(el('span', found?.text ? 'stis-tag-def' : 'stis-help', found?.text || (found?.none ? `No wiki entry found (${found.site}).` : definitionJobs.has(tag) ? 'Fetching…' : 'Not fetched yet.')));
+        box.appendChild(row);
+    }
+}
+
 function rememberedTags() {
     const s = settings();
     return { matter: new Set(normalizeTagList(s.tagsMatter)), dont: new Set(normalizeTagList(s.tagsDontMatter)) };
 }
 
-function rememberTag(tag, important) {
+function rememberTag(tag, important, site = '') {
     const s = settings();
+    if (important) {
+        ensureDefinitions([tag], site).catch(error => console.warn('[Image Search] could not fetch a tag definition', error));
+    }
     const { matter, dont } = rememberedTags();
     (important ? dont : matter).delete(tag);
     (important ? matter : dont).add(tag);
@@ -5448,7 +5657,9 @@ function importancePrompt(entry, tags, missing) {
     const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: tags.join(', ') || 'none', missing: missing.join(', '), overview: entry.description || '', remembered: rememberedText };
     const template = String(settings().importancePrompt || DEFAULT_IMPORTANCE_PROMPT);
     const text = template.replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
-    return rememberedText && !template.includes('{{remembered}}') ? `${text}\n\n${rememberedText}` : text;
+    const definitions = missing.map(tag => (definitionLine(tag) ? `- ${tag.replace(/_/g, ' ')}: ${definitionLine(tag)}` : '')).filter(Boolean);
+    const withLists = rememberedText && !template.includes('{{remembered}}') ? `${text}\n\n${rememberedText}` : text;
+    return definitions.length ? `${withLists}\n\nWhat the tags not found mean, copied from the site's wiki:\n${definitions.join('\n')}` : withLists;
 }
 
 async function judgeMissing(entry, tags, missing) {
@@ -5561,6 +5772,7 @@ async function describeSet(entry, blobs = []) {
             report.missing = [...missing].filter(tag => !seenSomewhere.has(tag));
             if (missing.size) {
                 groupStep(entry, `Looking for ${missing.size} tag${missing.size === 1 ? '' : 's'} in the items…`);
+                await Promise.race([ensureDefinitions([...missing], entry.site), new Promise(done => setTimeout(done, 15000))]).catch(() => null);
                 try {
                     const found = await findMissingTags(entry, await Promise.all(items.map((item, index) => picture(index))), [...missing], report);
                     found.forEach((numbers, tag) => {
@@ -5638,7 +5850,8 @@ async function describeSet(entry, blobs = []) {
             entry.arc = '';
             report.steps.story = storyOn ? 'skipped' : 'off';
         }
-        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length);
+        const mattering = rememberedTags().matter;
+        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length || (mattering.has(tag) && tagDefinition(tag)));
         if (deducible.length && s.groupDeduce !== false && items.every(item => item.description)) {
             groupStep(entry, `Looking where ${deducible.length} tag${deducible.length === 1 ? '' : 's'} nobody saw could happen…`);
             try {
@@ -5813,7 +6026,7 @@ async function applyTagChoices(entry, choices) {
             report.notShown = report.notShown.filter(other => other !== tag);
             report.decided[tag] = 'out';
             judged(tag, false, note || 'you threw it out');
-            rememberTag(tag, false);
+            rememberTag(tag, false, entry.site);
         } else if (choice.state === 'important') {
             report.decided[tag] = 'important';
             const tapped = [...choice.items].filter(number => number >= 1 && number <= entry.variants.length).sort((a, b) => a - b);
@@ -5821,7 +6034,7 @@ async function applyTagChoices(entry, choices) {
             const byItem = Object.fromEntries(tapped.filter(said).map(number => [number, said(number)]));
             const summary = tapped.length > 1 ? tapped.filter(said).map(number => `item ${number}: ${said(number)}`).join('; ') : tapped.length ? said(tapped[0]) : note;
             judged(tag, true, summary || (tapped.length ? 'you placed it in the items that show it' : 'you marked it as important'));
-            rememberTag(tag, true);
+            rememberTag(tag, true, entry.site);
             const numbers = tapped.length && choice.lasts ? entry.variants.map((item, index) => index + 1).filter(number => number >= tapped[0]) : tapped;
             if (summary || tapped.length) {
                 report.notes[tag] = { note: summary, lasts: Boolean(choice.lasts), byItem };
@@ -6550,6 +6763,10 @@ function tagPanel(entry, onChange) {
         }
         const choice = drafts.get(tag);
         const { node, state, body } = makeRow(tag, '');
+        const meaning = tagDefinition(tag);
+        if (meaning) {
+            body.appendChild(el('small', 'stis-tagfix-def', `${meaning.text} (${meaning.site} wiki)`));
+        }
         if (judged?.why) {
             body.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'Matters' : 'Minor'}: ${judged.why}`));
         }
@@ -13634,6 +13851,11 @@ function buildSettings() {
                             <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Throw out). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
                         </div>
                         <div class="stis-set">
+                            <div class="stis-label">Tag definitions</div>
+                            <div id="st_imagesearch_tag_definitions" class="stis-tag-notes"></div>
+                            <small class="stis-help">Copied word for word from the wiki of the picture's site (or Danbooru's when that site has none) as soon as a tag is in "Tags that matter", and for tags not found in a group. Read only; they always come first, before your notes, when the AI looks for or judges a tag.</small>
+                        </div>
+                        <div class="stis-set">
                             <div class="stis-label">Corrections without a tag</div>
                             <div id="st_imagesearch_fix_log" class="stis-tag-notes"></div>
                             <small class="stis-help">Kept as a record only: the picture is fixed and keeps your correction for its later redos.</small>
@@ -13812,10 +14034,17 @@ function buildSettings() {
     bind('st_imagesearch_group_deduce', 'groupDeduce', 'checked');
     renderTagNotes();
     renderFixLog();
+    renderDefinitions();
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
     bind('st_imagesearch_versions_prompt', 'versionsPrompt');
-    bind('st_imagesearch_tags_matter', 'tagsMatter');
+    bind('st_imagesearch_tags_matter', 'tagsMatter', 'value', () => {
+        clearTimeout(definitionTimer);
+        definitionTimer = setTimeout(() => {
+            renderDefinitions();
+            ensureDefinitions(normalizeTagList(s.tagsMatter)).catch(() => null);
+        }, 1500);
+    });
     bind('st_imagesearch_tags_dont_matter', 'tagsDontMatter');
     for (const [id, key, value] of [['st_imagesearch_story_reset', 'storyPrompt', DEFAULT_STORY_PROMPT], ['st_imagesearch_versions_reset', 'versionsPrompt', DEFAULT_VERSIONS_PROMPT]]) {
         document.getElementById(id).addEventListener('click', () => {

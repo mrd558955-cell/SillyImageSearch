@@ -1592,6 +1592,47 @@ video.stis-preview-img {
     margin-top: 4px;
 }
 
+.stis-tagfix-note {
+    width: 100%;
+    margin: 0;
+}
+
+.stis-tagfix-note[hidden] {
+    display: none;
+}
+
+.stis-tagfix-carried {
+    border-style: dashed;
+    opacity: 0.8;
+}
+
+.stis-tagfix-deduced .stis-tagfix-tag::before {
+    content: "✦ ";
+}
+
+.stis-entry-deduced {
+    margin-top: 4px;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+.stis-deduced-badge {
+    background: var(--SmartThemeQuoteColor, #e18a24);
+    color: #fff;
+}
+
+.stis-tag-note {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 0.9em;
+}
+
+.stis-tag-note-remove {
+    margin-left: auto;
+    text-decoration: none;
+}
+
 .stis-tagfix-done.disabled {
     opacity: 0.5;
 }

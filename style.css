@@ -1233,3 +1233,13 @@ video.stis-preview-img {
     font-size: 0.9em;
     text-decoration: underline;
 }
+
+.stis-hunt-report {
+    display: block;
+    opacity: 0.85;
+    margin-top: 2px;
+}
+
+.stis-hunt-report a {
+    text-decoration: underline;
+}

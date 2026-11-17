@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.28.0';
+const VERSION = '2.29.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2805,6 +2805,7 @@ function cleanEntry(entry) {
         animated: Boolean(entry.animated),
         described: String(entry.described || ''),
         borrowed: entry.borrowed && typeof entry.borrowed === 'object' && entry.borrowed.site ? { site: String(entry.borrowed.site), id: String(entry.borrowed.id || ''), page: String(entry.borrowed.page || ''), how: String(entry.borrowed.how || ''), alike: Number(entry.borrowed.alike) || 0, at: Number(entry.borrowed.at) || Date.now() } : null,
+        huntReport: entry.huntReport && typeof entry.huntReport === 'object' && entry.huntReport.text ? { text: String(entry.huntReport.text), closest: Array.isArray(entry.huntReport.closest) ? entry.huntReport.closest.filter(item => item && item.page).slice(0, 3).map(item => ({ page: String(item.page), id: String(item.id || ''), alike: Number(item.alike) || 0 })) : [], at: Number(entry.huntReport.at) || 0 } : null,
         lock: entry.lock && typeof entry.lock === 'object' && String(entry.lock.text || '').trim() ? { text: String(entry.lock.text), at: Number(entry.lock.at) || Date.now() } : null,
         card: cleanCard(entry.card),
         variants: Array.isArray(entry.variants) ? entry.variants.filter(v => v && typeof v.id === 'string' && typeof v.url === 'string').map(v => ({ id: v.id, url: v.url, source: String(v.source || ''), tags: Array.isArray(v.tags) ? v.tags.map(String) : [], diff: String(v.diff || '') })) : [],
@@ -3190,7 +3191,7 @@ function everyRating() {
 
 async function sourcePost(ref) {
     const domain = ref.domain.replace(/^www\./, '');
-    const engine = ENGINES[settings().engines?.[domain]];
+    const engine = ENGINES[settings().engines?.[domain] || (domain === DANBOORU ? 'danbooru' : '')];
     if (!engine) {
         throw new Error(`${domain} is not detected yet: search it once first`);
     }
@@ -3235,32 +3236,79 @@ function postRatio(post) {
     return width && height ? width / height : 0;
 }
 
+function hashDrawable(drawable, width, height) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 9;
+    canvas.height = 8;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, 9, 8);
+    context.drawImage(drawable, 0, 0, 9, 8);
+    const data = context.getImageData(0, 0, 9, 8).data;
+    const gray = [];
+    for (let i = 0; i < data.length; i += 4) {
+        gray.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+    }
+    let bits = '';
+    for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+            bits += gray[y * 9 + x] > gray[y * 9 + x + 1] ? '1' : '0';
+        }
+    }
+    return { bits, ratio: width && height ? width / height : 0 };
+}
+
+async function pictureBlob(source) {
+    return source instanceof Blob ? source : String(source).startsWith('/') ? (await fetch(source)).blob() : (await downloadImage(source)).blob;
+}
+
 async function pictureHash(source) {
-    const blob = source instanceof Blob ? source : String(source).startsWith('/') ? await (await fetch(source)).blob() : (await downloadImage(source)).blob;
-    const bitmap = await createImageBitmap(blob);
+    const bitmap = await createImageBitmap(await pictureBlob(source));
     try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 9;
-        canvas.height = 8;
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        context.fillStyle = '#ffffff';
-        context.fillRect(0, 0, 9, 8);
-        context.drawImage(bitmap, 0, 0, 9, 8);
-        const data = context.getImageData(0, 0, 9, 8).data;
-        const gray = [];
-        for (let i = 0; i < data.length; i += 4) {
-            gray.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
-        }
-        let bits = '';
-        for (let y = 0; y < 8; y++) {
-            for (let x = 0; x < 8; x++) {
-                bits += gray[y * 9 + x] > gray[y * 9 + x + 1] ? '1' : '0';
-            }
-        }
-        return { bits, ratio: bitmap.width / bitmap.height };
+        return hashDrawable(bitmap, bitmap.width, bitmap.height);
     } finally {
         bitmap.close?.();
     }
+}
+
+async function frameHashes(blob, count) {
+    if (typeof ImageDecoder !== 'function') {
+        return [];
+    }
+    const format = await sniffFormat(blob);
+    const type = format === 'gif' ? 'image/gif' : format === 'webp' ? 'image/webp' : format === 'png' ? 'image/png' : '';
+    if (!type || (ImageDecoder.isTypeSupported && !await ImageDecoder.isTypeSupported(type))) {
+        return [];
+    }
+    const decoder = new ImageDecoder({ data: new Uint8Array(await blob.arrayBuffer()), type });
+    try {
+        await decoder.tracks.ready;
+        await decoder.completed?.catch(() => {});
+        const total = decoder.tracks.selectedTrack?.frameCount || 1;
+        const picks = total < 2 ? [0] : [...new Set(Array.from({ length: Math.min(count, total) }, (_, i) => Math.round(i * (total - 1) / Math.max(1, Math.min(count, total) - 1))))];
+        const hashes = [];
+        for (const frameIndex of picks) {
+            const { image } = await decoder.decode({ frameIndex });
+            try {
+                hashes.push({ ...hashDrawable(image, image.displayWidth || image.codedWidth, image.displayHeight || image.codedHeight), frame: hashes.length + 1 });
+            } finally {
+                image.close?.();
+            }
+        }
+        return hashes;
+    } finally {
+        decoder.close?.();
+    }
+}
+
+async function ownHashes(entry, blob = null) {
+    if (entryAnimated(entry)) {
+        const frames = await frameHashes(blob || await pictureBlob(entry.url), 4).catch(() => []);
+        if (frames.length) {
+            return frames;
+        }
+    }
+    return [{ ...await pictureHash(blob || entry.url), frame: 0 }];
 }
 
 function hashDistance(a, b) {
@@ -3272,6 +3320,8 @@ function hashDistance(a, b) {
     }
     return distance;
 }
+
+const DANBOORU = 'danbooru.donmai.us';
 
 async function huntSites(entry) {
     const own = hostOf(entry.source) || entry.site;
@@ -3285,7 +3335,10 @@ async function huntSites(entry) {
             targets.push({ site, engineName, engine: ENGINES[engineName], origin: `https://${site.domain}` });
         }
     }
-    return targets;
+    if (danbooruAccount() && own !== DANBOORU && !targets.some(target => target.site.domain === DANBOORU)) {
+        targets.unshift({ site: { domain: DANBOORU, extra: '' }, engineName: 'danbooru', engine: ENGINES.danbooru, origin: `https://${DANBOORU}` });
+    }
+    return targets.sort((a, b) => (b.site.domain === DANBOORU) - (a.site.domain === DANBOORU));
 }
 
 async function sitePosts(target, terms, page = 0) {
@@ -3307,7 +3360,7 @@ async function findByMd5(targets, md5) {
     const results = await Promise.all(targets.filter(target => target.engineName !== 'philomena').map(async target => {
         try {
             const post = (await sitePosts(target, [`md5:${md5}`])).find(item => sameFile(target, item, md5));
-            return post ? huntMatch(target, post, 'same file', 100) : null;
+            return post ? { ...huntMatch(target, post, 'same file', 100), target, post } : null;
         } catch (error) {
             console.debug(`[Image Search] md5 search failed on ${target.site.domain}`, error);
             return null;
@@ -3316,81 +3369,212 @@ async function findByMd5(targets, md5) {
     return results.find(Boolean) || null;
 }
 
-async function closestThumb(pool, own, budget) {
+const WIDE_TAGS = new Set(['1girl', '1boy', '2girls', '2boys', '3girls', '3boys', '4girls', 'multiple_girls', 'multiple_boys', '1other', 'solo', 'solo_focus', 'looking_at_viewer', 'simple_background', 'white_background', 'grey_background', 'highres', 'absurdres', 'lowres', 'animated', 'animated_gif', 'video', 'sound', 'gif', 'artist_name', 'signature', 'watermark', 'text', 'english_text', 'commentary', 'commentary_request', 'translated', 'comic', 'blush', 'smile', 'open_mouth', 'closed_mouth', 'standing', 'sitting', 'upper_body', 'full_body', 'cowboy_shot', 'female', 'male', 'girl', 'boy', 'woman', 'man']);
+
+async function closestThumb(pool, owns, budget, report) {
     const queue = pool.slice(0, Math.max(0, budget.left));
     budget.left -= queue.length;
     let best = null;
     const worker = async () => {
-        while (queue.length && !(best && best.distance <= 2)) {
+        while (queue.length && !(best && best.distance <= 8)) {
             const candidate = queue.shift();
             try {
-                const distance = hashDistance(own.bits, (await pictureHash(candidate.thumb)).bits);
-                if (!best || distance < best.distance) {
-                    best = { ...candidate, distance };
+                const theirs = (await pictureHash(candidate.thumb)).bits;
+                for (const own of owns) {
+                    const distance = hashDistance(own.bits, theirs);
+                    if (!best || distance < best.distance) {
+                        best = { ...candidate, distance, frame: own.frame };
+                    }
                 }
+                report.compared++;
             } catch (error) {
                 console.debug('[Image Search] could not compare a thumbnail', candidate.thumb, error);
             }
         }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
+    if (best) {
+        report.closest.push({ page: best.target.engine.postUrl(best.post, best.target.origin), id: String(best.post.id ?? ''), alike: Math.round((64 - best.distance) / 64 * 100) });
+    }
     return best && best.distance <= 8 ? best : null;
 }
 
-async function findByNames(targets, entry, own, md5) {
-    const names = huntNames(entry);
-    if (!names.length) {
-        return null;
+function bothOrders(name) {
+    const parts = name.split('_');
+    return parts.length === 2 ? [name, `${parts[1]}_${parts[0]}`] : [name];
+}
+
+async function danbooruList(target, path) {
+    const result = await request(`${target.origin}/${path}`);
+    return result.ok && Array.isArray(result.data) ? result.data : [];
+}
+
+async function findArtist(target, entry, names, found) {
+    const searched = (entry.searchTags || []).map(normalizeTag);
+    const spellings = [...new Set(names.flatMap(bothOrders))];
+    try {
+        const artists = await danbooruList(target, `tags.json?search%5Bname_comma%5D=${encodeURIComponent(spellings.join(','))}&search%5Bcategory%5D=1&only=name,post_count&limit=100`);
+        const hit = artists
+            .filter(tag => tag?.name && Number(tag.post_count) > 0)
+            .map(tag => ({ tag: normalizeTag(tag.name), from: names.find(name => bothOrders(name).includes(normalizeTag(tag.name))) || tag.name }))
+            .sort((a, b) => searched.includes(b.from) - searched.includes(a.from))[0];
+        if (hit) {
+            return hit;
+        }
+    } catch (error) {
+        console.debug('[Image Search] artist tag lookup failed', error);
     }
-    const budget = { left: 80 };
-    const seen = new Set();
+    const order = names.filter(name => !found.has(name)).sort((a, b) => searched.includes(b) - searched.includes(a)).slice(0, 4);
+    for (const name of order) {
+        try {
+            const artist = (await danbooruList(target, `artists.json?search%5Bany_name_matches%5D=${encodeURIComponent(name)}&search%5Bis_deleted%5D=false&only=name&limit=1`))[0];
+            if (artist?.name) {
+                return { tag: normalizeTag(artist.name), from: name };
+            }
+        } catch (error) {
+            console.debug('[Image Search] artist lookup failed', name, error);
+        }
+    }
+    return null;
+}
+
+async function translateNames(target, entry, extra = []) {
+    const domain = target.site.domain;
+    const danbooru = domain === DANBOORU || target.engineName === 'danbooru';
+    const names = extra.length ? extra : huntNames(entry);
+    await lookupTags(domain, target.engineName, [...new Set(names.flatMap(bothOrders))]).catch(() => {});
+    const found = new Map();
+    for (const name of names) {
+        const counts = bothOrders(name).map(tag => ({ tag, count: knownCount(domain, tag) }));
+        const hit = counts.find(item => item.count > 0) || (counts.every(item => item.count === null) && !danbooru ? { tag: name, count: Number.MAX_SAFE_INTEGER } : null);
+        if (hit) {
+            found.set(name, hit);
+        }
+    }
+    if (danbooru) {
+        await Promise.all(names.filter(name => !found.has(name)).slice(0, 8).map(async name => {
+            try {
+                const tag = (await danbooruList(target, `tags.json?search%5Bname_or_alias_matches%5D=${encodeURIComponent(name)}&only=name,post_count&limit=1`))[0];
+                if (tag?.name && Number(tag.post_count) > 0) {
+                    found.set(name, { tag: normalizeTag(tag.name), count: Number(tag.post_count) });
+                }
+            } catch (error) {
+                console.debug('[Image Search] alias lookup failed', name, error);
+            }
+        }));
+    }
+    const anchor = danbooru && !extra.length ? await findArtist(target, entry, names, found) : null;
+    const tags = [...found.entries()].map(([from, hit]) => ({ ...hit, from })).filter(hit => !WIDE_TAGS.has(hit.tag)).sort((a, b) => a.count - b.count);
+    if (extra.length) {
+        return { anchor: null, tags };
+    }
+    let chosen = anchor;
+    if (!chosen) {
+        const searched = (entry.searchTags || []).map(normalizeTag);
+        const pick = tags.find(hit => searched.includes(hit.from) && hit.count < Number.MAX_SAFE_INTEGER) || tags[0];
+        chosen = pick ? { tag: pick.tag, from: pick.from } : null;
+    }
+    return { anchor: chosen, tags: chosen ? tags.filter(hit => hit.tag !== chosen.tag) : [] };
+}
+
+async function findByPairs(targets, entry, owns, md5, report, extra = []) {
+    const tolerance = entryAnimated(entry) ? 0.15 : 0.04;
+    const ratio = owns[0]?.ratio || 0;
     for (const target of targets) {
         const domain = target.site.domain;
-        const spellings = [...new Set(names.flatMap(name => {
-            const parts = name.split('_');
-            return parts.length === 2 ? [name, `${parts[1]}_${parts[0]}`] : [name];
-        }))];
-        await lookupTags(domain, target.engineName, spellings).catch(() => {});
-        const counted = spellings.map(name => ({ name, count: knownCount(domain, name) }));
-        const usable = counted.some(item => item.count !== null) ? counted.filter(item => item.count > 0).sort((a, b) => a.count - b.count) : counted;
-        for (const { name } of usable.slice(0, 2)) {
+        let names = report.anchors.get(domain);
+        if (!names || extra.length) {
+            const translated = await translateNames(target, entry, extra);
+            if (!names) {
+                names = translated;
+                report.anchors.set(domain, names);
+            } else {
+                names = { anchor: names.anchor, tags: translated.tags.filter(hit => hit.tag !== names.anchor?.tag) };
+            }
+        }
+        if (!names.anchor) {
+            continue;
+        }
+        for (const hit of names.tags) {
+            const pair = [names.anchor.tag, hit.tag];
+            const key = `${domain} ${pair.join(' ')}`;
+            if (report.tried.has(key)) {
+                continue;
+            }
+            report.tried.add(key);
+            report.pairs++;
+            let posts = [];
+            try {
+                posts = await sitePosts(target, pair, 0);
+            } catch (error) {
+                console.debug(`[Image Search] pair search failed on ${domain}`, error);
+                continue;
+            }
             const pool = [];
-            for (const terms of entry.animated ? [[name, 'animated'], [name]] : [[name]]) {
-                for (let page = 0; page < 2; page++) {
-                    let posts = [];
-                    try {
-                        posts = await sitePosts(target, terms, page);
-                    } catch (error) {
-                        console.debug(`[Image Search] name search failed on ${domain}`, error);
-                        break;
-                    }
-                    for (const post of posts) {
-                        if (sameFile(target, post, md5)) {
-                            return huntMatch(target, post, 'same file', 100);
-                        }
-                        const ratio = postRatio(post);
-                        const thumb = target.engine.thumb(post, target.origin);
-                        if (!thumb || seen.has(thumb) || (own.ratio && ratio && Math.abs(ratio - own.ratio) / own.ratio > 0.04)) {
-                            continue;
-                        }
-                        seen.add(thumb);
-                        pool.push({ target, post, thumb });
-                    }
-                    if (posts.length < target.engine.pageSize) {
-                        break;
-                    }
+            for (const post of posts) {
+                if (sameFile(target, post, md5)) {
+                    return { ...huntMatch(target, post, 'same file', 100), target, post, pair, frame: 0 };
                 }
+                const theirs = postRatio(post);
+                const thumb = target.engine.thumb(post, target.origin);
+                if (!thumb || report.seen.has(thumb) || (ratio && theirs && Math.abs(theirs - ratio) / ratio > tolerance)) {
+                    continue;
+                }
+                report.seen.add(thumb);
+                pool.push({ target, post, thumb });
             }
-            const best = await closestThumb(pool, own, budget);
+            const best = await closestThumb(pool.slice(0, 30), owns, report.budget, report);
             if (best) {
-                return huntMatch(best.target, best.post, 'alike', Math.round((64 - best.distance) / 64 * 100));
+                return { ...huntMatch(target, best.post, 'alike', Math.round((64 - best.distance) / 64 * 100)), target, post: best.post, pair, frame: best.frame };
             }
-            if (budget.left <= 0) {
+            if (report.budget.left <= 0) {
                 return null;
             }
         }
     }
     return null;
+}
+
+async function guessTags(entry, blob = null) {
+    const service = ctx().ConnectionManagerRequestService;
+    const profile = visionProfileId();
+    if (!service || !profile) {
+        return [];
+    }
+    const image = await imageDataUrl(entry.url, blob || null, 768);
+    const prompt = 'Look at this picture and give 4 to 6 Danbooru tags for things that are clearly visible and specific to it: hair colour and length or style (blonde_hair, very_long_hair, twintails), eye colour (blue_eyes), clothing (school_uniform, kimono) and distinctive objects or features. Never give general tags such as 1girl, 1boy, solo, looking_at_viewer, simple_background or the number of people. Reply with only the tags, separated by commas.';
+    const result = await service.sendRequest(profile, [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 80, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.2));
+    const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+    return [...new Set(text.split(/[,\n]+/).map(tag => normalizeTag(tag.replace(/^[\s*•\-\d.]+/, '').replace(/[`"']/g, '').trim())))]
+        .filter(tag => tag && /^[a-z0-9_()\-'.:]+$/.test(tag) && !WIDE_TAGS.has(tag)).slice(0, 6);
+}
+
+function isVideoPost(post) {
+    const file = String(post.file_url || post.file?.url || '');
+    const ext = String(post.file_ext || post.file?.ext || '').toLowerCase();
+    return ['mp4', 'webm', 'zip', 'm4v'].includes(ext) || /\.(mp4|webm|zip|m4v)(\?|$)/i.test(file) || tagList(post.tag_string || post.tags).some(tag => /^(video|ugoira)$/i.test(tag));
+}
+
+async function groupTags(match, entry) {
+    const { target, post } = match;
+    const root = target.engine.parentId(post) || (target.engine.hasChildren(post) ? String(post.id) : '');
+    if (!root) {
+        return { tags: match.tags, note: '' };
+    }
+    const members = new Map([[String(post.id), post]]);
+    for (const terms of target.engine.family(root)) {
+        try {
+            (await sitePosts(target, terms, 0)).forEach(member => members.set(String(member.id), member));
+        } catch (error) {
+            console.debug('[Image Search] could not read the group', terms, error);
+        }
+    }
+    const group = [...members.values()];
+    const video = entryAnimated(entry) ? group.find(isVideoPost) : null;
+    if (video) {
+        return { tags: target.engine.postTags(video).map(normalizeTag), note: `tags from its video version #${video.id}` };
+    }
+    return { tags: [...new Set(group.flatMap(member => target.engine.postTags(member).map(normalizeTag)))], note: group.length > 1 ? `tags from its group of ${group.length}` : '' };
 }
 
 async function findOnIqdb(thumb, targets) {
@@ -3424,6 +3608,24 @@ async function findOnIqdb(thumb, targets) {
     return tags.length ? { domain: hostOf(best.href), id: ref?.id || '', page: best.href, tags, how: 'alike (IQDB)', alike: best.alike } : null;
 }
 
+function huntSummary(report, match) {
+    const parts = [];
+    report.anchors.forEach((names, domain) => {
+        if (names.anchor) {
+            parts.push(`${domain}: ${names.anchor.tag}${names.anchor.from !== names.anchor.tag ? ` (here: ${names.anchor.from})` : ''}`);
+        }
+    });
+    const where = parts.length ? `${parts.join('; ')}. ` : '';
+    const guessed = report.guessed.length ? ` The AI guessed: ${report.guessed.join(', ')}.` : report.asked ? ' The AI gave no specific tags to try.' : '';
+    if (match) {
+        const how = match.how === 'same file' ? 'the same file' : match.how.includes('IQDB') ? `${match.alike}% alike, found by IQDB` : `${match.alike}% alike${match.frame ? ` to frame ${match.frame}` : ''}`;
+        const pair = match.pair ? ` with ${match.pair.join(' + ')}` : '';
+        return `${where}Found post #${match.id} on ${match.domain}${pair}: ${how}${match.note ? `; ${match.note}` : ''}.${guessed}`;
+    }
+    const tried = report.pairs ? `Tried ${report.pairs} tag pair${report.pairs === 1 ? '' : 's'} and compared ${report.compared} picture${report.compared === 1 ? '' : 's'}; none was close enough.` : 'Found no tags to search with on your sites.';
+    return `${where}${tried}${guessed}`;
+}
+
 async function huntTags(entry, { item = null, blob = null } = {}) {
     if (isMulti(entry)) {
         return null;
@@ -3441,14 +3643,16 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
         }
     }
     const targets = await huntSites(entry);
+    const report = { anchors: new Map(), tried: new Set(), seen: new Set(), closest: [], guessed: [], asked: false, pairs: 0, compared: 0, budget: { left: 120 } };
     let match = targets.length && md5 ? await findByMd5(targets, md5) : null;
+    let owns = null;
     if (!match && targets.length) {
-        const own = await pictureHash(blob || entry.url).catch(error => {
+        owns = await ownHashes(entry, blob).catch(error => {
             console.debug('[Image Search] could not read the saved picture to compare it', error);
             return null;
         });
-        if (own) {
-            match = await findByNames(targets, entry, own, md5);
+        if (owns?.length) {
+            match = await findByPairs(targets, entry, owns, md5, report);
         }
     }
     if (!match && settings().huntIqdb && thumb) {
@@ -3457,6 +3661,23 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
             return null;
         });
     }
+    if (!match && owns?.length && targets.some(target => report.anchors.get(target.site.domain)?.anchor)) {
+        report.asked = Boolean(visionProfileId());
+        report.guessed = await guessTags(entry, blob).catch(error => {
+            console.debug('[Image Search] the AI could not guess tags', error);
+            return [];
+        });
+        if (report.guessed.length) {
+            match = await findByPairs(targets, entry, owns, md5, report, report.guessed);
+        }
+    }
+    if (match?.target && match.post) {
+        const group = await groupTags(match, entry);
+        match.tags = group.tags.length ? group.tags : match.tags;
+        match.note = group.note;
+    }
+    const closest = report.closest.sort((a, b) => b.alike - a.alike).slice(0, 3).map(({ page, id, alike }) => ({ page, id, alike }));
+    entry.huntReport = { text: huntSummary(report, match), closest: match ? [] : closest, at: Date.now() };
     if (!match?.tags.length) {
         return null;
     }
@@ -3466,6 +3687,21 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
         entry.card.basis = '';
     }
     return match;
+}
+
+function huntReportBox(entry) {
+    const box = el('small', 'stis-hunt-report', `Tag finder: ${entry.huntReport.text}`);
+    if (entry.huntReport.closest?.length) {
+        box.append(' Closest: ');
+        entry.huntReport.closest.forEach((item, i) => {
+            const link = el('a', '', `${item.id ? `#${item.id}` : 'post'} (${item.alike}%)`);
+            link.href = item.page;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            box.append(...(i ? [', ', link] : [link]));
+        });
+    }
+    return box;
 }
 
 function borrowedLine(entry) {
@@ -8311,6 +8547,9 @@ async function openPicker(initialTags = null, focus = null) {
         const kindLine = multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
         const meta = [kindLine, entry.lock ? 'Description locked' : '', borrowedLine(entry), entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
         info.appendChild(el('small', '', meta));
+        if (!multi && entry.huntReport?.text) {
+            info.appendChild(huntReportBox(entry));
+        }
         info.appendChild(cardBox(entry, () => {
             if (!closed) {
                 renderLibFilters();
@@ -8383,12 +8622,16 @@ async function openPicker(initialTags = null, focus = null) {
                     const match = await huntTags(entry);
                     if (!match) {
                         hunt.textContent = huntLabel;
-                        toastr.info('This picture was not found on your other sites.', 'Image Search');
+                        await saveLibrary();
+                        toastr.info(entry.huntReport?.text || 'This picture was not found on your other sites.', 'Image Search', { timeOut: 12000 });
+                        if (!closed && previewState?.target === entry) {
+                            showEntry(entry, current);
+                        }
                         return;
                     }
                     hunt.textContent = entry.lock ? 'Updating…' : 'Describing…';
                     await redoEntry(entry);
-                    toastr.success(`${borrowedLine(entry)}. Described and filed again.`, 'Image Search');
+                    toastr.success(`${entry.huntReport?.text || borrowedLine(entry)} Described and filed again.`, 'Image Search', { timeOut: 12000 });
                     if (!closed && previewState?.target === entry) {
                         showEntry(entry, current);
                     }
@@ -9094,7 +9337,7 @@ function buildSettings() {
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures</span></label><small class="stis-help">Into SillyTavern. Needs the CORS proxy or the image fetcher.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep them in the library</span></label></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures to messages</span></label><small class="stis-help">So vision models can see them.</small></div>
-                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>Find tags for tag-poor pictures</span></label><small class="stis-help">When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites and take their tags before describing it.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>Find tags for tag-poor pictures</span></label><small class="stis-help">When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites (and on Danbooru when your Danbooru account is set) and take their tags before describing it. It searches the artist with each other tag, compares 4 frames of a GIF, then asks the vision model for a few specific tags to try.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt_iqdb"> <span>Also ask IQDB</span></label><small class="stis-help">A free lookalike search, when the picture is not found on your sites.</small></div>
                         <div class="stis-set st-imagesearch-library">
                             <div id="st_imagesearch_lib_count" class="stis-label">Library</div>

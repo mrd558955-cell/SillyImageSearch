@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.44.0';
+const VERSION = '2.45.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -87,6 +87,7 @@ const DEFAULTS = {
     tagsMatter: '',
     tagsDontMatter: '',
     tagNotes: {},
+    fixLog: [],
     groupBlind: true,
     groupReview: true,
     groupImportance: true,
@@ -222,6 +223,9 @@ function settings() {
         if (typeof s[key] === 'string' && s[key].includes(OLD_NAMES_RULE)) {
             s[key] = s[key].replace(OLD_NAMES_RULE, 'Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange).');
         }
+    }
+    if (!Array.isArray(s.fixLog)) {
+        s.fixLog = [];
     }
     if (!s.tagNotes || typeof s.tagNotes !== 'object' || Array.isArray(s.tagNotes)) {
         s.tagNotes = {};
@@ -4441,8 +4445,9 @@ function fixesNote(fixes) {
     return fixes?.length ? `The user corrected an earlier description of this picture: ${fixes.slice(-3).map(fix => `"${fix.text}"${fix.tags.length ? ` (it shows: ${fix.tags.join(', ').replace(/_/g, ' ')})` : ''}`).join('; ')}. Keep these corrections.` : '';
 }
 
-function correctionPrompt(base, fix, asked) {
-    return `This is the description of this picture:\n\n${base}\n\nThe user checked it against the picture and says: "${fix.text}"${fix.tags.length ? `\nThe user also says it shows: ${fix.tags.join(', ').replace(/_/g, ' ')}.` : ''}\nLook at the picture again and rewrite the description so it follows the user's correction. The correction wins over the tags and over the earlier description; keep everything else that is right.\n\nRewrite it in the format asked below.\n\n${asked}`;
+function correctionPrompt(base, fix, asked, entry = null, item = null) {
+    const place = item?.role ? `\n\nWhere it sits: it is the ${roleText(item.role)}${item.role.intensity ? ` (intensity ${item.role.intensity}/10)` : ''} of a ${groupWhat(entry)}${entry.arc ? ` shaped ${entry.arc}` : ''}.${item.diff ? ` Its story line so far: ${item.diff}` : ''}` : '';
+    return `This is the description of this picture:\n\n${base}${place}\n\nThe user checked it against the picture and says: "${fix.text}"${fix.tags.length ? `\nThe user also says it shows: ${fix.tags.join(', ').replace(/_/g, ' ')}.` : ''}\nLook at the picture again and rewrite the description so it follows the user's correction. The correction wins over the tags and over the earlier description; keep everything else that is right.\n\nRewrite it in the format asked below.\n\n${asked}`;
 }
 
 async function correctDescription(entry, item, text, tags = []) {
@@ -4461,14 +4466,15 @@ async function correctDescription(entry, item, text, tags = []) {
                 entry.report.placed[tag] = [...new Set([...(entry.report.placed[tag] || []), index + 1])].sort((a, b) => a - b);
             });
         }
+        const before = item.description;
         groupStep(entry, `Correcting item ${index + 1}…`);
         try {
             await describeItem(entry, index, null, { correction: fix });
-            await refreshStory(entry);
+            await refreshStory(entry, `the user corrected item ${index + 1} and this is true: ${fix.text}`);
+            rememberFix(entry, item, before, fix);
         } finally {
             groupStep(entry, '');
         }
-        fix.tags.forEach(tag => saveTagNote(tag, { note: plainNote(fix.text, entry), lasts: false, role: roleText(item.role), story: item.diff || '', kind: groupWhat(entry) }));
     } else {
         entry.fixes = [...entry.fixes, fix].slice(-6);
         entry.tags = [...new Set([...entry.tags, ...fix.tags])];
@@ -4481,11 +4487,59 @@ async function correctDescription(entry, item, text, tags = []) {
             entry.lock = { text: entry.description, at: Date.now() };
         }
         descriptions.set(entry.url, readyDescription(entry.url, entry.tags, entry.description));
-        fix.tags.forEach(tag => saveTagNote(tag, { note: fix.text, lasts: false, role: '', story: '', kind: 'single picture' }));
+        rememberFix(entry, null, base, fix);
     }
     await saveLibrary();
     scheduleLorebookSync();
     return entry;
+}
+
+function rememberFix(entry, item, before, fix) {
+    const s = settings();
+    const kind = item ? groupWhat(entry) : 'single picture';
+    if (fix.tags.length) {
+        fix.tags.forEach(tag => {
+            rememberTag(tag, true);
+            saveTagNote(tag, { note: item ? plainNote(fix.text, entry) : fix.text, fromFix: true, lasts: false, role: item ? roleText(item.role) : '', story: item?.diff || '', kind });
+        });
+        return;
+    }
+    const log = Array.isArray(s.fixLog) ? s.fixLog : [];
+    log.push({ text: fix.text, role: item ? roleText(item.role) : '', kind, before: String(before || '').slice(0, 300), at: fix.at });
+    s.fixLog = log.slice(-40);
+    save();
+    renderFixLog();
+}
+
+function renderFixLog() {
+    const box = document.getElementById('st_imagesearch_fix_log');
+    if (!box) {
+        return;
+    }
+    box.innerHTML = '';
+    const log = Array.isArray(settings().fixLog) ? settings().fixLog : [];
+    if (!log.length) {
+        box.appendChild(el('small', 'stis-help', 'None yet. Corrections you send without a tag are kept here.'));
+        return;
+    }
+    [...log].reverse().forEach(fix => {
+        const row = el('div', 'stis-tag-note');
+        const head = el('div', 'stis-tag-note-head');
+        head.appendChild(el('b', '', fix.role ? `${fix.role} item` : fix.kind));
+        head.append(` of a ${fix.kind}`);
+        const remove = el('a', 'stis-tag-note-remove', '×');
+        remove.href = '#';
+        remove.title = 'Forget this correction';
+        remove.addEventListener('click', event => {
+            event.preventDefault();
+            settings().fixLog = (settings().fixLog || []).filter(other => other !== fix);
+            save();
+            renderFixLog();
+        });
+        head.appendChild(remove);
+        row.append(head, el('span', '', fix.text));
+        box.appendChild(row);
+    });
 }
 
 function cleanRole(role) {
@@ -4516,6 +4570,8 @@ function cleanReport(report) {
         problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, about: item.about === 'story' ? 'story' : 'description', problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
         errors: cleanStrings(report.errors, 12),
         storyReply: String(report.storyReply || '').slice(0, 4000),
+        deduceReply: String(report.deduceReply || '').slice(0, 3000),
+        noteLog: cleanStrings(report.noteLog, 40),
     };
 }
 
@@ -5069,7 +5125,7 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const tags = fallback || !item.shows.length ? own : item.shows;
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
     const base = missed.length || correction ? item.lock?.text || item.description : '';
-    const wrap = !base ? null : correction ? asked => correctionPrompt(base, correction, asked) : asked => missedPrompt(base, missed, item, asked, why);
+    const wrap = !base ? null : correction ? asked => correctionPrompt(base, correction, asked, entry, item) : asked => missedPrompt(base, missed, item, asked, why);
     const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags });
     item.description = parsed.text;
     item.sections = parsed.sections || {};
@@ -5115,12 +5171,13 @@ function storyPrompt(entry, notes = '') {
         const part = entry.fromVideo?.parts[index];
         const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : '';
         const tags = (item.shows.length ? item.shows : item.tags.length ? item.tags : entry.tags).concat(item.added.filter(tag => !item.shows.includes(tag)));
-        return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}`;
+        const fixed = item.fixes.length ? `\nThe user's correction (true): ${item.fixes.slice(-2).map(fix => fix.text).join('; ')}` : '';
+        return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}${fixed}`;
     }).join('\n\n');
     const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: entry.tags.join(', ').replace(/_/g, ' ') };
     const text = String((versions ? settings().versionsPrompt : settings().storyPrompt) || (versions ? DEFAULT_VERSIONS_PROMPT : DEFAULT_STORY_PROMPT)).replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
     const ruled = text.includes(NO_NAMES_RULE) ? text : `${text}\n\n${NO_NAMES_RULE}`;
-    return notes ? `${ruled}\n\nA reviewer found problems in earlier story lines; fix them: ${notes}` : ruled;
+    return notes ? `${ruled}\n\nFix these in the story lines: ${notes}` : ruled;
 }
 
 function parseStory(reply, count, versions) {
@@ -5214,7 +5271,7 @@ function renderTagNotes() {
             const row = el('div', 'stis-tag-note');
             const head = el('div', 'stis-tag-note-head');
             head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
-            head.append(` ${note.wrong ? 'wrongly deduced' : note.confirmed ? 'deduced and confirmed' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
+            head.append(` ${note.wrong ? 'wrongly deduced' : note.confirmed ? 'deduced and confirmed' : note.fromFix ? 'from a correction' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
             if (!note.wrong) {
                 const lasts = el('span', 'stis-fchip stis-tag-note-lasts', 'Lasts after');
                 lasts.classList.toggle('stis-fchip-on', Boolean(note.lasts));
@@ -5275,14 +5332,18 @@ function renderTagNotes() {
 
 function deducePrompt(entry, tags) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${[item.diff, item.sections?.action ? `Action: ${item.sections.action}` : ''].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
-    const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
-    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none`;
+    const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : note.fromFix ? `the user corrected a description${note.role ? ` of the ${note.role} item of a ${note.kind || 'group'}` : ''}${note.story ? ` ("${note.story}")` : ''}, saying it shows this tag: "${note.note}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
+    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none, because ...`;
 }
 
-async function deduceTags(entry, tags) {
+async function deduceTags(entry, tags, report = null) {
     const reply = await textAsk(deducePrompt(entry, tags), 80 + 70 * tags.length);
+    if (report) {
+        report.deduceReply = String(reply).slice(0, 3000);
+    }
     const wanted = new Set(tags);
     const found = new Map();
+    const declined = new Map();
     for (const line of reply.split('\n')) {
         const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^`?([^:`]+?)`?\s*:\s*(?:(none)\b|(?:item|part|picture|version)?\s*(\d+)\s*(?:[,;]?\s*(lasts?)\b)?)[\s,;:.–—-]*(.*)$/i);
         if (!match) {
@@ -5290,10 +5351,19 @@ async function deduceTags(entry, tags) {
         }
         const tag = normalizeTag(match[1].replace(/[*"]/g, ''));
         const number = Number(match[3]);
+        if (wanted.has(tag) && match[2] && !declined.has(tag)) {
+            declined.set(tag, match[5].replace(/^because\s+/i, '').replace(/\s+/g, ' ').trim().slice(0, 300));
+        }
         if (!wanted.has(tag) || found.has(tag) || match[2] || number < 1 || number > entry.variants.length) {
             continue;
         }
         found.set(tag, { item: number, lasts: Boolean(match[4]), why: match[5].replace(/^because\s+/i, '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'it most likely happens here' });
+    }
+    if (report) {
+        tags.forEach(tag => {
+            const place = found.get(tag);
+            report.noteLog.push(place ? `${tag.replace(/_/g, ' ')}: placed from your notes in item ${place.item}${place.lasts ? ' and after' : ''}, because ${place.why}` : declined.has(tag) ? `${tag.replace(/_/g, ' ')}: not placed, ${declined.get(tag) ? `because ${declined.get(tag)}` : 'no reason given'}` : `${tag.replace(/_/g, ' ')}: the answer did not mention it`);
+        });
     }
     return found;
 }
@@ -5415,6 +5485,26 @@ function groupStep(entry, text) {
         groupProgress.delete(entry.id);
     }
     groupListeners.get(entry.id)?.(text);
+    document.querySelectorAll('.stis-cell[data-entry]').forEach(cell => {
+        if (cell.dataset.entry === entry.id) {
+            cellProgress(cell, text);
+        }
+    });
+}
+
+function cellProgress(cell, text) {
+    let mark = cell.querySelector('.stis-cell-progress');
+    if (!text) {
+        mark?.remove();
+        return;
+    }
+    if (!mark) {
+        mark = el('span', 'stis-cell-progress');
+        cell.appendChild(mark);
+    }
+    const { step, total } = progressParts(text);
+    mark.textContent = step ? `${step}/${total}` : '…';
+    mark.title = text;
 }
 
 async function describeSet(entry, blobs = []) {
@@ -5428,7 +5518,7 @@ async function describeSet(entry, blobs = []) {
         item.before = null;
     });
     const count = items.length;
-    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {} };
+    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [] };
     const size = count > 3 ? 768 : 1024;
     const pictures = new Array(count);
     const picture = async index => {
@@ -5478,6 +5568,10 @@ async function describeSet(entry, blobs = []) {
                             report.found[tag] = [...numbers].sort((a, b) => a - b);
                             numbers.forEach(number => assigned[number - 1]?.add(tag));
                         }
+                    });
+                    [...missing].filter(tag => tagNotesFor(tag).some(note => note.note)).forEach(tag => {
+                        const numbers = [...(found.get(tag) || [])].sort((a, b) => a - b);
+                        report.noteLog.push(`${tag.replace(/_/g, ' ')}: your notes went to the second look as hints, ${numbers.length ? `and it was found in item ${numbers.join(', ')}` : 'and it was still not seen'}`);
                     });
                 } catch (error) {
                     report.errors.push(`Looking for the missing tags: ${error?.message || error}`);
@@ -5548,7 +5642,7 @@ async function describeSet(entry, blobs = []) {
         if (deducible.length && s.groupDeduce !== false && items.every(item => item.description)) {
             groupStep(entry, `Looking where ${deducible.length} tag${deducible.length === 1 ? '' : 's'} nobody saw could happen…`);
             try {
-                const found = await deduceTags(entry, deducible);
+                const found = await deduceTags(entry, deducible, report);
                 report.steps.deduce = found.size ? 'on' : 'none placed';
                 if (found.size) {
                     await placeDeduced(entry, report, found);
@@ -5603,6 +5697,7 @@ async function describeSet(entry, blobs = []) {
         }
         if (report.notShown.length && s.groupImportance !== false) {
             const { matter, dont } = rememberedTags();
+            report.notShown.filter(tag => matter.has(tag) || dont.has(tag)).forEach(tag => report.noteLog.push(`${tag.replace(/_/g, ' ')}: judged from your list, ${matter.has(tag) ? 'it matters' : 'it does not matter'}`));
             report.importance = report.notShown.filter(tag => matter.has(tag) || dont.has(tag)).map(tag => ({ tag, important: matter.has(tag), why: matter.has(tag) ? 'you marked it as important before' : 'you threw it out before', by: 'remembered' }));
             const ask = report.notShown.filter(tag => !matter.has(tag) && !dont.has(tag));
             let verdict = '';
@@ -5655,13 +5750,13 @@ async function redoItem(entry, index) {
     return entry;
 }
 
-async function refreshStory(entry) {
+async function refreshStory(entry, notes = '') {
     if (settings().groupStory === false || !groupDescribed(entry) || !entry.variants.some(item => item.role)) {
         return false;
     }
     groupStep(entry, 'Writing what each item means in the story…');
     try {
-        await writeStory(entry);
+        await writeStory(entry, notes);
         return true;
     } catch (error) {
         if (entry.report) {
@@ -6350,6 +6445,32 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
 const tagDrafts = new Map();
 
 const tagPanelOpen = new Map();
+const sectionOpen = new Map();
+let moreOpen = false;
+let libTagsOpen = false;
+
+const GROUP_STEPS = [[/^Looking at each/, 'First look'], [/^Looking for \d/, 'Looking again for tags'], [/^Describing item/, 'Describing the items'], [/^Writing what each item/, 'Writing the story lines'], [/^(Looking where|Adding )/, 'Placing tags from your notes'], [/^Checking the descriptions/, 'Final check'], [/^Judging/, 'Judging tags not found']];
+
+function progressParts(text) {
+    const step = GROUP_STEPS.findIndex(([test]) => test.test(text));
+    return { step: step + 1, total: GROUP_STEPS.length };
+}
+
+function paintProgress(node, text) {
+    node.innerHTML = '';
+    node.hidden = !text;
+    if (!text) {
+        return;
+    }
+    const { step, total } = progressParts(text);
+    node.appendChild(el('div', 'stis-progress-head', step ? `Working · step ${step} of ${total}` : 'Working'));
+    node.appendChild(el('div', 'stis-progress-text', text));
+    const track = el('div', 'stis-progress-track');
+    const fill = el('div', 'stis-progress-fill');
+    fill.style.width = `${step ? Math.round((step - 0.5) / total * 100) : 50}%`;
+    track.appendChild(fill);
+    node.appendChild(track);
+}
 
 function tagPanel(entry, onChange) {
     const report = entry.report;
@@ -6617,6 +6738,16 @@ function groupReportBox(entry, current) {
     report.problems.forEach(problem => lines.push(`Final check, item ${problem.item}${problem.about === 'story' ? ' (story line)' : ''}: ${problem.problem}${problem.redone ? (problem.about === 'story' ? ' (written again)' : ' (described again)') : entry.variants[problem.item - 1]?.lock ? ' (locked, left as is)' : ''}`));
     report.errors.forEach(error => lines.push(`Problem: ${error}`));
     lines.forEach(line => box.appendChild(el('small', 'stis-group-report-line', line)));
+    if (report.noteLog.length) {
+        box.appendChild(el('small', 'stis-group-report-line stis-group-report-head', 'Your tag notes at work:'));
+        report.noteLog.forEach(line => box.appendChild(el('small', 'stis-group-report-line', `· ${line}`)));
+    }
+    if (report.deduceReply) {
+        const raw = el('details', 'stis-group-report-raw');
+        raw.appendChild(el('summary', '', 'The answer when placing tags from your notes'));
+        raw.appendChild(el('small', 'stis-group-report-line stis-entry-text', report.deduceReply));
+        box.appendChild(raw);
+    }
     if (report.storyReply) {
         const raw = el('details', 'stis-group-report-raw');
         raw.appendChild(el('summary', '', 'The story step\'s answer'));
@@ -11356,7 +11487,7 @@ async function openPicker(initialTags = null, focus = null) {
         return { bar, img, link, main, below };
     }
 
-    function variantStrip(members, current, onChoose, numbered = false) {
+    function variantStrip(members, current, onChoose, numbered = false, owner = null) {
         const strip = el('div', 'stis-variants');
         members.forEach((member, index) => {
             const wrap = el('span', 'stis-variant-wrap');
@@ -11380,24 +11511,44 @@ async function openPicker(initialTags = null, focus = null) {
             if (numbered) {
                 wrap.appendChild(el('span', 'stis-variant-num', String(index + 1)));
             }
+            if (owner && member.role) {
+                const waiting = member.deduced?.some(d => !owner.report?.deduced?.[d.tag]?.confirmed);
+                const label = el('span', 'stis-variant-role', `${waiting ? '⚠ ' : ''}${member.role.main}${member.role.intensity ? ` · ${member.role.intensity}` : ''}`);
+                label.title = `${roleText(member.role)}${member.role.intensity ? `, intensity ${member.role.intensity}/10` : ''}${waiting ? ' · has a deduced tag to check' : ''}`;
+                wrap.appendChild(label);
+                wrap.classList.add('stis-variant-wrap-role');
+            }
             strip.appendChild(wrap);
         });
         return strip;
     }
 
-    function tagSection(tagNames, below) {
+    function tagSection(tagNames, below, folded = false) {
         const unique = [...new Set((tagNames || []).map(normalizeTag).filter(Boolean))];
-        const box = el('div', 'stis-tagbox');
+        const box = el('div', `stis-tagbox${folded ? ' stis-tagbox-folded' : ''}`);
         const head = el('div', 'stis-tagbox-head');
         head.append(el('span', '', `Tags (${unique.length})`), el('i', 'fa-solid fa-chevron-down'));
         head.title = 'All the tags of this picture';
+        const holder = el('div', 'stis-tagbox-tags');
+        const actions = el('div', 'stis-tagbox-actions');
+        const fold = open => {
+            holder.hidden = !open;
+            actions.hidden = !open;
+            box.classList.toggle('stis-tagbox-open', open);
+        };
+        if (folded) {
+            fold(libTagsOpen);
+        }
         head.addEventListener('click', () => {
+            if (folded) {
+                libTagsOpen = holder.hidden;
+                fold(libTagsOpen);
+                return;
+            }
             if (typeof ui.preview.scrollTo === 'function') {
                 ui.preview.scrollTo({ top: box.offsetTop, behavior: 'smooth' });
             }
         });
-        const holder = el('div', 'stis-tagbox-tags');
-        const actions = el('div', 'stis-tagbox-actions');
         const picked = new Set();
         const chips = new Map();
         const add = el('div', 'menu_button stis-tagbox-btn');
@@ -12393,52 +12544,65 @@ async function openPicker(initialTags = null, focus = null) {
         const sequence = multi && entry.kind === 'sequence';
         const current = chosen || (multi ? entry.variants[0] : null);
         const { bar, below } = previewShell(current?.url || entry.url, current?.source || entry.source, entry, 'entry');
+        const navCount = bar.childElementCount;
         previewState.variant = current;
         if (multi) {
-            bar.before(variantStrip(entry.variants, current, variant => showEntry(entry, variant), sequence));
+            bar.before(variantStrip(entry.variants, current, variant => showEntry(entry, variant), sequence, entry));
         }
         const index = multi ? Math.max(0, entry.variants.indexOf(current)) : 0;
         const itemized = groupDescribed(entry) && Boolean(current);
         const target = itemized ? current : entry;
         const info = el('div', 'stis-entry-info');
+        const section = (key, title, open) => {
+            const box = el('details', `stis-sec stis-sec-${key}`);
+            box.open = sectionOpen.has(key) ? sectionOpen.get(key) : open;
+            box.addEventListener('toggle', () => sectionOpen.set(key, box.open));
+            box.appendChild(el('summary', 'stis-sec-title', title));
+            info.appendChild(box);
+            return box;
+        };
+        const itemName = `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1}`;
+        const desc = section('desc', itemized ? `${itemName}${current.role ? ` · ${roleText(current.role)}` : ''}` : 'Description', true);
         if (itemized) {
-            if (entry.description && entry.description !== current.description) {
-                info.appendChild(el('div', 'stis-entry-overview', `Overview: ${entry.description}`));
-            }
-            if (entry.arc) {
-                info.appendChild(el('div', 'stis-entry-overview stis-entry-arc', `Shape: ${entry.arc}`));
-            }
-            info.appendChild(el('div', 'stis-entry-text', `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1}:\n${current.description}`));
+            desc.appendChild(el('div', 'stis-entry-text', current.description));
             if (itemStory(entry, current, index)) {
-                info.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
+                desc.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
             }
             if (current.deduced.length) {
-                info.appendChild(el('div', 'stis-entry-text stis-entry-deduced', `Deduced, not seen: ${current.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}`));
+                desc.appendChild(el('div', 'stis-entry-text stis-entry-deduced', `Deduced, not seen: ${current.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}`));
             }
         } else {
-            info.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
+            desc.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
             if (multi && index > 0) {
-                info.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
+                desc.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
             }
         }
         const fixSpot = el('div', 'stis-fix-spot');
-        info.appendChild(fixSpot);
+        desc.appendChild(fixSpot);
         if (multi) {
-            const progress = el('small', 'stis-group-progress', groupProgress.get(entry.id) || '');
-            progress.hidden = !progress.textContent;
-            info.appendChild(progress);
+            const progress = el('div', 'stis-group-progress');
+            paintProgress(progress, groupProgress.get(entry.id) || '');
+            bar.before(progress);
             groupListeners.set(entry.id, text => {
                 if (!progress.isConnected) {
                     groupListeners.delete(entry.id);
                     return;
                 }
-                progress.textContent = text;
-                progress.hidden = !text;
+                paintProgress(progress, text);
                 if (!text && !closed && previewState?.target === entry) {
                     showEntry(entry, entry.variants.includes(current) ? current : null);
                     renderLibrary();
                 }
             });
+        }
+        const covered = entry.fromVideo ? entry.fromVideo.parts.reduce((sum, part) => sum + Math.max(0, part.end - part.start), 0) : 0;
+        const videoLine = entry.fromVideo ? `${entry.fromVideo.parts.length} parts of a video · ${lengthText(covered)}${entry.fromVideo.duration ? ` of ${lengthText(entry.fromVideo.duration)}` : ''}` : '';
+        const kindLine = entry.fromVideo ? `${sequence ? 'Sequence' : 'Set'}: ${videoLine}` : multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
+        const lockedItems = multi ? entry.variants.filter(item => item.lock).length : 0;
+        const meta = [kindLine, entry.lock ? 'Description locked' : lockedItems ? `${lockedItems} item${lockedItems === 1 ? '' : 's'} locked` : '', borrowedLine(entry), entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
+        desc.appendChild(el('small', 'stis-entry-meta', meta));
+        if (!multi && entry.huntReport?.text) {
+            desc.appendChild(huntReportBox(entry));
         }
         if (multi && entry.report && (entry.report.notShown.length || Object.keys(entry.report.deduced).length)) {
             info.appendChild(tagPanel(entry, () => {
@@ -12448,24 +12612,24 @@ async function openPicker(initialTags = null, focus = null) {
                 }
             }));
         }
-        const covered = entry.fromVideo ? entry.fromVideo.parts.reduce((sum, part) => sum + Math.max(0, part.end - part.start), 0) : 0;
-        const videoLine = entry.fromVideo ? `${entry.fromVideo.parts.length} parts of a video · ${lengthText(covered)}${entry.fromVideo.duration ? ` of ${lengthText(entry.fromVideo.duration)}` : ''}` : '';
-        const kindLine = entry.fromVideo ? `${sequence ? 'Sequence' : 'Set'}: ${videoLine}` : multi ? (sequence ? `Sequence of ${entry.variants.length} pictures` : `Set of ${entry.variants.length} versions`) : '';
-        const lockedItems = multi ? entry.variants.filter(item => item.lock).length : 0;
-        const meta = [kindLine, entry.lock ? 'Description locked' : lockedItems ? `${lockedItems} item${lockedItems === 1 ? '' : 's'} locked` : '', borrowedLine(entry), entry.characters.length ? `Used with: ${entry.characters.join(', ')}` : '', `Used ${entry.used} time(s)`].filter(Boolean).join(' · ');
-        info.appendChild(el('small', '', meta));
-        if (!multi && entry.huntReport?.text) {
-            info.appendChild(huntReportBox(entry));
+        if (itemized && ((entry.description && entry.description !== current.description) || entry.arc)) {
+            const shape = section('shape', 'Shape and overview', false);
+            if (entry.arc) {
+                shape.appendChild(el('div', 'stis-entry-overview stis-entry-arc', `Shape: ${entry.arc}`));
+            }
+            if (entry.description && entry.description !== current.description) {
+                shape.appendChild(el('div', 'stis-entry-overview', `Overview: ${entry.description}`));
+            }
         }
         if (multi && entry.report) {
             info.appendChild(groupReportBox(entry, current));
         }
-        info.appendChild(cardBox(itemized ? unitView(entry, current) : entry, () => {
+        section('card', 'Filing card', false).appendChild(cardBox(itemized ? unitView(entry, current) : entry, () => {
             if (!closed) {
                 renderLibFilters();
             }
         }));
-        bar.before(info);
+        bar.after(info);
         const working = multi && groupProgress.has(entry.id);
         const redoLabel = itemized ? (current.lock ? 'Update item' : 'Redo item') : entry.lock ? 'Update' : multi ? 'Redo all' : 'Redo';
         const redo = el('div', 'menu_button', redoLabel);
@@ -12645,8 +12809,23 @@ async function openPicker(initialTags = null, focus = null) {
         }
         const use = el('div', 'menu_button stis-use', 'Use this');
         use.addEventListener('click', () => pickEntry(entry, use, current));
-        bar.append(use);
-        tagSection(current?.tags?.length ? current.tags : entry.tags, below);
+        const actions = [...bar.children].slice(navCount);
+        const main = [use, fixButton, redo];
+        const moreRow = el('div', 'stis-more-row');
+        moreRow.append(...actions.filter(button => !main.includes(button)));
+        moreRow.hidden = !moreOpen;
+        const moreButton = el('div', 'menu_button stis-more-button');
+        moreButton.appendChild(el('i', 'fa-solid fa-ellipsis'));
+        moreButton.title = 'More: redo all, lock, delete…';
+        moreButton.classList.toggle('stis-more-on', moreOpen);
+        moreButton.addEventListener('click', () => {
+            moreOpen = !moreOpen;
+            moreRow.hidden = !moreOpen;
+            moreButton.classList.toggle('stis-more-on', moreOpen);
+        });
+        bar.append(...main, moreButton);
+        bar.after(moreRow);
+        tagSection(current?.tags?.length ? current.tags : entry.tags, below, true);
     }
 
     function renderLibFilters() {
@@ -12770,7 +12949,11 @@ async function openPicker(initialTags = null, focus = null) {
             img.src = entry.url;
             img.onerror = () => cell.classList.add('stis-broken');
             cell.title = shortDescription(entry);
+            cell.dataset.entry = entry.id;
             cell.appendChild(img);
+            if (groupProgress.has(entry.id)) {
+                cellProgress(cell, groupProgress.get(entry.id));
+            }
             if (isMulti(entry)) {
                 const badge = el('span', 'stis-set-badge');
                 badge.appendChild(el('i', entry.kind === 'sequence' ? 'fa-solid fa-film' : 'fa-solid fa-clone'));
@@ -13451,9 +13634,14 @@ function buildSettings() {
                             <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Throw out). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
                         </div>
                         <div class="stis-set">
+                            <div class="stis-label">Corrections without a tag</div>
+                            <div id="st_imagesearch_fix_log" class="stis-tag-notes"></div>
+                            <small class="stis-help">Kept as a record only: the picture is fixed and keeps your correction for its later redos.</small>
+                        </div>
+                        <div class="stis-set">
                             <div class="stis-label">Tag notes</div>
                             <div id="st_imagesearch_tag_notes" class="stis-tag-notes"></div>
-                            <small class="stis-help">Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 12 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
+                            <small class="stis-help">Corrections with a tag attached land here, with your words. Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 12 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
                         </div>
                     </div>
                 </details>
@@ -13623,6 +13811,7 @@ function buildSettings() {
     bind('st_imagesearch_group_story', 'groupStory', 'checked');
     bind('st_imagesearch_group_deduce', 'groupDeduce', 'checked');
     renderTagNotes();
+    renderFixLog();
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
     bind('st_imagesearch_versions_prompt', 'versionsPrompt');

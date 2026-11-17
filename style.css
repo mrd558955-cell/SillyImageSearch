@@ -390,7 +390,119 @@
 }
 
 .stis-entry-info {
-    max-height: 35%;
+    max-height: 45%;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+.stis-sec {
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    padding: 2px 0;
+}
+
+.stis-sec-title {
+    cursor: pointer;
+    font-weight: bold;
+    padding: 2px 0;
+}
+
+.stis-sec-desc > .stis-entry-text {
+    margin-top: 2px;
+}
+
+.stis-entry-meta {
+    display: block;
+    opacity: 0.75;
+    margin-top: 4px;
+}
+
+.stis-group-progress {
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeQuoteColor, #e18a24);
+    flex-shrink: 0;
+}
+
+.stis-group-progress[hidden] {
+    display: none;
+}
+
+.stis-progress-head {
+    font-weight: bold;
+}
+
+.stis-progress-track {
+    height: 4px;
+    margin-top: 4px;
+    border-radius: 2px;
+    background: var(--SmartThemeBorderColor);
+}
+
+.stis-progress-fill {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--SmartThemeQuoteColor, #e18a24);
+}
+
+.stis-cell-progress {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    font-size: 0.85em;
+    pointer-events: none;
+}
+
+.stis-more-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.stis-more-row[hidden] {
+    display: none;
+}
+
+.stis-more-button.stis-more-on {
+    outline: 1px solid var(--SmartThemeQuoteColor);
+}
+
+.stis-variant-wrap-role {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stis-variant-role {
+    font-size: 0.7em;
+    opacity: 0.85;
+    white-space: nowrap;
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.stis-tagbox-folded .stis-tagbox-head i {
+    transition: transform 0.15s;
+}
+
+.stis-tagbox-open .stis-tagbox-head i {
+    transform: rotate(180deg);
+}
+
+.stis-tagbox-tags[hidden],
+.stis-tagbox-actions[hidden] {
+    display: none;
+}
+
+.stis-group-report-head {
+    font-weight: bold;
+    margin-top: 4px;
 }
 
 .stis-entry-text {

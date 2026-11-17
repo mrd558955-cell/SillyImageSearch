@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.42.0';
+const VERSION = '2.43.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4450,7 +4450,7 @@ function cleanReport(report) {
         decided: report.decided && typeof report.decided === 'object' ? Object.fromEntries(Object.entries(report.decided).filter(([, value]) => value === 'out' || value === 'important').slice(0, 80)) : {},
         placed: tagMap(report.placed),
         notes: report.notes && typeof report.notes === 'object' ? Object.fromEntries(Object.entries(report.notes).slice(0, 60).map(([tag, value]) => [String(tag), { note: String(value?.note || '').slice(0, 1200), lasts: Boolean(value?.lasts), byItem: value?.byItem && typeof value.byItem === 'object' ? Object.fromEntries(Object.entries(value.byItem).slice(0, 8).map(([number, text]) => [String(Number(number) || 0), String(text).slice(0, 400)])) : {} }])) : {},
-        deduced: report.deduced && typeof report.deduced === 'object' ? Object.fromEntries(Object.entries(report.deduced).slice(0, 40).map(([tag, value]) => [String(tag), { items: Array.isArray(value?.items) ? value.items.map(Number).filter(Number.isFinite) : [], why: String(value?.why || '').slice(0, 300), lasts: Boolean(value?.lasts) }])) : {},
+        deduced: report.deduced && typeof report.deduced === 'object' ? Object.fromEntries(Object.entries(report.deduced).slice(0, 40).map(([tag, value]) => [String(tag), { items: Array.isArray(value?.items) ? value.items.map(Number).filter(Number.isFinite) : [], why: String(value?.why || '').slice(0, 300), lasts: Boolean(value?.lasts), ...(value?.confirmed ? { confirmed: true } : {}) }])) : {},
         verdict: String(report.verdict || ''),
         problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, about: item.about === 'story' ? 'story' : 'description', problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
         errors: cleanStrings(report.errors, 12),
@@ -4929,8 +4929,19 @@ function readTagLines(reply, allowed) {
     return found;
 }
 
+function tagHints(tags) {
+    const lines = tags.map(tag => {
+        const notes = tagNotesFor(tag);
+        const seen = notes.filter(note => !note.wrong && note.note).slice(-3).map(note => note.note);
+        const wrong = notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note);
+        return seen.length || wrong.length ? `- ${tag.replace(/_/g, ' ')}: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : '';
+    }).filter(Boolean);
+    return lines.length ? `\n\nWhat the user said about some of these tags in earlier pictures, as hints on how they show (count a tag only if this picture shows it or clear signs of it):\n${lines.join('\n')}` : '';
+}
+
 async function findMissingTags(entry, pictures, tags, report) {
     const found = new Map(tags.map(tag => [tag, new Set()]));
+    const hints = tagHints(tags);
     const count = entry.variants.length;
     const animated = entry.variants.some(item => itemAnimated(entry, item));
     let together = true;
@@ -4938,7 +4949,7 @@ async function findMissingTags(entry, pictures, tags, report) {
         const batch = Array.from({ length: Math.min(4, count - start) }, (_, i) => start + i);
         const text = `You get ${batch.length} picture${batch.length === 1 ? '' : 's'}, numbered ${batch[0] + 1} to ${batch[batch.length - 1] + 1} in this order${animated ? '; an animated one is shown as a sheet of numbered frames' : ''}. They are items of one ${groupWhat(entry)}. For each tag below, say which of these pictures clearly show it. A tag can also name a known character or something happening. Reply with one line per tag, exactly like "tag: ${batch[0] + 1}, ${batch[batch.length - 1] + 1}" or "tag: none".\n\nTags:\n${tags.join('\n')}`;
         try {
-            const reply = await visionAsk(text, batch.map(index => pictures[index]), 60 + tags.length * 14, 0.1);
+            const reply = await visionAsk(`${text}${hints}`, batch.map(index => pictures[index]), 60 + tags.length * 14, 0.1);
             const lines = readTagLines(reply, batch.map(index => index + 1));
             if (!lines.size) {
                 throw new Error('the answer listed no tags');
@@ -4954,7 +4965,7 @@ async function findMissingTags(entry, pictures, tags, report) {
         const failures = [];
         await eachLimit(entry.variants, 2, async (item, index) => {
             try {
-                const reply = await visionAsk(`This picture is item ${index + 1} of one ${groupWhat(entry)}${itemAnimated(entry, item) ? ', shown as a sheet of numbered frames' : ''}. Which of these tags does it clearly show? A tag can also name a known character or something happening. Reply with only those tags, separated by commas, or "none".\n\nTags: ${tags.join(', ')}`, [pictures[index]], 60 + tags.length * 10, 0.1);
+                const reply = await visionAsk(`This picture is item ${index + 1} of one ${groupWhat(entry)}${itemAnimated(entry, item) ? ', shown as a sheet of numbered frames' : ''}. Which of these tags does it clearly show? A tag can also name a known character or something happening. Reply with only those tags, separated by commas, or "none".\n\nTags: ${tags.join(', ')}${hints}`, [pictures[index]], 60 + tags.length * 10, 0.1);
                 parseTagReply(reply).forEach(tag => found.get(tag)?.add(index + 1));
             } catch (error) {
                 failures.push(`item ${index + 1}: ${error?.message || error}`);
@@ -5112,7 +5123,7 @@ function plainNote(text, entry) {
 function saveTagNote(tag, note) {
     const s = settings();
     const all = s.tagNotes && typeof s.tagNotes === 'object' ? s.tagNotes : {};
-    all[tag] = [...(Array.isArray(all[tag]) ? all[tag] : []), { ...note, at: Date.now() }].slice(-6);
+    all[tag] = [...(Array.isArray(all[tag]) ? all[tag] : []), { ...note, at: Date.now() }].slice(-12);
     s.tagNotes = all;
     save();
     renderTagNotes();
@@ -5137,7 +5148,7 @@ function renderTagNotes() {
             const row = el('div', 'stis-tag-note');
             const head = el('div', 'stis-tag-note-head');
             head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
-            head.append(` ${note.wrong ? 'wrongly deduced' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
+            head.append(` ${note.wrong ? 'wrongly deduced' : note.confirmed ? 'deduced and confirmed' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
             if (!note.wrong) {
                 const lasts = el('span', 'stis-fchip stis-tag-note-lasts', 'Lasts after');
                 lasts.classList.toggle('stis-fchip-on', Boolean(note.lasts));
@@ -5198,7 +5209,7 @@ function renderTagNotes() {
 
 function deducePrompt(entry, tags) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${[item.diff, item.sections?.action ? `Action: ${item.sections.action}` : ''].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
-    const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : `the user placed it in the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, saying: "${note.note || 'no reason given'}"`}`));
+    const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
     return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.\nWhat the user said about such tags before:\n${notes.join('\n')}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none`;
 }
 
@@ -5606,6 +5617,12 @@ async function applyTagChoices(entry, choices) {
         const note = String(choice.note || '').replace(/\s+/g, ' ').trim().slice(0, 400);
         if (choice.kind === 'deduced') {
             if (choice.state !== 'wrong') {
+                const place = report.deduced[tag];
+                if (place && !place.confirmed) {
+                    const first = entry.variants[(place.items[0] || 1) - 1];
+                    saveTagNote(tag, { note: plainNote(place.why, entry), confirmed: true, lasts: place.lasts, role: roleText(first?.role), story: first?.diff || '', kind });
+                    place.confirmed = true;
+                }
                 continue;
             }
             const place = report.deduced[tag];
@@ -6266,22 +6283,64 @@ async function huntTags(entry, { item = null, blob = null } = {}) {
 
 const tagDrafts = new Map();
 
+const tagPanelOpen = new Map();
+
 function tagPanel(entry, onChange) {
     const report = entry.report;
-    const box = el('div', `stis-tagfix${entry.attention ? ' stis-attention' : ''}`);
+    const deduced = Object.entries(report.deduced);
+    const unconfirmed = deduced.filter(([, place]) => !place.confirmed);
+    const box = el('details', `stis-tagfix${entry.attention ? ' stis-attention' : ''}`);
     const drafts = tagDrafts.get(entry.id) || new Map();
     tagDrafts.set(entry.id, drafts);
+    const key = `${Boolean(entry.attention)}|${unconfirmed.length}|${report.at}`;
+    const view = tagPanelOpen.get(entry.id)?.key === key ? tagPanelOpen.get(entry.id) : { open: Boolean(entry.attention || unconfirmed.length), row: '', key };
+    tagPanelOpen.set(entry.id, view);
+    box.open = view.open;
+    box.addEventListener('toggle', () => {
+        view.open = box.open;
+    });
+    const summary = el('summary', 'stis-tagfix-summary');
+    if (entry.attention) {
+        summary.appendChild(el('b', '', 'Needs a look · '));
+    }
+    summary.append([report.notShown.length ? `${report.notShown.length} tag${report.notShown.length === 1 ? '' : 's'} not found` : '', deduced.length ? `${deduced.length} deduced${unconfirmed.length ? ` (${unconfirmed.length} to check)` : ''}` : ''].filter(Boolean).join(' · '));
+    box.appendChild(summary);
+    box.appendChild(el('small', 'stis-help stis-tagfix-help', `Tap a tag to sort it${entry.fromVideo ? ' (a tag not found may have been cut off with the parts)' : ''}. Done saves everything and updates the items.`));
     const done = el('div', 'menu_button stis-tagfix-done', 'Done');
     const startState = tag => (report.decided[tag] === 'important' ? 'important' : '');
     const wrote = choice => Boolean(choice.note.trim() || [...(choice.itemNotes?.values() || [])].some(text => text.trim()));
-    const changed = () => [...drafts].some(([tag, choice]) => (choice.kind === 'deduced' ? report.deduced[tag] && choice.state === 'wrong' : report.notShown.includes(tag) && (choice.state !== startState(tag) || choice.items.size || wrote(choice) || choice.lasts)));
-    const refresh = () => done.classList.toggle('disabled', !changed());
+    const pending = ([tag, choice]) => (choice.kind === 'deduced' ? Boolean(report.deduced[tag]) && (choice.state === 'wrong' || !report.deduced[tag].confirmed) : report.notShown.includes(tag) && (choice.state !== startState(tag) || choice.items.size || wrote(choice) || choice.lasts));
+    const refresh = () => done.classList.toggle('disabled', ![...drafts].some(pending));
+    const rows = [];
+    const openRow = tag => {
+        view.row = view.row === tag ? '' : tag;
+        rows.forEach(row => {
+            row.body.hidden = row.tag !== view.row;
+            row.node.classList.toggle('stis-tagfix-open', row.tag === view.row);
+        });
+    };
+    const makeRow = (tag, extraClass) => {
+        const node = el('div', `stis-tagfix-row${extraClass}`);
+        node.dataset.tag = tag;
+        const line = el('div', 'stis-tagfix-line');
+        line.appendChild(el('span', 'stis-tagfix-tag', tag.replace(/_/g, ' ')));
+        const state = el('small', 'stis-tagfix-state');
+        line.append(state, el('i', 'fa-solid fa-chevron-down stis-tagfix-chevron'));
+        line.addEventListener('click', () => openRow(tag));
+        const body = el('div', 'stis-tagfix-body');
+        body.hidden = view.row !== tag;
+        node.classList.toggle('stis-tagfix-open', view.row === tag);
+        node.append(line, body);
+        rows.push({ tag, node, body });
+        box.appendChild(node);
+        return { node, state, body };
+    };
     const itemChip = (index, item) => {
         const chip = el('span', 'stis-fchip stis-tagfix-item', String(index + 1));
         chip.title = `${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${item.diff || shortDescription({ ...entry, sections: item.sections, description: item.description })}`;
         return chip;
     };
-    const noteBox = (choice, placeholder, number = 0) => {
+    const noteBox = (choice, placeholder, number = 0, after = null) => {
         const input = el('input', 'text_pole stis-tagfix-note');
         input.type = 'text';
         input.placeholder = placeholder;
@@ -6292,29 +6351,20 @@ function tagPanel(entry, onChange) {
             } else {
                 choice.note = input.value;
             }
+            after?.();
             refresh();
         });
         return input;
     };
-    if (report.notShown.length) {
-        const head = el('div', 'stis-tagfix-head');
-        if (entry.attention) {
-            head.appendChild(el('b', '', 'Needs a look. '));
-        }
-        head.append(`Tags not found in any item${entry.fromVideo ? ' (maybe cut off when the parts were made)' : ''}. Throw out the ones that do not matter; for one that matters, tap the items that show it, say why if it is off screen or implied, then Done.`);
-        box.appendChild(head);
-    }
     for (const tag of report.notShown) {
         const judged = report.importance.find(item => item.tag === tag);
         if (!drafts.has(tag) || drafts.get(tag).kind !== 'missing') {
             drafts.set(tag, { kind: 'missing', state: startState(tag), items: new Set(), note: '', itemNotes: new Map(), lasts: false });
         }
         const choice = drafts.get(tag);
-        const row = el('div', 'stis-tagfix-row');
-        row.dataset.tag = tag;
-        row.appendChild(el('span', 'stis-tagfix-tag', tag.replace(/_/g, ' ')));
-        if (judged) {
-            row.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'matters' : 'minor'}${judged.why ? `: ${judged.why}` : ''}`));
+        const { node, state, body } = makeRow(tag, '');
+        if (judged?.why) {
+            body.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'Matters' : 'Minor'}: ${judged.why}`));
         }
         const chips = el('div', 'stis-tagfix-chips');
         const out = el('span', 'stis-fchip stis-tagfix-out', 'Throw out');
@@ -6336,21 +6386,30 @@ function tagPanel(entry, onChange) {
             });
             return chip;
         });
-        const note = el('div', 'stis-tagfix-notes');
+        const notes = el('div', 'stis-tagfix-notes');
+        const showState = () => {
+            const tapped = [...choice.items].sort((a, b) => a - b);
+            const text = choice.state === 'out' ? 'thrown out'
+                : tapped.length ? `→ ${tapped.join(', ')}${choice.lasts ? ' and after' : ''}${wrote(choice) ? ' · note' : ''}`
+                    : choice.state === 'important' ? `important${wrote(choice) ? ' · note' : ''}`
+                        : judged ? (judged.important ? 'matters' : 'minor') : 'not judged';
+            state.textContent = text;
+            state.classList.toggle('stis-tagfix-chosen', choice.state !== startState(tag) || tapped.length > 0);
+        };
         const fillNotes = () => {
-            note.innerHTML = '';
+            notes.innerHTML = '';
             if (choice.state !== 'important') {
                 return;
             }
             const tapped = [...choice.items].sort((a, b) => a - b);
             if (!tapped.length) {
-                note.appendChild(noteBox(choice, 'Why does it matter? (optional)'));
+                notes.appendChild(noteBox(choice, 'Why does it matter? (optional)', 0, showState));
                 return;
             }
             tapped.forEach(number => {
                 const item = entry.variants[number - 1];
                 const label = tapped.length > 1 ? `Item ${number}${item?.role ? ` (${roleText(item.role)})` : ''}: ` : '';
-                note.appendChild(noteBox(choice, `${label}what happens here? e.g. off screen, because…`, number));
+                notes.appendChild(noteBox(choice, `${label}what happens here? e.g. off screen, because…`, number, showState));
             });
         };
         const paint = () => {
@@ -6362,8 +6421,9 @@ function tagPanel(entry, onChange) {
                 chip.classList.toggle('stis-fchip-on', choice.items.has(index + 1));
                 chip.classList.toggle('stis-tagfix-carried', choice.lasts && choice.items.size > 0 && index + 1 > first && !choice.items.has(index + 1));
             });
-            row.classList.toggle('stis-tagfix-gone', choice.state === 'out');
+            node.classList.toggle('stis-tagfix-gone', choice.state === 'out');
             fillNotes();
+            showState();
             refresh();
         };
         out.addEventListener('click', () => {
@@ -6388,29 +6448,27 @@ function tagPanel(entry, onChange) {
             paint();
         });
         chips.append(out, keep, el('small', 'stis-tagfix-in', 'in'), ...numbers, lasts);
-        row.append(chips, note);
-        box.appendChild(row);
+        body.append(chips, notes);
         paint();
-    }
-    const deduced = Object.entries(report.deduced);
-    if (deduced.length) {
-        box.appendChild(el('div', 'stis-tagfix-head', 'Deduced from your notes (nobody saw them). Tap Wrong if one is in the wrong place, say why, then Done: the item is put back as it was.'));
     }
     for (const [tag, place] of deduced) {
         if (!drafts.has(tag) || drafts.get(tag).kind !== 'deduced') {
             drafts.set(tag, { kind: 'deduced', state: '', note: '' });
         }
         const choice = drafts.get(tag);
-        const row = el('div', 'stis-tagfix-row stis-tagfix-deduced');
-        row.dataset.tag = tag;
-        row.appendChild(el('span', 'stis-tagfix-tag', tag.replace(/_/g, ' ')));
-        row.appendChild(el('small', 'stis-tagfix-why', `in item ${place.items.join(', ')}${place.lasts ? ' (lasts)' : ''}: ${place.why}`));
+        const { node, state, body } = makeRow(tag, ' stis-tagfix-deduced');
+        body.appendChild(el('small', 'stis-tagfix-why', `Deduced from your notes, in item ${place.items.join(', ')}${place.lasts ? ' (lasts)' : ''}: ${place.why}${place.confirmed ? ' (confirmed)' : ' · Done confirms it unless you tap Wrong'}`));
         const wrong = el('span', 'stis-fchip stis-tagfix-wrong', 'Wrong');
-        const note = noteBox(choice, 'Why is it wrong? (saved for next time)');
+        const note = el('div', 'stis-tagfix-notes');
         const paint = () => {
             wrong.classList.toggle('stis-fchip-on', choice.state === 'wrong');
-            row.classList.toggle('stis-tagfix-gone', choice.state === 'wrong');
-            note.hidden = choice.state !== 'wrong';
+            node.classList.toggle('stis-tagfix-gone', choice.state === 'wrong');
+            note.innerHTML = '';
+            if (choice.state === 'wrong') {
+                note.appendChild(noteBox(choice, 'Why is it wrong? (saved for next time)'));
+            }
+            state.textContent = choice.state === 'wrong' ? 'wrong' : `deduced → ${place.items.join(', ')}${place.confirmed ? ' ✓' : ''}`;
+            state.classList.toggle('stis-tagfix-chosen', choice.state === 'wrong');
             refresh();
         };
         wrong.addEventListener('click', () => {
@@ -6419,20 +6477,20 @@ function tagPanel(entry, onChange) {
         });
         const chips = el('div', 'stis-tagfix-chips');
         chips.appendChild(wrong);
-        row.append(chips, note);
-        box.appendChild(row);
+        body.append(chips, note);
         paint();
     }
     const buttons = el('div', 'stis-tagfix-buttons');
-    done.title = 'Throw out and remember the tags you chose, save your notes, and update the items you placed tags in (keeping their descriptions)';
+    done.title = 'Save your choices and notes, confirm the deduced tags you did not mark wrong, and update the items you placed tags in (keeping their descriptions)';
     done.addEventListener('click', async () => {
         if (done.classList.contains('disabled') || groupProgress.has(entry.id)) {
             return;
         }
         done.classList.add('disabled');
         done.textContent = 'Updating…';
-        const picked = [...drafts].filter(([tag, choice]) => (choice.kind === 'deduced' ? report.deduced[tag] && choice.state === 'wrong' : report.notShown.includes(tag) && (choice.state !== startState(tag) || choice.items.size || wrote(choice) || choice.lasts)));
+        const picked = [...drafts].filter(pending);
         tagDrafts.delete(entry.id);
+        view.row = '';
         try {
             await applyTagChoices(entry, picked);
         } catch (error) {
@@ -13280,7 +13338,7 @@ function buildSettings() {
                         <div class="stis-set">
                             <div class="stis-label">Tag notes</div>
                             <div id="st_imagesearch_tag_notes" class="stis-tag-notes"></div>
-                            <small class="stis-help">Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 6 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
+                            <small class="stis-help">Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 12 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
                         </div>
                     </div>
                 </details>

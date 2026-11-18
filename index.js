@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.57.0';
+const VERSION = '2.57.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -5310,7 +5310,9 @@ function groupWhat(entry) {
     if (entry.fromVideo) {
         return entry.kind === 'sequence' ? `video cut into ${count} animated parts, in order` : `set of ${count} separate moments (animated parts) from one video`;
     }
-    return entry.kind === 'sequence' ? `sequence of ${count} pictures that tell a story in this order` : `set of ${count} versions of the same scene`;
+    const moving = entry.variants.filter(item => itemAnimated(entry, item)).length;
+    const things = moving === count ? 'animated GIFs' : moving ? `items (${moving} animated GIF${moving === 1 ? '' : 's'} and ${count - moving} still picture${count - moving === 1 ? '' : 's'})` : 'pictures';
+    return entry.kind === 'sequence' ? `sequence of ${count} ${things} that tell a story in this order` : `set of ${count} versions of the same scene`;
 }
 
 function groupDescribed(entry) {
@@ -5520,7 +5522,7 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const item = entry.variants[index];
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
-    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
+    const context = [`This ${itemAnimated(entry, item) ? 'GIF' : 'picture'} is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
     if (v3Entry(entry)) {
         const board = boardLines(entry, index);
         if (board) {
@@ -7317,7 +7319,7 @@ function readChecked(raw, verify) {
 async function v3Describe(entry, index, blob, { problems = [], roleFix = null, verify = [] } = {}, report = null) {
     const item = entry.variants[index];
     const before = index > 0 ? entry.variants[index - 1] : null;
-    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}${item.roleLock ? ' (set by the user)' : ''}.` : ''}`];
+    const context = [`This ${itemAnimated(entry, item) ? 'GIF' : 'picture'} is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}${item.roleLock ? ' (set by the user)' : ''}.` : ''}`];
     if (report?.facts) {
         context.push(report.facts);
     }
@@ -7737,7 +7739,8 @@ async function keepRoles(entry, run) {
 }
 
 function roleFitPrompt(entry) {
-    const items = entry.variants.map((item, index) => `Item ${index + 1}, the ${item.role ? roleText(item.role) : 'unknown role'}${item.role?.intensity ? `, intensity ${item.role.intensity}/10${item.role.why ? ` (${item.role.why})` : ''}` : ''}:\n${item.description}`).join('\n\n');
+    const timed = v3On(entry);
+    const items = entry.variants.map((item, index) => `Item ${index + 1}${timed && item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', its last moment matches its first: it loops' : ''})` : ''}, the ${item.role ? roleText(item.role) : 'unknown role'}${item.role?.intensity ? `, intensity ${item.role.intensity}/10${item.role.why ? ` (${item.role.why})` : ''}` : ''}:\n${item.description}`).join('\n\n');
     return `These are the items of one ${groupWhat(entry)}, in order. Each item's role and intensity are settled and correct; its description was written before they were known, by someone looking at that item alone, so it may describe something that does not belong to that role.\n\nThe user's rules for the roles:\n${String(settings().roleRules || '').trim()}\n\n${items}\n\nFor each item, say whether its description fits its role under these rules. When it does not, quote the words that break the rule and say what the item most likely shows instead, as that role. Never change a role.\n\nReply with one line per item and nothing else, like:\n1: fits\n2: does not fit; says "the final blow"; most likely he raises his blade for the strike`;
 }
 

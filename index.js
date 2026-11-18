@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.53.0';
+const VERSION = '2.54.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -85,6 +85,7 @@ const DEFAULTS = {
     roleCheck: false,
     groupLink: true,
     groupInText: true,
+    sequenceV3: true,
     tagLinks: [],
     tagAliasChecked: {},
     groupRoleFit: true,
@@ -4394,6 +4395,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         raw = await ask(prompt, [await imageDataUrl(url, blob)]);
     }
     const parsed = parseDescription(raw);
+    parsed.raw = raw;
     parsed.animated = Boolean(frames?.length);
     if (!parsed.text) {
         throw new Error('The vision model gave no description.');
@@ -4482,6 +4484,8 @@ function cleanItem(item, index, entry, grouped) {
         sections: cleanSections(item.sections),
         keywords: cleanStrings(item.keywords, 16),
         seen: cleanStrings(item.seen, 60),
+        cast: String(item.cast || '').slice(0, 300),
+        beat: String(item.beat || '').slice(0, 300),
         shows: cleanStrings(item.shows, 80),
         role: cleanRole(item.role),
         added: cleanStrings(item.added, 40),
@@ -4633,6 +4637,13 @@ function cleanReport(report) {
         linkReply: String(report.linkReply || '').slice(0, 2000),
         inText: report.inText && typeof report.inText === 'object' ? Object.fromEntries(Object.entries(report.inText).slice(0, 40).map(([tag, hits]) => [String(tag), cleanStrings(hits, 10)])) : {},
         inTextReply: String(report.inTextReply || '').slice(0, 2000),
+        framework: report.framework === 'v3' ? 'v3' : '',
+        board: tagMap(report.board),
+        owned: tagMap(report.owned),
+        boardPeak: report.boardPeak && Number(report.boardPeak.item) ? { item: Number(report.boardPeak.item), why: String(report.boardPeak.why || '').slice(0, 200) } : null,
+        boardReply: String(report.boardReply || '').slice(0, 4000),
+        fixed: Array.isArray(report.fixed) ? report.fixed.filter(fix => fix && fix.item).slice(0, 20).map(fix => ({ item: Number(fix.item) || 0, role: Boolean(fix.role), problems: Number(fix.problems) || 0, kept: cleanStrings(fix.kept, 10), left: cleanStrings(fix.left, 10) })) : [],
+        cost: report.cost && typeof report.cost === 'object' ? { vision: Number(report.cost.vision) || 0, text: Number(report.cost.text) || 0, seconds: Number(report.cost.seconds) || 0 } : null,
         fit: Array.isArray(report.fit) ? report.fit.filter(item => item && item.item).slice(0, 20).map(item => ({ item: Number(item.item) || 0, fits: Boolean(item.fits), said: String(item.said || '').slice(0, 300), instead: String(item.instead || '').slice(0, 300), fixed: Boolean(item.fixed) })) : [],
         fitReply: String(report.fitReply || '').slice(0, 3000),
     };
@@ -5223,6 +5234,12 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
     const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
+    if (v3Entry(entry)) {
+        const board = boardLines(entry, index);
+        if (board) {
+            context.push(board);
+        }
+    }
     if (before?.description) {
         context.push(`${sequence ? `Item ${index} (the one before it)` : 'Item 1'} was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
         const cast = peopleLine(before.description);
@@ -6086,6 +6103,9 @@ async function describeSet(entry, blobs = []) {
     if (!ctx().ConnectionManagerRequestService || !visionProfileId()) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
+    if (v3On(entry)) {
+        return describeSequence(entry, blobs);
+    }
     const items = entry.variants;
     items.forEach(item => {
         item.deduced = [];
@@ -6375,6 +6395,613 @@ async function describeSet(entry, blobs = []) {
         }
         const important = report.importance.filter(item => item.important).map(item => item.tag);
         entry.attention = report.verdict === 'needs a look' ? { tags: important.length ? important : [...report.notShown], at: Date.now() } : null;
+        entry.sections = {};
+        entry.lock = null;
+        entry.described = visionHash();
+        entry.report = report;
+        items.forEach(item => descriptions.set(item.url, describedVariant(entry, item)));
+        return entry;
+    } finally {
+        groupStep(entry, '');
+    }
+}
+
+const V3_STEPS = [[/^Looking at all \d+ items together/, 'The whole sequence'], [/^Writing item \d+ of/, 'Describing the items'], [/^Finding the tags in/, 'Tags in the descriptions'], [/^Story:/, 'Story lines'], [/^Role fit:/, 'Role fit'], [/^Your notes:/, 'Tags from your notes'], [/^Sequence check/, 'Final check'], [/^Looking again at item/, 'Fixing the items'], [/^Story again/, 'Story lines, roles kept'], [/^Tags not found:/, 'Judging tags not found']];
+
+function v3On(entry) {
+    return settings().sequenceV3 !== false && entry?.kind === 'sequence';
+}
+
+function v3Entry(entry) {
+    return v3On(entry) && entry.report?.framework === 'v3';
+}
+
+async function boardPicture(entry, item, blob) {
+    if (itemAnimated(entry, item) && typeof ImageDecoder === 'function') {
+        try {
+            let data = blob || null;
+            if (!data) {
+                const response = await fetch(item.url);
+                data = response.ok ? await response.blob() : null;
+            }
+            const format = data ? await sniffFormat(data) : '';
+            if (format && await isAnimated({ blob: data, format })) {
+                const decoder = new ImageDecoder({ data: new Uint8Array(await data.arrayBuffer()), type: format === 'gif' ? 'image/gif' : format === 'webp' ? 'image/webp' : 'image/png' });
+                const images = [];
+                try {
+                    await decoder.tracks.ready;
+                    await decoder.completed?.catch(() => {});
+                    const total = decoder.tracks.selectedTrack?.frameCount || 1;
+                    if (total > 1) {
+                        const wanted = Math.min(total, SHEET_FRAMES);
+                        const picks = [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (total - 1) / Math.max(1, wanted - 1))))];
+                        for (const frameIndex of picks) {
+                            images.push((await decoder.decode({ frameIndex })).image);
+                        }
+                        return { picture: await frameSheet(images, 768), moments: images.length };
+                    }
+                } finally {
+                    images.forEach(image => image.close?.());
+                    decoder.close?.();
+                }
+            }
+        } catch (error) {
+            console.warn('[Image Search] could not make a frame sheet for the look at the whole sequence', error);
+        }
+    }
+    return { picture: await imageDataUrl(item.url, blob || null, 768), moments: 0 };
+}
+
+function boardPrompt(entry, batch, shown, tags, earlier) {
+    const count = entry.variants.length;
+    const together = batch.length > 1;
+    const timing = index => {
+        const part = entry.fromVideo?.parts?.[index];
+        return part ? `, ${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''}` : '';
+    };
+    const parts = batch.map((index, at) => `item ${index + 1} is picture ${at + 1}${shown[at].moments || timing(index) ? ` (${[shown[at].moments ? `an animation: ${shown[at].moments} moments in order on one sheet, numbered left to right, then top to bottom` : '', timing(index).replace(/^, /, '')].filter(Boolean).join('; ')})` : ''}`);
+    const { matter } = rememberedTags();
+    const hints = tagHintLines(tags.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length));
+    const tagPart = tags.length ? `\n\nThen, for each of the sequence's tags below, say which items show it or clear signs of it. Tags never match a picture word for word: close enough counts, and a tag can also name something happening or a known character. Answer none only when no item shows it.` : '';
+    const tagFormat = tags.length ? '\nTags:\na_tag: 1, 3\nanother_tag: none\n(one line for every tag below)' : '';
+    const tagList = tags.length ? `\n\nThe sequence's tags:\n${tags.join('\n')}${hints.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints on how they show:\n${hints.join('\n')}` : ''}` : '';
+    const opening = together
+        ? `You get ${batch.length} pictures, showing ${batch.length === count ? `all ${count} items` : `items ${batch[0] + 1} to ${batch[batch.length - 1] + 1}`} of one ${groupWhat(entry)}: ${parts.join('; ')}. Look at all of them together before you answer. You are the only one who sees the whole sequence at once: each item will then be described by someone who sees only that item, and they will rely on what you say.`
+        : `You get one picture: item ${batch[0] + 1} of one ${groupWhat(entry)}${parts[0].replace(/^item \d+ is picture 1/, '')}. Someone will describe it next and rely on what you say, so they know who is there and where this moment sits in the story.`;
+    const ask = together ? 'For each item, give' : 'For this item, give';
+    const peak = together ? '\nThen say which item is the emotional peak of the sequence: the most intense moment of emotion, not only of action.' : '';
+    return `${opening}${earlier ? `\n\nWhat was seen in the items before ${together ? 'these' : 'this one'}:\n${earlier}` : ''}\n\n${ask}:\n- Cast: everyone there, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows) and anyone from the other items who is most likely still there out of view (say so). A few words each, and the same words for the same person in every item (the girl in the yellow raincoat; a man, only his arm in view).\n- Beat: one sentence on what happens in this item and how it follows from the item before.${peak}${tagPart.replace('which items show it', together ? 'which items show it' : 'whether this item shows it')}\n\nReply in exactly this format and nothing else:\nItem ${batch[0] + 1} cast: ...\nItem ${batch[0] + 1} beat: ...\n${together ? `Item ${batch[1] + 1} cast: ...\nItem ${batch[1] + 1} beat: ...\nPeak: item N, because ...` : ''}${together ? tagFormat : tagFormat.replace('a_tag: 1, 3', `a_tag: ${batch[0] + 1}`)}${tagList}\n\n${NO_NAMES_RULE}`;
+}
+
+function readBoard(reply, batch, tags) {
+    const allowed = batch.map(index => index + 1);
+    const items = new Map();
+    const wanted = new Set(tags);
+    const found = new Map();
+    let peak = null;
+    let current = 0;
+    const keep = (number, key, text) => {
+        if (allowed.includes(number) && text) {
+            items.set(number, { ...(items.get(number) || {}), [key]: text.replace(/\s+/g, ' ').trim().slice(0, 300) });
+        }
+    };
+    for (const raw of String(reply || '').split('\n')) {
+        const line = raw.replace(/\*\*/g, '').replace(/^\s*[-*•#]+\s*/, '').trim();
+        const part = line.match(/^(?:item|part|picture)\s*(\d+)\s*[-–—:.)]*\s*(cast|beat)\s*[:=–—-]\s*(.+)$/i);
+        if (part) {
+            current = Number(part[1]);
+            keep(current, part[2].toLowerCase(), part[3]);
+            continue;
+        }
+        const head = line.match(/^(?:item|part|picture)\s*(\d+)\s*[:.)-]?\s*$/i);
+        if (head) {
+            current = Number(head[1]);
+            continue;
+        }
+        const under = line.match(/^(cast|beat|who is there|what happens)\s*[:=–—-]\s*(.+)$/i);
+        if (under && current) {
+            keep(current, /^(cast|who)/i.test(under[1]) ? 'cast' : 'beat', under[2]);
+            continue;
+        }
+        const top = line.match(/^peak\s*[:=–—-]\s*(?:item|part|picture)?\s*(\d+)[\s,;:.–—-]*(.*)$/i);
+        if (top) {
+            if (allowed.includes(Number(top[1])) && !peak) {
+                peak = { item: Number(top[1]), why: top[2].replace(/^because\s+/i, '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+            }
+            continue;
+        }
+        const pair = line.replace(LIST_MARK, '').match(/^`?([^:`]+?)`?\s*[:=–—]\s*(.+)$/);
+        const tag = normalizeTag(String(pair?.[1] || '').replace(/[*"]/g, ''));
+        if (!pair || !wanted.has(tag)) {
+            continue;
+        }
+        const value = pair[2].replace(/(\d+)\s*(?:-|–|—|to)\s*(\d+)/gi, (all, from, to) => (Number(to) > Number(from) && Number(to) - Number(from) < 40 ? Array.from({ length: Number(to) - Number(from) + 1 }, (_, i) => Number(from) + i).join(', ') : all));
+        let numbers = /^\s*(none|no)\b/i.test(value) ? [] : (value.match(/\d+/g) || []).map(Number).filter(number => allowed.includes(number));
+        if (!numbers.length && /\b(all|every|each)\b/i.test(value) && !/^\s*(none|no)\b/i.test(value)) {
+            numbers = allowed;
+        }
+        found.set(tag, [...new Set([...(found.get(tag) || []), ...numbers])]);
+    }
+    return { items, peak, found };
+}
+
+async function lookAtBoard(entry, blobs, tags, report) {
+    const items = entry.variants;
+    const shown = [];
+    for (const [index, item] of items.entries()) {
+        try {
+            shown[index] = await boardPicture(entry, item, blobs[index]);
+        } catch (error) {
+            shown[index] = null;
+            report.errors.push(`The whole sequence, picture of item ${index + 1}: ${error?.message || error}`);
+        }
+    }
+    const ready = items.map((item, index) => index).filter(index => shown[index]);
+    const per = maxPictures();
+    const batches = [];
+    for (let start = 0; start < ready.length; start += per) {
+        batches.push(ready.slice(start, start + per));
+    }
+    const found = new Map(tags.map(tag => [tag, new Set()]));
+    const replies = [];
+    let stills = false;
+    let single = false;
+    const earlierThan = first => items.slice(0, first).map((item, index) => (item.cast || item.beat ? `Item ${index + 1}: ${[item.cast, item.beat].filter(Boolean).join('; ')}` : '')).filter(Boolean).join('\n');
+    const ask = async (batch, still) => {
+        const views = still ? await Promise.all(batch.map(async index => ({ picture: await imageDataUrl(items[index].url, blobs[index] || null, 768), moments: 0 }))) : batch.map(index => shown[index]);
+        report.cost.vision += 1;
+        return visionAsk(boardPrompt(entry, batch, views, tags, earlierThan(batch[0])), views.map(view => view.picture), 160 + 120 * batch.length + 14 * tags.length, 0.2);
+    };
+    const take = (reply, batch) => {
+        replies.push(reply);
+        const read = readBoard(reply, batch, tags);
+        read.items.forEach((seen, number) => {
+            const item = items[number - 1];
+            item.cast = seen.cast || item.cast || '';
+            item.beat = seen.beat || item.beat || '';
+        });
+        if (read.peak && batches.length === 1 && batch.length > 1) {
+            report.boardPeak = read.peak;
+        }
+        read.found.forEach((numbers, tag) => numbers.forEach(number => found.get(tag)?.add(number)));
+    };
+    for (const batch of batches) {
+        let reply = '';
+        let failure = null;
+        try {
+            reply = await ask(batch, false);
+        } catch (error) {
+            const still = batch.some(index => shown[index]?.moments);
+            try {
+                reply = await ask(batch, still);
+                stills = stills || still;
+            } catch (again) {
+                failure = again;
+            }
+        }
+        if (reply) {
+            take(reply, batch);
+            continue;
+        }
+        if (batch.length > 1) {
+            let any = false;
+            for (const index of batch) {
+                try {
+                    take(await ask([index], false), [index]);
+                    any = true;
+                } catch (error) {
+                    failure = error;
+                }
+            }
+            single = single || any;
+            if (any) {
+                continue;
+            }
+        }
+        report.errors.push(`The whole sequence: ${failure?.message || failure}`);
+    }
+    report.boardReply = replies.join('\n\n').slice(0, 4000);
+    report.steps.board = !replies.length ? 'failed' : single ? 'one by one' : stills ? 'stills only' : 'on';
+    return replies.length ? found : null;
+}
+
+function boardLines(entry, index) {
+    const items = entry.variants;
+    const item = items[index];
+    if (!item?.cast && !item?.beat) {
+        return '';
+    }
+    const near = [index > 0 && items[index - 1].beat ? `Just before (item ${index}): ${items[index - 1].beat}` : '', index + 1 < items.length && items[index + 1].beat ? `Just after (item ${index + 2}): ${items[index + 1].beat}` : ''].filter(Boolean);
+    return `A first look at all the items together saw in this one:${item.cast ? `\nWho is there: ${item.cast}` : ''}${item.beat ? `\nWhat happens: ${item.beat}` : ''}${near.length ? `\n${near.join('\n')}` : ''}\nUse it to know who is there (count anyone only partly in view, or most likely just out of view) and where this moment sits in the story. Where it does not match the picture, follow the picture.`;
+}
+
+function v3FixPrompt(item, base, { problems = [], roleFix = null, verify = [] }, asked) {
+    const asks = [];
+    if (roleFix && item.role) {
+        asks.push(`Its role in the sequence is settled and correct: the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}. The description ${roleFix.said ? `says "${roleFix.said}", which` : ''} does not fit that role${roleFix.instead ? `; most likely ${roleFix.instead}` : ''}. Describe this moment as the ${item.role.main}, following the user's rules for the roles:\n${String(settings().roleRules || '').trim()}`);
+    }
+    problems.forEach(problem => asks.push(`A check of the whole sequence noticed: ${problem} Fix it if the picture agrees; if the picture shows the description was right, keep it.`));
+    if (verify.length) {
+        const lines = verify.map(({ tag, why }) => {
+            const hint = (tagHintLines([tag])[0] || '').replace(/^- [^:]+:\s*/, '');
+            return `- ${tag.replace(/_/g, ' ')}: most likely because ${why}.${hint ? ` ${hint}` : ''}`;
+        });
+        asks.push(`Nobody saw ${verify.length === 1 ? 'this tag' : 'these tags'} of the sequence, but from the user's notes ${verify.length === 1 ? 'it most likely belongs' : 'they most likely belong'} to this moment, even off screen or only implied:\n${lines.join('\n')}\nIf the picture shows it or fits it, work it in (as likely off screen or implied when it cannot be seen). If the picture clearly goes against it, leave it out.`);
+    }
+    const first = verify[0]?.tag.replace(/_/g, ' ');
+    const check = verify.length ? `\n\nAfter the last line of that format, add one more line, exactly like "Checked: ${first} kept" or "Checked: ${first} left out, because …"${verify.length > 1 ? ', naming every tag above, separated by semicolons' : ''}.` : '';
+    return `This is the description of this picture so far:\n\n${base}\n\nLook at the picture again and rewrite it:\n${asks.map(text => `- ${text}`).join('\n')}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n${asked}${check}`;
+}
+
+function readChecked(raw, verify) {
+    const line = String((String(raw || '').match(/^[\s*#>-]*\**checked\**\s*:\s*(.+)$/im) || [])[1] || '').toLowerCase();
+    const spots = verify.map(({ tag }) => {
+        const words = tag.replace(/_/g, ' ');
+        const at = [line.indexOf(words), line.indexOf(tag)].filter(spot => spot >= 0);
+        return { tag, at: at.length ? Math.min(...at) : -1 };
+    });
+    const placed = spots.filter(spot => spot.at >= 0).sort((a, b) => a.at - b.at);
+    const kept = [];
+    const left = [];
+    spots.forEach(spot => {
+        if (spot.at < 0) {
+            kept.push(spot.tag);
+            return;
+        }
+        const next = placed.find(other => other.at > spot.at);
+        const part = line.slice(spot.at, next ? next.at : line.length);
+        if (/\b(left out|leave out|leaving it out|not kept|no sign|does not fit|doesn't fit)\b/.test(part)) {
+            left.push({ tag: spot.tag, why: ((part.match(/because\s+(.+)$/) || [])[1] || '').replace(/[;,.\s]+$/, '').trim().slice(0, 200) });
+        } else {
+            kept.push(spot.tag);
+        }
+    });
+    return { kept, left, said: Boolean(line) };
+}
+
+async function v3Describe(entry, index, blob, { problems = [], roleFix = null, verify = [] } = {}, report = null) {
+    const item = entry.variants[index];
+    const before = index > 0 ? entry.variants[index - 1] : null;
+    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}.` : ''}`];
+    const board = boardLines(entry, index);
+    if (board) {
+        context.push(board);
+    }
+    if (before?.description) {
+        context.push(`Item ${index} (the one before it) was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
+        const cast = peopleLine(before.description);
+        if (cast) {
+            context.push(`The item before counted: "${cast}". People do not vanish between items: if someone from it cannot be seen here, they are most likely still there out of view (behind someone, off screen, hidden by smoke or shadow). Count them anyway and say where they most likely are, like "Two people (one out of view, behind her)", unless this picture shows they left.`);
+        }
+    }
+    if (item.added.length) {
+        context.push(`The user checked this picture and says it shows: ${item.added.join(', ').replace(/_/g, ' ')}. Mention them as far as the picture allows; never let them change what is visibly happening.`);
+    }
+    const placed = item.deduced.map(d => d.tag).filter(tag => !item.added.includes(tag) && !verify.some(other => other.tag === tag));
+    if (placed.length) {
+        context.push(`Not seen, but placed here from the user's notes as most likely implied: ${placed.join(', ').replace(/_/g, ' ')}. Mention them only as far as the picture allows.`);
+    }
+    const fixes = fixesNote(item.fixes);
+    if (fixes) {
+        context.push(fixes);
+    }
+    const fixing = problems.length || roleFix || verify.length;
+    const base = fixing ? item.lock?.text || item.description : '';
+    const wrap = base ? asked => v3FixPrompt(item, base, { problems, roleFix, verify }, asked) : null;
+    if (report) {
+        report.cost.vision += 1;
+    }
+    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true });
+    let result = parsed;
+    let checked = { kept: [], left: [], said: false };
+    if (verify.length) {
+        checked = readChecked(parsed.raw, verify);
+        const again = parseDescription(String(parsed.raw || '').replace(/^[\s*#>-]*\**checked\**\s*:.*$/gim, ''));
+        if (again.text) {
+            result = { ...parsed, text: again.text, sections: again.sections, keywords: again.keywords };
+        }
+    }
+    item.description = result.text;
+    item.sections = result.sections || {};
+    item.keywords = result.keywords || [];
+    descriptions.set(item.url, describedVariant(entry, item));
+    return checked;
+}
+
+function v3ReviewPrompt(entry) {
+    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:`, `First look at the whole sequence: ${[item.cast ? `who is there: ${item.cast}` : '', item.beat ? `what happens: ${item.beat}` : ''].filter(Boolean).join('; ') || 'none'}`, `Tags: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
+    return `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Someone first looked at all the items together and said who is there and what happens in each; then each item was described by someone looking at it, who was told what that first look saw. For each item you get that first look, its tags, its description, and its role and story line.${entry.arc ? ` The shape given to the sequence: ${entry.arc}.` : ''}\n\nLook for these problems:\n- the description and the first look disagree on who is there or what happens (one of them may be wrong: say what differs, and the picture will be looked at again);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- a person count that drops from one item to the next with nothing to explain it (someone hidden or out of view still counts);\n- a person or character called by a name in a description or story line (they must be he, she, they or described);\n- a story line that its description does not support (the roles and intensities are settled and correct: never question them).\nTags never match a picture word for word: never report a tag that a description leaves out. Only report real problems; most items have none.\n\nThen write an overview of the whole sequence: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with a story line, and "description" for the rest.\n\n${blocks}`;
+}
+
+async function v3Review(entry, report) {
+    report.cost.text += 1;
+    const data = jsonIn(await textAsk(v3ReviewPrompt(entry), 300 + 80 * entry.variants.length));
+    if (!data) {
+        throw new Error('the check gave no readable answer');
+    }
+    return {
+        overview: String(data.overview || '').replace(/\s+/g, ' ').trim().slice(0, 600),
+        keywords: Array.isArray(data.keywords) ? data.keywords.map(word => String(word).toLowerCase().trim()).filter(Boolean).slice(0, 12) : [],
+        problems: Array.isArray(data.problems) ? data.problems.filter(item => item && item.problem).map(item => ({ item: Number(item.item) || 0, about: String(item.about || '').toLowerCase() === 'story' ? 'story' : 'description', problem: String(item.problem).replace(/\s+/g, ' ').trim().slice(0, 300) })) : [],
+    };
+}
+
+function v3ReadFit(entry, reply) {
+    const verdicts = new Map();
+    for (const line of String(reply).split('\n')) {
+        const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^\s*(?:item\s*)?(\d+)\s*[:.)-]\s*(.+)$/i);
+        const number = Number(match?.[1]);
+        if (!match || number < 1 || number > entry.variants.length || verdicts.has(number)) {
+            continue;
+        }
+        const text = match[2].trim();
+        if (/^fits\b/i.test(text)) {
+            verdicts.set(number, { item: number, fits: true });
+            continue;
+        }
+        const said = (text.match(/says?\s*[:"“]\s*([^"”]+)["”]?/i) || [])[1] || '';
+        const instead = (text.match(/most likely\s*[:,]?\s*(.+)$/i) || [])[1] || '';
+        verdicts.set(number, { item: number, fits: false, said: said.trim().slice(0, 300), instead: instead.replace(/\s+/g, ' ').trim().slice(0, 300) });
+    }
+    return [...verdicts.values()].sort((a, b) => a.item - b.item);
+}
+
+async function describeSequence(entry, blobs = []) {
+    const s = settings();
+    const items = entry.variants;
+    const count = items.length;
+    items.forEach(item => {
+        item.deduced = [];
+        item.before = null;
+        item.seen = [];
+        item.cast = '';
+        item.beat = '';
+        item.role = null;
+        item.diff = '';
+    });
+    entry.arc = '';
+    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 } };
+    const checkable = checkableTags(entry);
+    const ordered = list => checkable.filter(tag => list.includes(tag));
+    try {
+        const { matter } = rememberedTags();
+        const hinted = checkable.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length);
+        if (hinted.length) {
+            await Promise.race([ensureDefinitions(hinted, entry.site), new Promise(done => setTimeout(done, 15000))]).catch(() => null);
+        }
+        groupStep(entry, `Looking at all ${count} items together…`);
+        let seen = null;
+        try {
+            seen = await lookAtBoard(entry, blobs, checkable, report);
+        } catch (error) {
+            report.errors.push(`The whole sequence: ${error?.message || error}`);
+            report.steps.board = 'failed';
+        }
+        const own = items.map(item => (item.tags || []).map(normalizeTag).filter(tag => checkable.includes(tag)));
+        const distinct = new Set(own.map(list => [...new Set(list)].sort().join(' '))).size > 1;
+        items.forEach((item, index) => {
+            item.shows = checkable.filter(tag => seen?.get(tag)?.has(index + 1) || item.added.includes(tag) || (distinct && own[index].includes(tag)));
+            if (distinct) {
+                own[index].filter(tag => !seen?.get(tag)?.has(index + 1) && !item.added.includes(tag)).forEach(tag => {
+                    report.owned[tag] = [...(report.owned[tag] || []), index + 1];
+                });
+            }
+        });
+        checkable.forEach(tag => {
+            const numbers = items.map((item, index) => index + 1).filter(number => items[number - 1].shows.includes(tag));
+            if (numbers.length) {
+                report.board[tag] = numbers;
+            }
+        });
+        report.missing = checkable.filter(tag => !report.board[tag]);
+        report.notShown = [...report.missing];
+        for (const [index] of items.entries()) {
+            groupStep(entry, `Writing item ${index + 1} of ${count}…`);
+            try {
+                await v3Describe(entry, index, blobs[index], {}, report);
+            } catch (error) {
+                if (index === 0 && !items[0].description) {
+                    throw error;
+                }
+                report.errors.push(`Describing item ${index + 1}: ${error?.message || error}`);
+            }
+        }
+        report.steps.describe = items.every(item => item.description) ? 'on' : 'failed';
+        entry.description = items[0].description;
+        entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
+        const described = items.every(item => item.description);
+        if (report.notShown.length && described) {
+            await Promise.race([ensureDefinitions(report.notShown, entry.site), new Promise(done => setTimeout(done, 10000))]).catch(() => null);
+            groupStep(entry, 'Finding the tags in the descriptions…');
+            try {
+                report.cost.text += 1;
+                const found = await describedTags(entry, report.notShown, report);
+                found.forEach((hits, tag) => {
+                    hits.forEach(hit => {
+                        const item = items[hit.item - 1];
+                        item.shows = ordered([...item.shows, tag]);
+                    });
+                    report.inText[tag] = hits.map(hit => `item ${hit.item}${hit.words ? ` ("${hit.words}")` : ''}`);
+                });
+                report.notShown = report.notShown.filter(tag => !found.has(tag));
+                report.steps.inText = found.size ? 'on' : 'none found';
+            } catch (error) {
+                report.errors.push(`Finding the tags in the descriptions: ${error?.message || error}`);
+                report.steps.inText = 'failed';
+            }
+        } else {
+            report.steps.inText = report.notShown.length ? 'skipped' : 'not needed';
+        }
+        if (described) {
+            groupStep(entry, 'Story: intensity, roles and story lines…');
+            try {
+                report.cost.text += 1;
+                await writeStory(entry, '', report);
+                report.steps.story = 'on';
+            } catch (error) {
+                report.errors.push(`Story lines: ${error?.message || error}`);
+                report.steps.story = 'failed';
+            }
+        } else {
+            report.steps.story = 'skipped';
+        }
+        const storied = report.steps.story === 'on';
+        if (!storied) {
+            items.forEach(item => {
+                item.role = null;
+                item.diff = '';
+            });
+            entry.arc = '';
+        }
+        const rules = String(s.roleRules || '').trim();
+        if (storied && rules && s.groupRoleFit !== false) {
+            groupStep(entry, 'Role fit: checking each item against your rules…');
+            try {
+                report.cost.text += 1;
+                const reply = await textAsk(roleFitPrompt(entry), 80 + 80 * count);
+                report.fitReply = String(reply).slice(0, 3000);
+                report.fit = v3ReadFit(entry, reply);
+                report.steps.fit = report.fit.some(verdict => !verdict.fits) ? 'on' : 'all fit';
+            } catch (error) {
+                report.errors.push(`Role fit: ${error?.message || error}`);
+                report.steps.fit = 'failed';
+            }
+        } else {
+            report.steps.fit = !rules ? 'no rules' : s.groupRoleFit === false ? 'off' : 'skipped';
+        }
+        const verify = new Map();
+        const proposed = new Map();
+        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length || removalNotesFor(tag).length || (matter.has(tag) && tagDefinition(tag)));
+        if (deducible.length && described && s.groupDeduce !== false) {
+            groupStep(entry, `Your notes: where ${deducible.length} tag${deducible.length === 1 ? '' : 's'} nobody saw could be…`);
+            try {
+                report.cost.text += 1;
+                const found = await deduceTags(entry, deducible, report);
+                found.forEach((place, tag) => {
+                    if (place.remove) {
+                        removeTag(entry, tag, { reason: place.why, by: 'ai' });
+                        report.notShown = report.notShown.filter(other => other !== tag);
+                        return;
+                    }
+                    proposed.set(tag, place);
+                    const numbers = place.lasts ? items.map((item, index) => index + 1).filter(number => number >= place.item) : [place.item];
+                    numbers.forEach(number => verify.set(number - 1, [...(verify.get(number - 1) || []), { tag, why: number === place.item ? place.why : `it happened in item ${place.item} and lasts` }]));
+                });
+                report.steps.deduce = found.size ? 'on' : 'none placed';
+            } catch (error) {
+                report.errors.push(`Tags from your notes: ${error?.message || error}`);
+                report.steps.deduce = 'failed';
+            }
+        } else {
+            report.steps.deduce = deducible.length ? (s.groupDeduce === false ? 'off' : 'skipped') : 'not needed';
+        }
+        let review = null;
+        if (described) {
+            groupStep(entry, 'Sequence check: reading everything together…');
+            try {
+                review = await v3Review(entry, report);
+                if (review.overview) {
+                    entry.description = review.overview;
+                }
+                if (review.keywords.length) {
+                    entry.keywords = review.keywords;
+                }
+                report.steps.review = 'on';
+            } catch (error) {
+                report.errors.push(`Final check: ${error?.message || error}`);
+                report.steps.review = 'failed';
+            }
+        } else {
+            report.steps.review = 'skipped';
+        }
+        const problems = (review?.problems || []).filter(problem => problem.item >= 1 && problem.item <= count);
+        const work = new Map();
+        const need = index => work.get(index) || work.set(index, { problems: [], roleFix: null, verify: [] }).get(index);
+        problems.filter(problem => problem.about !== 'story' && !items[problem.item - 1].lock).forEach(problem => need(problem.item - 1).problems.push(problem.problem));
+        report.fit.filter(verdict => !verdict.fits && !items[verdict.item - 1]?.lock).forEach(verdict => {
+            need(verdict.item - 1).roleFix = verdict;
+        });
+        verify.forEach((list, index) => {
+            need(index).verify = list;
+        });
+        const redone = new Set();
+        for (const [index, asks] of [...work].sort((a, b) => a[0] - b[0])) {
+            const item = items[index];
+            groupStep(entry, `Looking again at item ${index + 1}…`);
+            if (asks.verify.length) {
+                item.before = item.before || { description: item.description, sections: item.sections, keywords: item.keywords };
+            }
+            try {
+                const checked = await v3Describe(entry, index, blobs[index], asks, report);
+                redone.add(index + 1);
+                checked.kept.forEach(tag => {
+                    const place = asks.verify.find(other => other.tag === tag);
+                    item.deduced = [...item.deduced.filter(d => d.tag !== tag), { tag, why: place?.why || '' }];
+                    item.shows = ordered([...item.shows, tag]);
+                });
+                if (asks.verify.length && !checked.kept.length) {
+                    item.before = null;
+                }
+                if (asks.roleFix) {
+                    asks.roleFix.fixed = true;
+                }
+                report.fixed.push({ item: index + 1, role: Boolean(asks.roleFix), problems: asks.problems.length, kept: checked.kept, left: checked.left.map(left => `${left.tag}${left.why ? ` (${left.why})` : ''}`) });
+                checked.left.forEach(left => report.noteLog.push(`${left.tag.replace(/_/g, ' ')}: looked for again in item ${index + 1} and left out${left.why ? `, because ${left.why}` : ''}`));
+                checked.kept.forEach(tag => report.noteLog.push(`${tag.replace(/_/g, ' ')}: looked for again in item ${index + 1} and kept`));
+            } catch (error) {
+                report.errors.push(`Looking again at item ${index + 1}: ${error?.message || error}`);
+            }
+        }
+        report.steps.fix = work.size ? (redone.size ? 'on' : 'failed') : 'nothing to fix';
+        proposed.forEach((place, tag) => {
+            const numbers = items.map((item, index) => index + 1).filter(number => items[number - 1].deduced.some(d => d.tag === tag));
+            if (numbers.length) {
+                report.deduced[tag] = { items: numbers, why: place.why, lasts: Boolean(place.lasts && numbers.length > 1) };
+                report.notShown = report.notShown.filter(other => other !== tag);
+            }
+        });
+        report.problems = problems.map(problem => ({ ...problem, redone: problem.about === 'story' ? storied : redone.has(problem.item) }));
+        const storyNotes = problems.filter(problem => problem.about === 'story').map(problem => `item ${problem.item}: ${problem.problem}`);
+        if (storied && (redone.size || storyNotes.length)) {
+            groupStep(entry, 'Story again: rewriting the story lines, roles kept…');
+            try {
+                report.cost.text += 1;
+                await keepRoles(entry, () => writeStory(entry, storyNotes.join(' '), report));
+                report.steps.again = 'on';
+            } catch (error) {
+                report.errors.push(`Story lines again: ${error?.message || error}`);
+                report.steps.again = 'failed';
+            }
+        } else {
+            report.steps.again = 'not needed';
+        }
+        if (report.notShown.length && s.groupImportance !== false) {
+            const { dont } = rememberedTags();
+            report.notShown.filter(tag => matter.has(tag) || dont.has(tag)).forEach(tag => report.noteLog.push(`${tag.replace(/_/g, ' ')}: judged from your list, ${matter.has(tag) ? 'it matters' : 'it does not matter'}`));
+            report.importance = report.notShown.filter(tag => matter.has(tag) || dont.has(tag)).map(tag => ({ tag, important: matter.has(tag), why: matter.has(tag) ? 'you marked it as important before' : 'you threw it out before', by: 'remembered' }));
+            const ask = report.notShown.filter(tag => !matter.has(tag) && !dont.has(tag));
+            let verdict = '';
+            report.steps.importance = 'remembered';
+            if (ask.length) {
+                groupStep(entry, `Tags not found: judging ${ask.length}…`);
+                try {
+                    report.cost.text += 1;
+                    const judged = await judgeMissing(entry, checkable, ask);
+                    report.importance.push(...judged.items);
+                    verdict = judged.verdict;
+                    report.steps.importance = 'on';
+                } catch (error) {
+                    report.errors.push(`Judging the tags not found: ${error?.message || error}`);
+                    report.steps.importance = 'failed';
+                }
+            }
+            report.verdict = verdict === 'needs a look' || report.importance.some(item => item.important) ? 'needs a look' : verdict || (report.steps.importance === 'failed' ? '' : 'fine');
+        } else {
+            report.steps.importance = report.notShown.length ? 'off' : 'not needed';
+        }
+        const important = report.importance.filter(item => item.important).map(item => item.tag);
+        entry.attention = report.verdict === 'needs a look' ? { tags: important.length ? important : [...report.notShown], at: Date.now() } : null;
+        report.cost.seconds = Math.round((Date.now() - report.at) / 1000);
         entry.sections = {};
         entry.lock = null;
         entry.described = visionHash();
@@ -7192,8 +7819,9 @@ let libTagsOpen = false;
 const GROUP_STEPS = [[/^Looking at each/, 'First look'], [/^Looking for (\d|important)/, 'Looking again for tags'], [/^Describing item/, 'Describing the items'], [/^Reading the descriptions/, 'Tags in the descriptions'], [/^Writing what each item/, 'Writing the story lines'], [/^(Checking each item fits|Fixing item \d+ to fit|Rewriting the story lines to fit)/, 'Checking the roles fit'], [/^(Looking where|Adding )/, 'Placing tags from your notes'], [/^Checking the descriptions/, 'Final check'], [/^Judging/, 'Judging tags not found']];
 
 function progressParts(text) {
-    const step = GROUP_STEPS.findIndex(([test]) => test.test(text));
-    return { step: step + 1, total: GROUP_STEPS.length };
+    const list = V3_STEPS.some(([test]) => test.test(text)) ? V3_STEPS : GROUP_STEPS;
+    const step = list.findIndex(([test]) => test.test(text));
+    return { step: step + 1, total: list.length };
 }
 
 function paintProgress(node, text) {
@@ -7512,15 +8140,30 @@ function groupReportBox(entry, current) {
     const box = el('details', 'stis-group-report');
     const notShown = report.notShown.length;
     box.appendChild(el('summary', '', `How this was described${notShown ? ` · ${notShown} tag${notShown === 1 ? '' : 's'} not found` : ''}${report.problems.length ? ` · ${report.problems.length} fix${report.problems.length === 1 ? '' : 'es'}` : ''}`));
-    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found' };
+    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
-    const lines = [`First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    const v3 = report.framework === 'v3';
+    const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
     const index = current ? entry.variants.indexOf(current) : -1;
     if (current && index >= 0) {
         lines.push(`${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1} was given ${current.shows.length} tag${current.shows.length === 1 ? '' : 's'}: ${current.shows.join(', ').replace(/_/g, ' ') || 'none (its own or the group\'s tags were used)'}`);
         if (current.seen.length) {
             lines.push(`The first look saw: ${current.seen.join(', ').replace(/_/g, ' ')}`);
         }
+        if (current.cast || current.beat) {
+            lines.push(`The look at the whole sequence saw in it: ${[current.cast ? `who is there: ${current.cast}` : '', current.beat ? `what happens: ${current.beat}` : ''].filter(Boolean).join('; ')}`);
+        }
+    }
+    if (v3 && report.cost) {
+        lines.push(`This run: ${report.cost.vision + report.cost.text} requests (${report.cost.vision} vision, ${report.cost.text} text), ${report.cost.seconds} s`);
+    }
+    const owned = Object.entries(report.owned || {});
+    if (owned.length) {
+        lines.push(`From each picture's own tags (the look at the whole sequence did not see them): ${owned.map(([tag, items]) => `${tag.replace(/_/g, ' ')} (item ${items.join(', ')})`).join('; ')}`);
+    }
+    if (report.boardPeak) {
+        const climax = entry.variants.findIndex(item => item.role?.main === 'climax') + 1;
+        lines.push(`Second opinion on the peak: the look at the whole sequence felt item ${report.boardPeak.item} was the emotional peak${report.boardPeak.why ? ` (${report.boardPeak.why})` : ''}; ${climax ? (climax === report.boardPeak.item ? 'the story step agrees' : `the story step chose item ${climax} as the climax`) : 'the story step chose no climax'}`);
     }
     const found = Object.entries(report.found);
     if (found.length) {
@@ -7543,12 +8186,19 @@ function groupReportBox(entry, current) {
         lines.push(`Verdict: ${report.verdict}`);
     }
     report.problems.forEach(problem => lines.push(`Final check, item ${problem.item}${problem.about === 'story' ? ' (story line)' : ''}: ${problem.problem}${problem.redone ? (problem.about === 'story' ? ' (written again)' : ' (described again)') : entry.variants[problem.item - 1]?.lock ? ' (locked, left as is)' : ''}`));
+    (report.fixed || []).forEach(fix => lines.push(`Looked at again, item ${fix.item}: ${[fix.role ? 'to fit its role' : '', fix.problems ? `${fix.problems} problem${fix.problems === 1 ? '' : 's'} from the final check` : '', fix.kept.length ? `kept ${fix.kept.join(', ').replace(/_/g, ' ')} from your notes` : '', fix.left.length ? `left out ${fix.left.join(', ').replace(/_/g, ' ')}` : ''].filter(Boolean).join('; ') || 'done'}`));
     report.errors.forEach(error => lines.push(`Problem: ${error}`));
     lines.forEach(line => box.appendChild(el('small', 'stis-group-report-line', line)));
     report.fit.filter(item => !item.fits).forEach(item => lines.length && box.appendChild(el('small', 'stis-group-report-line', `Role fit, item ${item.item}: ${item.said ? `said "${item.said}"` : 'did not fit'}${item.instead ? `; most likely ${item.instead}` : ''}${item.fixed ? ' (described again)' : entry.variants[item.item - 1]?.lock ? ' (locked, left as is)' : ''}`)));
     if (report.noteLog.length) {
         box.appendChild(el('small', 'stis-group-report-line stis-group-report-head', 'Your tag notes at work:'));
         report.noteLog.forEach(line => box.appendChild(el('small', 'stis-group-report-line', `· ${line}`)));
+    }
+    if (report.boardReply) {
+        const raw = el('details', 'stis-group-report-raw');
+        raw.appendChild(el('summary', '', 'The answer of the look at the whole sequence'));
+        raw.appendChild(el('small', 'stis-group-report-line stis-entry-text', report.boardReply));
+        box.appendChild(raw);
     }
     if (report.inTextReply) {
         const raw = el('details', 'stis-group-report-raw');
@@ -14616,6 +15266,7 @@ function buildSettings() {
                             <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
                         </div>
                         <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, then a role and a story line. About 2 requests per item, plus 3.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sequence_v3"> <span>New sequence steps (v3)</span></label><small class="stis-help">Sequences only. One look at all the items together first (who is there, what happens, which tags each item shows), then each item is described knowing where it sits in the story. The story uses your prompt. Role fit, your notes and the final check only collect what needs fixing; then each item that needs it is looked at again once, and the story lines rewritten once. Off: the steps below, as before.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_blind"> <span>First look without tags</span></label><small class="stis-help">The vision model lists what it sees in each item without the tags, so each tag goes to the items that show it. Tags it misses are looked for again in all items.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_in_text"> <span>Tags in the descriptions</span></label><small class="stis-help">After the items are described, one text request reads the descriptions for the tags still not found: a tag they already show, in any words and even if a detail differs, goes to those items without changing their descriptions, so it is not judged as missing.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_story"> <span>Story lines</span></label><small class="stis-help">Sequences only. One text request (tag profile) reads all the descriptions and gives each item an intensity, a role (main and finer, like climax, finishing blow) and a line on what the moment means: what was happening, what is happening, and so what. Sets are versions to use on their own, so they get no roles.</small></div>
@@ -14836,6 +15487,7 @@ function buildSettings() {
     renderTagLinks();
     bind('st_imagesearch_group_link', 'groupLink', 'checked');
     bind('st_imagesearch_group_in_text', 'groupInText', 'checked');
+    bind('st_imagesearch_sequence_v3', 'sequenceV3', 'checked');
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
     bind('st_imagesearch_role_check', 'roleCheck', 'checked');

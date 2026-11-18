@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.57.2';
+const VERSION = '2.58.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -32,7 +32,9 @@ const DEFAULT_GIF_NOTE = 'This picture is a short animation (a GIF). {{frames}}{
 const DEFAULT_DESCRIBE_RULES = `{{tag_info}}\n\n${PICTURE_FIRST} ${ACTORS_RULE}{{#tag_count}} The site's tags say: {{tag_count}}. If they count more people than you first notice, look again for someone only partly in view before you give the count.{{/tag_count}} ${NO_NAMES_RULE}`;
 const DEFAULT_BOARD_NOTE = 'A first look at all the items together saw in this one:{{#who}}\nWho is there: {{who}}{{/who}}{{#what}}\nWhat happens: {{what}}{{/what}}{{#just_before}}\nJust before (item {{before_number}}): {{just_before}}{{/just_before}}{{#just_after}}\nJust after (item {{after_number}}): {{just_after}}{{/just_after}}\nUse it to know who is there (count anyone only partly in view, or most likely just out of view) and where this moment sits in the story. Where it does not match the picture, follow the picture.';
 const DEFAULT_AGAIN_PROMPT = 'This is the description of this picture so far:\n\n{{description}}\n\nLook at the picture again and rewrite it:\n{{asks}}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n{{prompt}}{{#first_tag}}\n\nAfter the last line of that format, add one more line, exactly like "Checked: {{first_tag}} kept" or "Checked: {{first_tag}} left out, because …"{{#several}}, naming every tag above, separated by semicolons{{/several}}.{{/first_tag}}';
-const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT };
+const DEFAULT_LOOP_NOTE = 'This item is a loop: it repeats. Describe the repeating moment as one moment, not as a story.{{#before_loop}} The item before is a loop too.{{/before_loop}}{{#before_not_loop}} The item before is not a loop.{{/before_not_loop}}{{#after_loop}} The item after is a loop too.{{/after_loop}}{{#after_not_loop}} The item after is not a loop.{{/after_not_loop}}';
+const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: if this sequence has a climax, it is most likely there.';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING };
 
 function fillTemplate(text, values) {
     let out = String(text);
@@ -109,6 +111,8 @@ const DEFAULTS = {
     groupInText: true,
     sequenceV3: true,
     gifNote: '',
+    loopNote: '',
+    oneMoving: '',
     describeRules: '',
     boardNote: '',
     againPrompt: '',
@@ -4332,10 +4336,11 @@ async function clipOf(url, data, decoder, count) {
     return clip;
 }
 
-function gifNoteText(set, shown) {
+function gifNoteText(set, shown, state = null) {
     const seconds = set.clip?.seconds || 0;
     const apart = seconds && set.count > 1 ? Math.round(seconds / set.count * 10) / 10 : 0;
-    return fillTemplate(promptPart('gifNote'), { frames: shown, seconds: seconds || '', apart: apart || '', loop: seconds && set.clip.loop ? 'yes' : '', long: seconds >= 5 ? 'yes' : '' });
+    const loop = state === null ? Boolean(seconds && set.clip.loop) : state === 'loop';
+    return fillTemplate(promptPart('gifNote'), { frames: shown, seconds: seconds || '', apart: apart || '', loop: loop ? 'yes' : '', long: seconds >= 5 ? 'yes' : '' });
 }
 
 async function isAnimated(picture) {
@@ -4632,7 +4637,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     let raw = '';
     const framesText = set => `${gifNoteText(set, set.sheet
         ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
-        : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`)}\n\n${prompt}`;
+        : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`, extra.loopState ?? null)}\n\n${prompt}`;
     if (extra.dryRun) {
         return frames?.count > 1 ? { dry: true, prompt: framesText(frames), view: sentView(frames) } : { dry: true, prompt, view: { pictures: [await imageDataUrl(url, blob)], moments: 0 } };
     }
@@ -4757,6 +4762,10 @@ function cleanItem(item, index, entry, grouped) {
         beat: String(item.beat || '').slice(0, 300),
         clip: item.clip && Number(item.clip.seconds) > 0 ? { seconds: Number(item.clip.seconds), frames: Number(item.clip.frames) || 0, loop: Boolean(item.clip.loop) } : null,
         roleLock: Boolean(item.roleLock && item.role),
+        loopSet: item.loopSet === 'loop' || item.loopSet === 'not' ? item.loopSet : '',
+        implied: Array.isArray(item.implied) ? item.implied.filter(link => link?.tag).slice(0, 30).map(link => ({ tag: normalizeTag(link.tag), from: normalizeTag(link.from || '') })) : [],
+        inferred: Array.isArray(item.inferred) ? item.inferred.filter(hit => hit?.tag).slice(0, 30).map(hit => ({ tag: normalizeTag(hit.tag), words: String(hit.words || '').slice(0, 120) })) : [],
+        dropped: cleanStrings(item.dropped, 60),
         diffEdited: Boolean(item.diffEdited),
         shows: cleanStrings(item.shows, 80),
         role: cleanRole(item.role),
@@ -4912,6 +4921,7 @@ function cleanReport(report) {
         framework: report.framework === 'v3' ? 'v3' : '',
         board: tagMap(report.board),
         owned: tagMap(report.owned),
+        implied: tagMap(report.implied),
         boardPeak: report.boardPeak && Number(report.boardPeak.item) ? { item: Number(report.boardPeak.item), why: String(report.boardPeak.why || '').slice(0, 200) } : null,
         boardReply: String(report.boardReply || '').slice(0, 4000),
         fixed: Array.isArray(report.fixed) ? report.fixed.filter(fix => fix && fix.item).slice(0, 20).map(fix => ({ item: Number(fix.item) || 0, role: Boolean(fix.role), problems: Number(fix.problems) || 0, kept: cleanStrings(fix.kept, 10), left: cleanStrings(fix.left, 10) })) : [],
@@ -5526,10 +5536,15 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
     const context = [`This ${itemAnimated(entry, item) ? 'GIF' : 'picture'} is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
-    if (v3Entry(entry)) {
+    const fresh = v3Entry(entry);
+    if (fresh) {
         const board = boardLines(entry, index);
         if (board) {
             context.push(board);
+        }
+        const looped = loopLines(entry, index);
+        if (looped) {
+            context.push(looped);
         }
     }
     if (before?.description) {
@@ -5558,7 +5573,7 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
     const base = missed.length || correction ? item.lock?.text || item.description : '';
     const wrap = !base ? null : correction ? asked => correctionPrompt(base, correction, asked, entry, item) : asked => missedPrompt(base, missed, item, asked, why);
-    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags, dryRun: dry });
+    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags, dryRun: dry, ...(fresh ? { loopState: loopState(entry, item, index) } : {}) });
     if (dry) {
         return parsed;
     }
@@ -5771,7 +5786,16 @@ function roleEditor(entry, item, redraw) {
     line.rows = 3;
     line.value = item.diff || '';
     line.placeholder = 'Story line: what this moment means in the story';
-    form.append(el('small', '', 'Role'), main, sub, el('small', '', 'Intensity (1 to 10)'), level, el('small', '', 'Story line'), line);
+    const index = entry.variants.indexOf(item);
+    const detected = entry.fromVideo?.parts?.[index] ? (entry.fromVideo.parts[index].kind === 'loop' ? 'a loop' : 'not a loop') : item.clip?.loop ? 'a loop' : 'no loop found';
+    const loop = el('select', 'text_pole stis-role-loop');
+    [['', `Auto (${detected})`], ['loop', 'Loop'], ['not', 'Not a loop']].forEach(([value, text]) => {
+        const option = el('option', '', text);
+        option.value = value;
+        loop.appendChild(option);
+    });
+    loop.value = item.loopSet || '';
+    form.append(el('small', '', 'Role'), main, sub, el('small', '', 'Intensity (1 to 10)'), level, el('small', '', 'Story line'), line, el('small', '', 'Loop'), loop);
     const keep = async locked => {
         const intensity = Math.max(0, Math.min(10, Math.round(Number(level.value) || 0)));
         item.role = { main: main.value, sub: sub.value.replace(/\s+/g, ' ').trim().slice(0, 40), ...(intensity ? { intensity, why: intensity === item.role.intensity ? item.role.why || '' : 'set by you' } : {}) };
@@ -5783,6 +5807,7 @@ function roleEditor(entry, item, redraw) {
         if (locked) {
             item.roleLock = true;
         }
+        item.loopSet = loop.value;
         await done();
     };
     const buttons = el('div', 'stis-role-buttons');
@@ -5824,7 +5849,8 @@ function storyPrompt(entry, notes = '', settled = '') {
     const timed = v3On(entry);
     const items = entry.variants.map((item, index) => {
         const part = entry.fromVideo?.parts[index];
-        const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : timed && item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', its last moment matches its first: it loops' : ''})` : '';
+        const looped = timed ? loopWords(entry, item, index) : '';
+        const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''}${looped && item.loopSet ? `, ${looped}` : ''})` : timed && (item.clip?.seconds || looped) ? ` (a GIF${item.clip?.seconds ? `, ${item.clip.seconds} s long` : ''}${looped ? `, ${looped}` : ''})` : '';
         const tags = (item.shows.length ? item.shows : item.tags.length ? item.tags : entry.tags).concat(item.added.filter(tag => !item.shows.includes(tag)));
         const fixed = item.fixes.length ? `\nThe user's correction (true): ${item.fixes.slice(-2).map(fix => fix.text).join('; ')}` : '';
         return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}${fixed}`;
@@ -5877,7 +5903,7 @@ function parseStory(reply, count, versions) {
 async function writeStory(entry, notes = '', report = entry.report) {
     const count = entry.variants.length;
     const locked = versionsOnly(entry) ? [] : lockedRoles(entry);
-    const asked = storyPrompt(entry, notes, settledNote(locked));
+    const asked = storyPrompt(entry, notes, [settledNote(locked), v3On(entry) && !versionsOnly(entry) ? oneMovingHint(entry) : ''].filter(Boolean).join('\n\n'));
     const reply = await textAsk(asked, 200 + 130 * count);
     if (report) {
         report.storyReply = String(reply).slice(0, 4000);
@@ -6938,6 +6964,45 @@ async function describeSet(entry, blobs = []) {
 
 const V3_STEPS = [[/^Looking at all \d+ items together/, 'The whole sequence'], [/^Writing item \d+ of/, 'Describing the items'], [/^Finding the tags in/, 'Tags in the descriptions'], [/^Story:/, 'Story lines'], [/^Role fit:/, 'Role fit'], [/^Your notes:/, 'Tags from your notes'], [/^Sequence check/, 'Final check'], [/^Looking again at item/, 'Fixing the items'], [/^Story again/, 'Story lines, roles kept'], [/^Tags not found:/, 'Judging tags not found']];
 
+function loopState(entry, item, index) {
+    if (!item) {
+        return '';
+    }
+    if (item.loopSet === 'loop' || item.loopSet === 'not') {
+        return item.loopSet;
+    }
+    const part = entry?.fromVideo?.parts?.[index];
+    if (part) {
+        return part.kind === 'loop' ? 'loop' : 'not';
+    }
+    return item.clip?.loop ? 'loop' : '';
+}
+
+function loopWords(entry, item, index) {
+    const state = loopState(entry, item, index);
+    return state === 'loop' ? (item.loopSet === 'loop' ? 'a loop (set by the user)' : 'it loops') : state === 'not' && item.loopSet === 'not' ? 'not a loop (set by the user)' : '';
+}
+
+function loopLines(entry, index) {
+    const items = entry.variants;
+    const state = loopState(entry, items[index], index);
+    const before = index > 0 ? loopState(entry, items[index - 1], index - 1) : '';
+    const after = index + 1 < items.length ? loopState(entry, items[index + 1], index + 1) : '';
+    if (state === 'loop') {
+        return fillTemplate(promptPart('loopNote'), { before_loop: before === 'loop' ? 'yes' : '', before_not_loop: before === 'not' ? 'yes' : '', after_loop: after === 'loop' ? 'yes' : '', after_not_loop: after === 'not' ? 'yes' : '', first: index === 0 ? 'yes' : '', last: index === items.length - 1 ? 'yes' : '', number: index + 1 }).trim();
+    }
+    if (state === 'not') {
+        return [before ? `The item before (item ${index}) is ${before === 'loop' ? 'a loop' : 'not a loop'}.` : '', 'This item is not a loop.', after ? `The item after (item ${index + 2}) is ${after === 'loop' ? 'a loop' : 'not a loop'}.` : ''].filter(Boolean).join(' ');
+    }
+    return '';
+}
+
+function oneMovingHint(entry) {
+    const states = entry.variants.map((item, index) => loopState(entry, item, index));
+    const loops = states.filter(state => state === 'loop').length;
+    return entry.variants.length > 1 && loops === entry.variants.length - 1 ? fillTemplate(promptPart('oneMoving'), { item: states.findIndex(state => state !== 'loop') + 1 }).trim() : '';
+}
+
 function v3On(entry) {
     return settings().sequenceV3 !== false && entry?.kind === 'sequence';
 }
@@ -7075,8 +7140,11 @@ function boardPrompt(entry, batch, shown, tags, earlier, facts = '', again = '')
         } else if (view.seconds) {
             bits.push(`an animation, ${view.seconds} s long, shown here by its first moment only`);
         }
-        if (view.loop) {
-            bits.push('its last moment matches its first almost exactly, so it most likely repeats as a loop');
+        const state = loopState(entry, entry.variants[index], index);
+        if (state === 'loop' && !entry.fromVideo) {
+            bits.push(entry.variants[index].loopSet === 'loop' ? 'the user says it is a loop: it repeats' : 'its last moment matches its first almost exactly, so it most likely repeats as a loop');
+        } else if (state === 'not' && entry.variants[index].loopSet === 'not') {
+            bits.push('the user says it is not a loop');
         }
         if (timing(index)) {
             bits.push(timing(index));
@@ -7284,6 +7352,68 @@ function genderProblem(word, facts) {
         : `It calls someone "${word}", but no tag counts a boy or a man and everyone the tags count is female: that person is most likely one of the girls. Describe her as she, unless the picture clearly shows a boy the tags missed.`;
 }
 
+async function tagImplications(tags, site = '') {
+    const s = settings();
+    const day = 24 * 3600 * 1000;
+    const known = s.tagImplied && typeof s.tagImplied === 'object' ? s.tagImplied : {};
+    const unknown = tags.filter(tag => !known[tag] || Date.now() - (Number(known[tag].at) || 0) > (known[tag].to?.length ? 90 : 7) * day);
+    if (unknown.length) {
+        const own = siteEntries().find(entry => entry.domain === site);
+        const engineName = own ? await engineOf(own, unknown).catch(() => '') : '';
+        const origin = `https://${own && engineName === 'e621' ? own.domain : 'danbooru.donmai.us'}`;
+        const next = { ...known };
+        for (let start = 0; start < unknown.length; start += 40) {
+            const part = unknown.slice(start, start + 40);
+            const found = await request(`${origin}/tag_implications.json?search%5Bantecedent_name_comma%5D=${encodeURIComponent(part.join(','))}&search%5Bstatus%5D=active&limit=200`);
+            const rows = Array.isArray(found?.data) ? found.data : [];
+            if (rows.length && !rows.some(row => part.includes(normalizeTag(row?.antecedent_name || '')))) {
+                continue;
+            }
+            part.forEach(tag => {
+                next[tag] = { to: [...new Set(rows.filter(row => normalizeTag(row?.antecedent_name || '') === tag).map(row => normalizeTag(row?.consequent_name || '')).filter(Boolean))], at: Date.now() };
+            });
+        }
+        s.tagImplied = Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 800));
+        save();
+    }
+    const now = s.tagImplied || {};
+    return new Map(tags.filter(tag => now[tag]?.to?.length).map(tag => [tag, now[tag].to]));
+}
+
+function itemTagsPrompt(entry, lacking) {
+    const { matter } = rememberedTags();
+    const all = [...new Set(lacking.flat())];
+    const hints = tagHintLines(all.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length));
+    const blocks = entry.variants.map((item, index) => (lacking[index].length ? `Item ${index + 1}:\nDescription: ${String(item.description || '').replace(/\s+/g, ' ').trim().slice(0, 1500)}\nTags it has: ${item.shows.join(', ') || 'none'}\nThe sequence's tags it does not have: ${lacking[index].join(', ')}` : '')).filter(Boolean).join('\n\n');
+    return `Each item of a ${groupWhat(entry)} was described by someone looking at it, and has the tags that were seen in it. For each item below, say which of the sequence's tags it does not have yet its description shows, or clearly means. Tags never match a description word for word: a tag counts when the description shows the thing it names, in any words, or something that clearly goes with it; it does not count when it is only possible. Judge each item on its own description only: never give an item a tag just because another item has it.${hints.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures:\n${hints.join('\n')}` : ''}\n\n${blocks}\n\nReply with one line per item above and nothing else, with a few words from its description for each tag it shows, like:\nItem 1: a_tag ("a few words from it"), another_tag ("a few words from it")\nItem 2: none`;
+}
+
+function readItemTags(entry, lacking, reply) {
+    const found = new Map();
+    for (const raw of String(reply || '').split('\n')) {
+        const line = raw.replace(/\*\*/g, '').replace(/^\s*[-*•]+\s*/, '');
+        const match = line.match(/^\s*(?:item|part|picture)\s*(\d+)\s*[:.)-]\s*(.+)$/i);
+        const index = Number(match?.[1]) - 1;
+        if (!match || !lacking[index]?.length || /^\s*none\b/i.test(match[2])) {
+            continue;
+        }
+        const item = entry.variants[index];
+        const quoted = [...match[2].matchAll(/([^,;()"“”]+?)\s*\(\s*["“]([^"”]+)["”]\s*\)/g)].map(hit => [hit[1], hit[2]]);
+        const pairs = quoted.length ? quoted : match[2].split(/[,;]/).map(part => [part, '']);
+        const hits = found.get(index) || [];
+        pairs.forEach(([name, words]) => {
+            const tag = normalizeTag(String(name).replace(/[`*"]/g, '').trim());
+            if (lacking[index].includes(tag) && !hits.some(hit => hit.tag === tag) && (!words || echoesText(words, item.description))) {
+                hits.push({ tag, words: String(words).replace(/\s+/g, ' ').trim().slice(0, 120) });
+            }
+        });
+        if (hits.length) {
+            found.set(index, hits);
+        }
+    }
+    return found;
+}
+
 async function characterGenders(tags, site = '') {
     const s = settings();
     const day = 24 * 3600 * 1000;
@@ -7379,6 +7509,10 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     if (board) {
         context.push(board);
     }
+    const looped = loopLines(entry, index);
+    if (looped) {
+        context.push(looped);
+    }
     if (before?.description) {
         context.push(`Item ${index} (the one before it) was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
         const cast = peopleLine(before.description);
@@ -7403,7 +7537,7 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     if (report?.cost && !dry) {
         report.cost.vision += 1;
     }
-    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true, timed: true, dryRun: dry });
+    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true, timed: true, dryRun: dry, loopState: loopState(entry, item, index) });
     if (dry) {
         return parsed;
     }
@@ -7427,7 +7561,7 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
 }
 
 function v3ReviewPrompt(entry, facts = '') {
-    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:${item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', loops' : ''})` : ''}`, `First look at the whole sequence: ${[item.cast ? `who is there: ${item.cast}` : '', item.beat ? `what happens: ${item.beat}` : ''].filter(Boolean).join('; ') || 'none'}`, `Tags: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
+    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:${item.clip?.seconds || loopWords(entry, item, index) ? ` (a GIF${item.clip?.seconds ? `, ${item.clip.seconds} s long` : ''}${loopWords(entry, item, index) ? `, ${loopWords(entry, item, index)}` : ''})` : ''}`, `First look at the whole sequence: ${[item.cast ? `who is there: ${item.cast}` : '', item.beat ? `what happens: ${item.beat}` : ''].filter(Boolean).join('; ') || 'none'}`, `Tags: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
     return `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Someone first looked at all the items together and said who is there and what happens in each; then each item was described by someone looking at it, who was told what that first look saw. For each item you get that first look, its tags, its description, and its role and story line.${entry.arc ? ` The shape given to the sequence: ${entry.arc}.` : ''}\n\nLook for these problems:\n- the description and the first look disagree on who is there or what happens (one of them may be wrong: say what differs, and the picture will be looked at again);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- a person count that drops from one item to the next with nothing to explain it (someone hidden or out of view still counts);\n- a person or character called by a name in a description or story line (they must be he, she, they or described);\n- a story line that its description does not support (the roles and intensities are settled and correct: never question them).\nTags never match a picture word for word: never report a tag that a description leaves out. Only report real problems; most items have none.\n\nThen write an overview of the whole sequence: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.${facts ? `\n\n${facts}` : ''}\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with a story line, and "description" for the rest.\n\n${blocks}`;
 }
 
@@ -7474,6 +7608,9 @@ async function describeSequence(entry, blobs = []) {
         item.seen = [];
         item.cast = '';
         item.beat = '';
+        item.implied = [];
+        item.inferred = [];
+        item.dropped = Array.isArray(item.dropped) ? item.dropped : [];
         if (!item.roleLock) {
             item.role = null;
         }
@@ -7482,7 +7619,7 @@ async function describeSequence(entry, blobs = []) {
         }
     });
     entry.arc = '';
-    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 }, facts: '', gender: null };
+    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, implied: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 }, facts: '', gender: null };
     const checkable = checkableTags(entry);
     const ordered = list => checkable.filter(tag => list.includes(tag));
     try {
@@ -7522,6 +7659,25 @@ async function describeSequence(entry, blobs = []) {
                 });
             }
         });
+        const implies = await Promise.race([tagImplications(checkable, entry.site), new Promise(done => setTimeout(() => done(null), 8000))]).catch(() => null);
+        if (implies?.size) {
+            items.forEach((item, index) => {
+                for (let round = 0; round < 3; round++) {
+                    const next = item.shows.flatMap(tag => (implies.get(tag) || []).map(to => ({ tag: to, from: tag }))).filter(link => checkable.includes(link.tag) && !item.shows.includes(link.tag) && !item.dropped.includes(link.tag));
+                    if (!next.length) {
+                        break;
+                    }
+                    next.forEach(link => {
+                        if (!item.shows.includes(link.tag)) {
+                            item.shows = ordered([...item.shows, link.tag]);
+                            item.implied.push(link);
+                            report.implied[link.tag] = [...(report.implied[link.tag] || []), index + 1];
+                        }
+                    });
+                }
+            });
+        }
+        report.steps.implied = implies === null ? 'failed' : Object.keys(report.implied).length ? 'on' : 'none found';
         checkable.forEach(tag => {
             const numbers = items.map((item, index) => index + 1).filter(number => items[number - 1].shows.includes(tag));
             if (numbers.length) {
@@ -7545,27 +7701,33 @@ async function describeSequence(entry, blobs = []) {
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
         const described = items.every(item => item.description);
-        if (report.notShown.length && described) {
-            await Promise.race([ensureDefinitions(report.notShown, entry.site), new Promise(done => setTimeout(done, 10000))]).catch(() => null);
+        const lacking = items.map(item => checkable.filter(tag => !item.shows.includes(tag) && !item.dropped.includes(tag)));
+        if (described && lacking.some(list => list.length)) {
+            if (report.notShown.length) {
+                await Promise.race([ensureDefinitions(report.notShown, entry.site), new Promise(done => setTimeout(done, 10000))]).catch(() => null);
+            }
             groupStep(entry, 'Finding the tags in the descriptions…');
             try {
                 report.cost.text += 1;
-                const found = await describedTags(entry, report.notShown, report);
-                found.forEach((hits, tag) => {
+                const reply = await textAsk(itemTagsPrompt(entry, lacking), 80 + 70 * count);
+                report.inTextReply = String(reply).slice(0, 3000);
+                const found = readItemTags(entry, lacking, reply);
+                found.forEach((hits, index) => {
+                    const item = items[index];
                     hits.forEach(hit => {
-                        const item = items[hit.item - 1];
-                        item.shows = ordered([...item.shows, tag]);
+                        item.shows = ordered([...item.shows, hit.tag]);
+                        item.inferred.push(hit);
+                        report.inText[hit.tag] = [...(report.inText[hit.tag] || []), `item ${index + 1}${hit.words ? ` ("${hit.words}")` : ''}`];
                     });
-                    report.inText[tag] = hits.map(hit => `item ${hit.item}${hit.words ? ` ("${hit.words}")` : ''}`);
                 });
-                report.notShown = report.notShown.filter(tag => !found.has(tag));
+                report.notShown = report.notShown.filter(tag => !items.some(item => item.shows.includes(tag)));
                 report.steps.inText = found.size ? 'on' : 'none found';
             } catch (error) {
                 report.errors.push(`Finding the tags in the descriptions: ${error?.message || error}`);
                 report.steps.inText = 'failed';
             }
         } else {
-            report.steps.inText = report.notShown.length ? 'skipped' : 'not needed';
+            report.steps.inText = described ? 'not needed' : 'skipped';
         }
         if (described) {
             groupStep(entry, 'Story: intensity, roles and story lines…');
@@ -7795,7 +7957,7 @@ async function keepRoles(entry, run) {
 
 function roleFitPrompt(entry) {
     const timed = v3On(entry);
-    const items = entry.variants.map((item, index) => `Item ${index + 1}${timed && item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', its last moment matches its first: it loops' : ''})` : ''}, the ${item.role ? roleText(item.role) : 'unknown role'}${item.role?.intensity ? `, intensity ${item.role.intensity}/10${item.role.why ? ` (${item.role.why})` : ''}` : ''}:\n${item.description}`).join('\n\n');
+    const items = entry.variants.map((item, index) => `Item ${index + 1}${timed && (item.clip?.seconds || loopWords(entry, item, index)) ? ` (a GIF${item.clip?.seconds ? `, ${item.clip.seconds} s long` : ''}${loopWords(entry, item, index) ? `, ${loopWords(entry, item, index)}` : ''})` : ''}, the ${item.role ? roleText(item.role) : 'unknown role'}${item.role?.intensity ? `, intensity ${item.role.intensity}/10${item.role.why ? ` (${item.role.why})` : ''}` : ''}:\n${item.description}`).join('\n\n');
     return `These are the items of one ${groupWhat(entry)}, in order. Each item's role and intensity are settled and correct; its description was written before they were known, by someone looking at that item alone, so it may describe something that does not belong to that role.\n\nThe user's rules for the roles:\n${String(settings().roleRules || '').trim()}\n\n${items}\n\nFor each item, say whether its description fits its role under these rules. When it does not, quote the words that break the rule and say what the item most likely shows instead, as that role. Never change a role.\n\nReply with one line per item and nothing else, like:\n1: fits\n2: does not fit; says "the final blow"; most likely he raises his blade for the strike`;
 }
 
@@ -8891,7 +9053,7 @@ function groupReportBox(entry, current) {
     const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
     const v3 = report.framework === 'v3';
-    const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · site implications: ${step('implied')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
     const index = current ? entry.variants.indexOf(current) : -1;
     if (current && index >= 0) {
         lines.push(`${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1} was given ${current.shows.length} tag${current.shows.length === 1 ? '' : 's'}: ${current.shows.join(', ').replace(/_/g, ' ') || 'none (its own or the group\'s tags were used)'}`);
@@ -8913,7 +9075,7 @@ function groupReportBox(entry, current) {
     }
     const timed = entry.variants.filter(item => item.clip?.seconds);
     if (v3 && timed.length) {
-        lines.push(`GIF lengths: ${entry.variants.map((item, index) => (item.clip?.seconds ? `item ${index + 1} ${item.clip.seconds} s${item.clip.loop ? ' (loops)' : ''}` : '')).filter(Boolean).join(', ')}`);
+        lines.push(`GIF lengths: ${entry.variants.map((item, index) => (item.clip?.seconds ? `item ${index + 1} ${item.clip.seconds} s${loopState(entry, item, index) === 'loop' ? ` (loops${item.loopSet === 'loop' ? ', set by you' : ''})` : item.loopSet === 'not' ? ' (not a loop, set by you)' : ''}` : '')).filter(Boolean).join(', ')}`);
     }
     const owned = Object.entries(report.owned || {});
     if (owned.length) {
@@ -8927,9 +9089,13 @@ function groupReportBox(entry, current) {
     if (found.length) {
         lines.push(`Found when looking again: ${found.map(([tag, items]) => `${tag.replace(/_/g, ' ')} (item ${items.join(', ')})`).join('; ')}`);
     }
+    const implied = Object.entries(report.implied || {});
+    if (implied.length) {
+        lines.push(`From the site's tag implications: ${implied.map(([tag, items]) => `${tag.replace(/_/g, ' ')} (item ${items.join(', ')})`).join('; ')}`);
+    }
     const inText = Object.entries(report.inText || {});
     if (inText.length) {
-        lines.push(`Already in the descriptions: ${inText.map(([tag, hits]) => `${tag.replace(/_/g, ' ')} (${hits.join(', ')})`).join('; ')}`);
+        lines.push(`${report.framework === 'v3' ? 'Found in the descriptions' : 'Already in the descriptions'}: ${inText.map(([tag, hits]) => `${tag.replace(/_/g, ' ')} (${hits.join(', ')})`).join('; ')}`);
     }
     if (notShown) {
         lines.push(`Not found in any item: ${report.notShown.join(', ').replace(/_/g, ' ')}${entry.fromVideo ? ' (maybe cut off when the parts were made)' : ''}`);
@@ -13725,9 +13891,10 @@ async function openPicker(initialTags = null, focus = null) {
             thumb.addEventListener('click', () => onChoose(member));
             wrap.appendChild(thumb);
             if (animatedItem(member)) {
-                const mark = el('span', 'stis-variant-anim');
-                mark.appendChild(el('i', 'fa-solid fa-play'));
-                mark.title = member.video ? 'Video' : 'Animated';
+                const looped = owner?.kind === 'sequence' && loopState(owner, member, index) === 'loop';
+                const mark = el('span', `stis-variant-anim${looped ? ' stis-variant-loop' : ''}`);
+                mark.appendChild(el('i', `fa-solid ${looped ? 'fa-repeat' : 'fa-play'}`));
+                mark.title = looped ? (member.loopSet === 'loop' ? 'Loop (set by you)' : 'Loop (it repeats)') : member.video ? 'Video' : 'Animated';
                 wrap.appendChild(mark);
             }
             if (numbered) {
@@ -14820,6 +14987,31 @@ async function openPicker(initialTags = null, focus = null) {
             desc.appendChild(el('div', 'stis-entry-text', current.description));
             if (itemStory(entry, current, index)) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
+            }
+            const added = [...(current.implied || []).map(link => ({ tag: link.tag, how: `the site's implications, from ${link.from.replace(/_/g, ' ')}` })), ...(current.inferred || []).map(hit => ({ tag: hit.tag, how: hit.words ? `found in its description: "${hit.words}"` : 'found in its description' }))].filter(add => current.shows.includes(add.tag));
+            if (sequence && added.length) {
+                const line = el('div', 'stis-entry-text stis-entry-deduced stis-added-tags');
+                line.appendChild(el('span', '', 'Tags added for this item: '));
+                added.forEach((add, at) => {
+                    const chip = el('span', 'stis-added-tag', `${add.tag.replace(/_/g, ' ')} (${add.how})`);
+                    const drop = el('i', 'fa-solid fa-xmark stis-added-drop');
+                    drop.title = `Take ${add.tag.replace(/_/g, ' ')} off this item (Redo all will not add it again)`;
+                    drop.addEventListener('click', async () => {
+                        current.shows = current.shows.filter(tag => tag !== add.tag);
+                        current.implied = (current.implied || []).filter(link => link.tag !== add.tag);
+                        current.inferred = (current.inferred || []).filter(hit => hit.tag !== add.tag);
+                        current.dropped = [...new Set([...(current.dropped || []), add.tag])];
+                        descriptions.set(current.url, describedVariant(entry, current));
+                        await saveLibrary();
+                        showEntry(entry, current);
+                    });
+                    chip.appendChild(drop);
+                    line.appendChild(chip);
+                    if (at < added.length - 1) {
+                        line.appendChild(document.createTextNode('; '));
+                    }
+                });
+                desc.appendChild(line);
             }
             if (sequence && current.role) {
                 if (current.roleLock) {
@@ -16077,6 +16269,10 @@ function buildSettings() {
                             <textarea id="st_imagesearch_board_note" class="text_pole" rows="6"></textarea>
                             <small class="stis-help">Given to each item of a sequence. Filled in: {{who}}, {{what}}, {{just_before}} and {{before_number}} (the item before), {{just_after}} and {{after_number}} (the item after).</small>
                             <div id="st_imagesearch_board_note_reset" class="menu_button">Reset this part</div>
+                            <div class="stis-label">Loop note (new sequence steps)</div>
+                            <textarea id="st_imagesearch_loop_note" class="text_pole" rows="6"></textarea>
+                            <small class="stis-help">Given to an item of a sequence that is a loop (its last moment matches its first, or you set it in Edit role). An item that is not a loop only gets the plain facts ("The item before is a loop. This item is not a loop. The item after is…"). {{#before_loop}}…{{/before_loop}} and {{#before_not_loop}}…{{/before_not_loop}}: the item before; {{#after_loop}}…{{/after_loop}} and {{#after_not_loop}}…{{/after_not_loop}}: the item after (an item whose loop is not known shows neither); {{#first}}…{{/first}}, {{#last}}…{{/last}}; {{number}}.</small>
+                            <div id="st_imagesearch_loop_note_reset" class="menu_button">Reset the loop note</div>
                             <div class="stis-label">Looking again at an item (new sequence steps)</div>
                             <textarea id="st_imagesearch_again_prompt" class="text_pole" rows="8"></textarea>
                             <small class="stis-help">Used when an item is looked at again to fix its role, a problem from the final check or a tag from your notes. Filled in: {{description}} (its description so far), {{asks}} (what to fix), {{prompt}} (the whole description prompt), {{first_tag}} with {{#several}}…{{/several}} for the "Checked:" line (keep "Checked:" so the answer can be read).</small>
@@ -16101,6 +16297,10 @@ function buildSettings() {
                             <textarea id="st_imagesearch_story_prompt" class="text_pole"></textarea>
                             <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
                             <div id="st_imagesearch_story_reset" class="menu_button">Reset this prompt</div>
+                            <div class="stis-label">Story hint when only one item isn't a loop (new sequence steps)</div>
+                            <textarea id="st_imagesearch_one_moving" class="text_pole" rows="3"></textarea>
+                            <small class="stis-help">Added after your story prompt when every item but one is a loop (detected, or set by you in Edit role). Filled in: {{item}} (the item that isn't a loop).</small>
+                            <div id="st_imagesearch_one_moving_reset" class="menu_button">Reset this hint</div>
                         </div>
                         <div class="stis-set">
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_role_fit"> <span>Role fit</span></label>
@@ -16377,7 +16577,7 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
-    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt']].forEach(([id, key]) => {
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving']].forEach(([id, key]) => {
         const area = document.getElementById(id);
         area.value = promptPart(key);
         area.addEventListener('input', () => {

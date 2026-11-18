@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.48.0';
+const VERSION = '2.49.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4436,6 +4436,7 @@ function cleanItem(item, index, entry, grouped) {
         sections: cleanSections(item.sections),
         keywords: cleanStrings(item.keywords, 16),
         seen: cleanStrings(item.seen, 60),
+        look: item.look && Number(item.look.intensity) ? { intensity: Math.max(1, Math.min(10, Math.round(Number(item.look.intensity)))), why: String(item.look.why || '').slice(0, 160) } : null,
         shows: cleanStrings(item.shows, 80),
         role: cleanRole(item.role),
         added: cleanStrings(item.added, 40),
@@ -4964,6 +4965,28 @@ async function partSheet(url, blob = null, maxSide = 768) {
     }
 }
 
+const LOOK_INTENSITY = 'Then, on one last line, rate how intense this moment is from 1 to 10. Intensity is the peak of emotion, not just of action: a fierce blow, a confession, a tearful hug or a goodbye can be a 9 or a 10; calm, ordinary or waiting moments are low. Write it like "Intensity: 7, he lands the blow".';
+
+function readLookIntensity(reply) {
+    const lines = String(reply || '').split('\n');
+    const at = lines.findIndex(line => /^\W*intensity\b/i.test(line.trim()));
+    const match = at >= 0 ? lines[at].match(/intensity\W*(\d{1,2})(?:\s*\/\s*10)?[\s,;:.–—-]*(.*)$/i) : null;
+    if (!match) {
+        return null;
+    }
+    return { look: { intensity: Math.max(1, Math.min(10, Number(match[1]))), why: match[2].replace(/\*+/g, '').replace(/\s+/g, ' ').trim().slice(0, 160) }, rest: lines.filter((line, index) => index !== at).join('\n') };
+}
+
+function peakItem(entry) {
+    let best = -1;
+    entry.variants.forEach((item, index) => {
+        if (item.look?.intensity && (best < 0 || item.look.intensity >= entry.variants[best].look.intensity)) {
+            best = index;
+        }
+    });
+    return best;
+}
+
 const BLIND_PROMPT = 'List what you can see in this picture as image-board tags (Danbooru style: lowercase English words joined by underscores, like long_hair, school_uniform, holding_sword). Give 15 to 30 tags covering: how many people (1girl, 2boys, solo; count anyone only partly in view, like an arm or a figure in the shadows), each person\'s hair colour, length and style, eye colour, skin, clothing and accessories, objects held or used, pose and action, facial expression, the place and background, and the shot (close-up, upper_body, full_body). Only what is clearly visible. Reply with only the tags, separated by commas.';
 const SERIES_TAG = /_\((series|anime|manga|game|novel|comic|film|movie|franchise|cartoon)\)$/;
 const groupProgress = new Map();
@@ -5115,7 +5138,9 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const item = entry.variants[index];
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
-    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}`];
+    const peak = sequence ? peakItem(entry) : -1;
+    const sight = item.look && sequence ? ` At first sight its intensity was ${item.look.intensity}/10${item.look.why ? ` (${item.look.why})` : ''}${peak === index ? '; it is the most intense item of the sequence, its peak, so describe that moment clearly' : ''}.` : '';
+    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the group it is the ${roleText(item.role)}.` : ''}${sight}`];
     if (before?.description) {
         context.push(`${sequence ? `Item ${index} (the one before it)` : 'Item 1'} was described as:\n${before.description}\nCall the same people and things by the same words; if someone looks different, say so.`);
         const cast = peopleLine(before.description);
@@ -5186,11 +5211,14 @@ function storyPrompt(entry, notes = '') {
         const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : '';
         const tags = (item.shows.length ? item.shows : item.tags.length ? item.tags : entry.tags).concat(item.added.filter(tag => !item.shows.includes(tag)));
         const fixed = item.fixes.length ? `\nThe user's correction (true): ${item.fixes.slice(-2).map(fix => fix.text).join('; ')}` : '';
-        return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}${fixed}`;
+        const look = item.look ? `\nIntensity at first sight (rated from the picture alone, before any tags): ${item.look.intensity}/10${item.look.why ? `, ${item.look.why}` : ''}` : '';
+        return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:${look}\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}${fixed}`;
     }).join('\n\n');
     const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: entry.tags.join(', ').replace(/_/g, ' ') };
     const text = String((versions ? settings().versionsPrompt : settings().storyPrompt) || (versions ? DEFAULT_VERSIONS_PROMPT : DEFAULT_STORY_PROMPT)).replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
-    const ruled = text.includes(NO_NAMES_RULE) ? text : `${text}\n\n${NO_NAMES_RULE}`;
+    const peak = peakItem(entry);
+    const looked = peak >= 0 ? `\n\nEach item's intensity at first sight was rated from its picture alone. Start from those ratings: your intensity for each item should stay close to it, and the climax is item ${peak + 1}, the one rated highest at first sight, unless the descriptions clearly show that another item is more intense.` : '';
+    const ruled = `${text}${looked}${text.includes(NO_NAMES_RULE) ? '' : `\n\n${NO_NAMES_RULE}`}`;
     return notes ? `${ruled}\n\nFix these in the story lines: ${notes}` : ruled;
 }
 
@@ -5824,15 +5852,23 @@ async function describeSet(entry, blobs = []) {
     };
     const checkable = checkableTags(entry);
     let assigned = null;
+    items.forEach(item => {
+        item.look = null;
+    });
     try {
         if (s.groupBlind !== false && checkable.length) {
             groupStep(entry, `Looking at each of the ${count} items…`);
             await eachLimit(items, 2, async (item, index) => {
                 try {
                     const frames = itemAnimated(entry, item) ? 'This picture is a short animation shown as numbered frames (left to right, then top to bottom); list tags for anything seen in any frame. ' : '';
-                    item.seen = parseTagReply(await visionAsk(`${frames}${BLIND_PROMPT}`, [await picture(index)], 260, 0.2)).slice(0, 40);
+                    const rate = entry.kind === 'sequence';
+                    const reply = await visionAsk(`${frames}${BLIND_PROMPT}${rate ? `\n\n${LOOK_INTENSITY}` : ''}`, [await picture(index)], rate ? 320 : 260, 0.2);
+                    const rated = rate ? readLookIntensity(reply) : null;
+                    item.look = rated?.look || null;
+                    item.seen = parseTagReply(rated ? rated.rest : reply).slice(0, 40);
                 } catch (error) {
                     item.seen = [];
+                    item.look = null;
                     report.errors.push(`First look at item ${index + 1}: ${error?.message || error}`);
                 }
             });
@@ -13043,7 +13079,10 @@ async function openPicker(initialTags = null, focus = null) {
             }
             entry.variants.forEach((item, number) => {
                 const line = el('div', `stis-role-line${item === current ? ' stis-role-current' : ''}`);
-                line.appendChild(el('b', '', `${number + 1} · ${item.role?.intensity ? `${item.role.intensity}/10 · ` : ''}${item.role ? roleText(item.role) : 'no role'}`));
+                line.appendChild(el('b', '', `${number + 1} · ${item.look ? `first sight ${item.look.intensity}/10 · ` : ''}${item.role?.intensity ? `${item.role.intensity}/10 · ` : ''}${item.role ? roleText(item.role) : 'no role'}`));
+                if (item.look?.why) {
+                    line.appendChild(el('div', 'stis-role-story', `At first sight: ${item.look.why}`));
+                }
                 if (item.role?.why) {
                     line.append(` (${item.role.why})`);
                 }
@@ -13052,6 +13091,11 @@ async function openPicker(initialTags = null, focus = null) {
                 }
                 roles.appendChild(line);
             });
+            const peak = peakItem(entry);
+            const climax = entry.variants.findIndex(item => item.role?.main === 'climax');
+            if (peak >= 0) {
+                roles.appendChild(el('div', `stis-role-line${climax >= 0 && climax !== peak ? ' stis-role-differs' : ''}`, climax === peak ? `The climax is item ${peak + 1}, the most intense at first sight.` : `Most intense at first sight: item ${peak + 1}; the story step put the climax ${climax >= 0 ? `on item ${climax + 1}` : 'nowhere'}.`));
+            }
             if (entry.report.storyAsked) {
                 const asked = el('details', 'stis-group-report-raw');
                 asked.appendChild(el('summary', '', 'The prompt sent'));

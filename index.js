@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.54.0';
+const VERSION = '2.55.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3704,6 +3704,55 @@ function splitVideo(scan, { maxPart = 6, sense = 3, maxParts = 8, repeats = 3 } 
             two.change = two.period < one.period ? 'faster' : 'slower';
         }
     }
+    const patchGap = (one, two) => {
+        if (!one || !two || one.length !== SCAN_SIDE * SCAN_SIDE * 3 || two.length !== one.length) {
+            return 0;
+        }
+        let worst = 0;
+        for (let py = 0; py < SCAN_SIDE; py += 2) {
+            for (let px = 0; px < SCAN_SIDE; px += 2) {
+                let sum = 0;
+                for (let y = py; y < py + 2; y++) {
+                    for (let x = px; x < px + 2; x++) {
+                        for (let c = 0; c < 3; c++) {
+                            const i = (y * SCAN_SIDE + x) * 3 + c;
+                            sum += one[i] > two[i] ? one[i] - two[i] : two[i] - one[i];
+                        }
+                    }
+                }
+                worst = Math.max(worst, sum / 12);
+            }
+        }
+        return worst;
+    };
+    for (let i = 0; i < loops.length; i++) {
+        const loop = loops[i];
+        const lag = Math.max(1, Math.round(loop.period));
+        const gapAt = k => {
+            let best = Infinity;
+            for (let l = Math.max(1, lag - 1); l <= lag + 1 && k - l >= loop.start; l++) {
+                best = Math.min(best, patchGap(grid[k], grid[k - l]));
+            }
+            return best === Infinity ? 0 : best;
+        };
+        const first = [];
+        for (let k = loop.start + lag; k < Math.min(loop.end, loop.start + 2 * lag); k++) {
+            first.push(gapAt(k));
+        }
+        const limit = Math.max(30, 2 * medianOf(first) + 10);
+        const need = Math.max(2, Math.round(loop.period * 0.3));
+        let run = 0;
+        for (let k = loop.start + 2 * lag; k < loop.end; k++) {
+            run = gapAt(k) > limit ? run + 1 : 0;
+            if (run >= need) {
+                const cut = k - run + 1;
+                const rest = { start: cut, end: loop.end, period: loop.period, change: 'with something changed' };
+                loop.end = cut;
+                loops.splice(i + 1, 0, rest);
+                break;
+            }
+        }
+    }
     for (let i = loops.length - 1; i >= 0; i--) {
         const loop = loops[i];
         if (loop.end - loop.start < loop.period * 2.6 || (loop.end - loop.start) * step < 2) {
@@ -4019,7 +4068,7 @@ async function frameSheet(images, maxSide = 768, start = 0) {
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-async function animationFrames(url, blob = null, most = 0) {
+async function animationFrames(url, blob = null, most = 0, options = {}) {
     if (typeof ImageDecoder !== 'function') {
         return null;
     }
@@ -4049,9 +4098,10 @@ async function animationFrames(url, blob = null, most = 0) {
         }
         const s = settings();
         const sheetsAllowed = s.gifSheet ? maxPictures() * SHEET_FRAMES : maxPictures();
-        const wanted = Math.min(count, 32, most || 32, sheetsAllowed, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        const clip = options.timed ? await clipOf(url, data, decoder, count) : null;
+        const wanted = Math.min(count, 32, most || 32, sheetsAllowed, Math.max(1, Math.round(Number(s.gifFrames) || 3)), clip ? framesForLength(clip.seconds) : 32);
         const size = Math.min(2048, Math.max(128, Number(s.gifFrameSize) || 768));
-        const picks = wanted === 1 ? [0] : [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (count - 1) / (wanted - 1))))];
+        const picks = clip ? timedPicks(clip.delays, wanted) : wanted === 1 ? [0] : [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (count - 1) / (wanted - 1))))];
         if (s.gifSheet && picks.length > 1) {
             const images = [];
             try {
@@ -4061,6 +4111,7 @@ async function animationFrames(url, blob = null, most = 0) {
                 const sheet = await frameSheets(images, size);
                 sheet.count = images.length;
                 sheet.sheet = true;
+                sheet.clip = clip;
                 return sheet;
             } finally {
                 images.forEach(image => image.close?.());
@@ -4073,10 +4124,164 @@ async function animationFrames(url, blob = null, most = 0) {
             image.close?.();
         }
         frames.count = frames.length;
+        frames.clip = clip;
         return frames;
     } finally {
         decoder.close?.();
     }
+}
+
+const GIF_FRAMES_PER_SECOND = 2;
+const clipInfo = new Map();
+
+function gifDelays(bytes) {
+    if (!bytes || bytes.length < 13 || bytes[0] !== 0x47 || bytes[1] !== 0x49 || bytes[2] !== 0x46) {
+        return null;
+    }
+    let at = 13;
+    if (bytes[10] & 0x80) {
+        at += 3 * (2 ** ((bytes[10] & 7) + 1));
+    }
+    const delays = [];
+    let delay = 0;
+    const skip = () => {
+        while (at < bytes.length) {
+            const size = bytes[at];
+            at += 1;
+            if (!size) {
+                return;
+            }
+            at += size;
+        }
+    };
+    while (at < bytes.length) {
+        const kind = bytes[at];
+        if (kind === 0x21) {
+            const label = bytes[at + 1];
+            at += 2;
+            if (label === 0xf9 && bytes[at] >= 4) {
+                delay = bytes[at + 2] | (bytes[at + 3] << 8);
+            }
+            skip();
+        } else if (kind === 0x2c) {
+            const local = bytes[at + 9];
+            at += 10;
+            if (local & 0x80) {
+                at += 3 * (2 ** ((local & 7) + 1));
+            }
+            at += 1;
+            skip();
+            delays.push(delay > 1 ? delay / 100 : 0.1);
+            delay = 0;
+        } else {
+            break;
+        }
+    }
+    return delays.length ? delays : null;
+}
+
+function framesForLength(seconds) {
+    return Math.max(SHEET_FRAMES, Math.round((Number(seconds) || 0) * GIF_FRAMES_PER_SECOND));
+}
+
+function timedPicks(delays, wanted) {
+    const starts = [];
+    let time = 0;
+    delays.forEach(delay => {
+        starts.push(time);
+        time += delay;
+    });
+    const last = starts[starts.length - 1] || 0;
+    if (wanted <= 1 || starts.length < 2) {
+        return [0];
+    }
+    const picks = [];
+    let index = 0;
+    for (let i = 0; i < wanted; i++) {
+        const target = i * last / (wanted - 1) + 1e-9;
+        while (index + 1 < starts.length && starts[index + 1] <= target) {
+            index++;
+        }
+        picks.push(index);
+    }
+    return [...new Set(picks)];
+}
+
+function framePixels(image, side = 32) {
+    const canvas = document.createElement('canvas');
+    canvas.width = side;
+    canvas.height = side;
+    const context = canvas.getContext('2d');
+    if (!context?.getImageData) {
+        return null;
+    }
+    context.drawImage(image, 0, 0, side, side);
+    return context.getImageData(0, 0, side, side).data;
+}
+
+function loopsBack(first, last, side = 32) {
+    if (!first || !last || first.length !== last.length) {
+        return false;
+    }
+    const block = 4;
+    let worst = 0;
+    let total = 0;
+    let blocks = 0;
+    for (let by = 0; by < side; by += block) {
+        for (let bx = 0; bx < side; bx += block) {
+            let sum = 0;
+            for (let y = by; y < by + block; y++) {
+                for (let x = bx; x < bx + block; x++) {
+                    const i = (y * side + x) * 4;
+                    sum += Math.abs(first[i] - last[i]) + Math.abs(first[i + 1] - last[i + 1]) + Math.abs(first[i + 2] - last[i + 2]);
+                }
+            }
+            const gap = sum / (block * block * 3);
+            worst = Math.max(worst, gap);
+            total += gap;
+            blocks += 1;
+        }
+    }
+    return worst <= 10 && total / blocks <= 4;
+}
+
+async function clipOf(url, data, decoder, count) {
+    if (clipInfo.has(url)) {
+        return clipInfo.get(url);
+    }
+    let delays = null;
+    try {
+        delays = gifDelays(new Uint8Array(await data.slice(0, 16 * 1024 * 1024).arrayBuffer()));
+    } catch (error) {
+        delays = null;
+    }
+    if (!delays || delays.length !== count) {
+        delays = Array.from({ length: count }, () => 0.1);
+    }
+    let loop = false;
+    try {
+        const first = (await decoder.decode({ frameIndex: 0 })).image;
+        const last = (await decoder.decode({ frameIndex: count - 1 })).image;
+        try {
+            loop = loopsBack(framePixels(first), framePixels(last));
+        } finally {
+            first.close?.();
+            last.close?.();
+        }
+    } catch (error) {
+        loop = false;
+    }
+    const clip = { seconds: Math.round(delays.reduce((sum, delay) => sum + delay, 0) * 10) / 10, frames: count, delays, loop };
+    clipInfo.set(url, clip);
+    return clip;
+}
+
+function clipWords(clip, count) {
+    if (!clip?.seconds) {
+        return '';
+    }
+    const apart = count > 1 ? Math.round(clip.seconds / count * 10) / 10 : 0;
+    return `It is ${clip.seconds} s long${apart ? `, and the moments are spread evenly over that time, about ${apart} s apart` : ''}.${clip.loop ? ' Its last moment matches its first almost exactly, so it most likely repeats as a loop.' : ''}${clip.seconds >= 5 ? ' It is long enough to hold several actions in a row: in Action, say what happens in order (first…, then…, at the end…).' : ''}`;
 }
 
 async function isAnimated(picture) {
@@ -4364,8 +4569,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     };
     let frames = null;
+    const timing = extra.timed ? { timed: true } : {};
     try {
-        frames = await animationFrames(url, blob);
+        frames = await animationFrames(url, blob, 0, timing);
     } catch (error) {
         console.warn('[Image Search] could not read the animation frames', error);
     }
@@ -4374,7 +4580,8 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         const shown = set.sheet
             ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
             : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
-        return ask(`This picture is a short animation (a GIF). ${shown} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
+        const length = set.clip ? ` ${clipWords(set.clip, set.count)}` : '';
+        return ask(`This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
     };
     if (frames?.count > 1) {
         try {
@@ -4383,7 +4590,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
             console.warn('[Image Search] the vision model refused all the frames, trying fewer', error);
             if (frames.length > 1) {
                 try {
-                    const fewer = await animationFrames(url, blob, SHEET_FRAMES);
+                    const fewer = await animationFrames(url, blob, SHEET_FRAMES, timing);
                     raw = fewer?.count > 1 ? await askFrames(fewer) : '';
                 } catch (again) {
                     console.warn('[Image Search] the vision model refused the frames, using the first one', again);
@@ -4397,6 +4604,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     const parsed = parseDescription(raw);
     parsed.raw = raw;
     parsed.animated = Boolean(frames?.length);
+    parsed.clip = frames?.clip || null;
     if (!parsed.text) {
         throw new Error('The vision model gave no description.');
     }
@@ -4486,6 +4694,9 @@ function cleanItem(item, index, entry, grouped) {
         seen: cleanStrings(item.seen, 60),
         cast: String(item.cast || '').slice(0, 300),
         beat: String(item.beat || '').slice(0, 300),
+        clip: item.clip && Number(item.clip.seconds) > 0 ? { seconds: Number(item.clip.seconds), frames: Number(item.clip.frames) || 0, loop: Boolean(item.clip.loop) } : null,
+        roleLock: Boolean(item.roleLock && item.role),
+        diffEdited: Boolean(item.diffEdited),
         shows: cleanStrings(item.shows, 80),
         role: cleanRole(item.role),
         added: cleanStrings(item.added, 40),
@@ -4644,6 +4855,8 @@ function cleanReport(report) {
         boardReply: String(report.boardReply || '').slice(0, 4000),
         fixed: Array.isArray(report.fixed) ? report.fixed.filter(fix => fix && fix.item).slice(0, 20).map(fix => ({ item: Number(fix.item) || 0, role: Boolean(fix.role), problems: Number(fix.problems) || 0, kept: cleanStrings(fix.kept, 10), left: cleanStrings(fix.left, 10) })) : [],
         cost: report.cost && typeof report.cost === 'object' ? { vision: Number(report.cost.vision) || 0, text: Number(report.cost.text) || 0, seconds: Number(report.cost.seconds) || 0 } : null,
+        facts: String(report.facts || '').slice(0, 1500),
+        gender: report.gender && typeof report.gender === 'object' ? { word: String(report.gender.word || '').slice(0, 40), board: String(report.gender.board || '').slice(0, 60), items: (Array.isArray(report.gender.items) ? report.gender.items : []).map(Number).filter(Boolean).slice(0, 20), story: Boolean(report.gender.story) } : null,
         fit: Array.isArray(report.fit) ? report.fit.filter(item => item && item.item).slice(0, 20).map(item => ({ item: Number(item.item) || 0, fits: Boolean(item.fits), said: String(item.said || '').slice(0, 300), instead: String(item.instead || '').slice(0, 300), fixed: Boolean(item.fixed) })) : [],
         fitReply: String(report.fitReply || '').slice(0, 3000),
     };
@@ -5288,6 +5501,95 @@ function roleText(role) {
     return role ? [role.main, role.sub].filter(Boolean).join(', ') : '';
 }
 
+function roleEditor(entry, item, redraw) {
+    const box = el('div', 'stis-role-edit');
+    const done = async () => {
+        entry.arc = entry.variants.map(member => member.role?.main || '?').join(' → ');
+        entry.variants.forEach(member => descriptions.set(member.url, describedVariant(entry, member)));
+        await saveLibrary();
+        redraw();
+    };
+    box.appendChild(el('small', 'stis-role-lock-state', item.roleLock ? 'Locked: Redo all and every story rewrite keep this role and intensity, and fit the others around it.' : 'Not locked: the story step may change this role.'));
+    const row = el('div', 'stis-role-buttons');
+    const edit = el('div', 'menu_button', 'Edit role');
+    const lock = el('div', 'menu_button', item.roleLock ? 'Unlock role' : 'Lock role');
+    const allLocked = entry.variants.every(member => !member.role || member.roleLock);
+    const lockAll = el('div', 'menu_button', allLocked ? 'Unlock all roles' : 'Lock all roles');
+    lock.title = 'Keep this role and intensity through Redo all and every story rewrite';
+    lockAll.title = 'Keep every role and intensity of this sequence as it is now';
+    lock.addEventListener('click', async () => {
+        item.roleLock = !item.roleLock;
+        if (!item.roleLock) {
+            item.diffEdited = false;
+        }
+        await done();
+    });
+    lockAll.addEventListener('click', async () => {
+        entry.variants.forEach(member => {
+            member.roleLock = !allLocked && Boolean(member.role);
+            if (!member.roleLock) {
+                member.diffEdited = false;
+            }
+        });
+        await done();
+    });
+    const form = el('div', 'stis-role-form');
+    form.hidden = true;
+    const main = el('select', 'text_pole');
+    [...new Set([...STORY_ROLES, item.role.main])].forEach(role => {
+        const option = el('option', '', role);
+        option.value = role;
+        main.appendChild(option);
+    });
+    main.value = item.role.main;
+    const sub = el('input', 'text_pole');
+    sub.value = item.role.sub || '';
+    sub.placeholder = 'A second word, like running or relief';
+    const level = el('input', 'text_pole');
+    level.type = 'number';
+    level.min = '1';
+    level.max = '10';
+    level.value = item.role.intensity ? String(item.role.intensity) : '';
+    level.placeholder = 'Intensity, 1 to 10';
+    const line = el('textarea', 'text_pole');
+    line.rows = 3;
+    line.value = item.diff || '';
+    line.placeholder = 'Story line: what this moment means in the story';
+    form.append(el('small', '', 'Role'), main, sub, el('small', '', 'Intensity (1 to 10)'), level, el('small', '', 'Story line'), line);
+    const keep = async locked => {
+        const intensity = Math.max(0, Math.min(10, Math.round(Number(level.value) || 0)));
+        item.role = { main: main.value, sub: sub.value.replace(/\s+/g, ' ').trim().slice(0, 40), ...(intensity ? { intensity, why: intensity === item.role.intensity ? item.role.why || '' : 'set by you' } : {}) };
+        const text = line.value.replace(/\s+/g, ' ').trim();
+        if (text !== String(item.diff || '').trim()) {
+            item.diff = text;
+            item.diffEdited = true;
+        }
+        if (locked) {
+            item.roleLock = true;
+        }
+        await done();
+    };
+    const buttons = el('div', 'stis-role-buttons');
+    const save = el('div', 'menu_button', 'Save');
+    const saveLock = el('div', 'menu_button', 'Save and lock');
+    const cancel = el('div', 'menu_button', 'Cancel');
+    save.addEventListener('click', () => keep(false));
+    saveLock.addEventListener('click', () => keep(true));
+    cancel.addEventListener('click', () => {
+        form.hidden = true;
+        row.hidden = false;
+    });
+    buttons.append(save, saveLock, cancel);
+    form.appendChild(buttons);
+    edit.addEventListener('click', () => {
+        form.hidden = false;
+        row.hidden = true;
+    });
+    row.append(edit, lock, lockAll);
+    box.append(row, form);
+    return box;
+}
+
 function itemStory(entry, item, index) {
     if (item.role && item.diff) {
         return `${entry.kind === 'set' && !entry.fromVideo ? 'This version' : 'Story'} (${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}): ${item.diff}`;
@@ -5306,11 +5608,12 @@ function versionsOnly(entry) {
     return entry.kind === 'set' && !entry.fromVideo;
 }
 
-function storyPrompt(entry, notes = '') {
+function storyPrompt(entry, notes = '', settled = '') {
     const versions = versionsOnly(entry);
+    const timed = v3On(entry);
     const items = entry.variants.map((item, index) => {
         const part = entry.fromVideo?.parts[index];
-        const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : '';
+        const hint = part ? ` (${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''})` : timed && item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', its last moment matches its first: it loops' : ''})` : '';
         const tags = (item.shows.length ? item.shows : item.tags.length ? item.tags : entry.tags).concat(item.added.filter(tag => !item.shows.includes(tag)));
         const fixed = item.fixes.length ? `\nThe user's correction (true): ${item.fixes.slice(-2).map(fix => fix.text).join('; ')}` : '';
         return `${versions ? 'Version' : 'Item'} ${index + 1}${hint}:\nTags: ${tags.join(', ').replace(/_/g, ' ') || 'none'}\n${item.description}${fixed}`;
@@ -5318,7 +5621,16 @@ function storyPrompt(entry, notes = '') {
     const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: entry.tags.join(', ').replace(/_/g, ' ') };
     const text = String((versions ? settings().versionsPrompt : settings().storyPrompt) || (versions ? DEFAULT_VERSIONS_PROMPT : DEFAULT_STORY_PROMPT)).replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
     const ruled = text.includes(NO_NAMES_RULE) ? text : `${text}\n\n${NO_NAMES_RULE}`;
-    return notes ? `${ruled}\n\nFix these in the story lines: ${notes}` : ruled;
+    const kept = settled ? `${ruled}\n\n${settled}` : ruled;
+    return notes ? `${kept}\n\nFix these in the story lines: ${notes}` : kept;
+}
+
+function lockedRoles(entry) {
+    return entry.variants.map((item, index) => (item.roleLock && item.role ? { item, index, role: { ...item.role }, diff: item.diff, edited: Boolean(item.diffEdited) } : null)).filter(Boolean);
+}
+
+function settledNote(locked) {
+    return locked.length ? `The user set these roles and intensities: keep them exactly as they are, and fit the other items around them:\n${locked.map(lock => `- Item ${lock.index + 1}: ${roleText(lock.role)}${lock.role.intensity ? `, intensity ${lock.role.intensity}/10` : ''}${lock.edited && lock.diff ? ` (its story line, written by the user: ${lock.diff})` : ''}`).join('\n')}` : '';
 }
 
 function parseStory(reply, count, versions) {
@@ -5353,7 +5665,8 @@ function parseStory(reply, count, versions) {
 
 async function writeStory(entry, notes = '', report = entry.report) {
     const count = entry.variants.length;
-    const asked = storyPrompt(entry, notes);
+    const locked = versionsOnly(entry) ? [] : lockedRoles(entry);
+    const asked = storyPrompt(entry, notes, settledNote(locked));
     const reply = await textAsk(asked, 200 + 130 * count);
     if (report) {
         report.storyReply = String(reply).slice(0, 4000);
@@ -5369,7 +5682,13 @@ async function writeStory(entry, notes = '', report = entry.report) {
         item.role = { main: line.main, sub: line.sub, ...(rating ? { intensity: rating.value, why: rating.why } : {}) };
         item.diff = line.text;
     });
-    entry.arc = versionsOnly(entry) ? '' : lines.shape || entry.variants.map(item => item.role?.main || '?').join(' → ');
+    locked.forEach(lock => {
+        lock.item.role = lock.role;
+        if (lock.edited) {
+            lock.item.diff = lock.diff;
+        }
+    });
+    entry.arc = versionsOnly(entry) ? '' : (!locked.length && lines.shape) || entry.variants.map(item => item.role?.main || '?').join(' → ');
     entry.variants.forEach(item => descriptions.set(item.url, describedVariant(entry, item)));
     return lines.size;
 }
@@ -6416,61 +6735,95 @@ function v3Entry(entry) {
     return v3On(entry) && entry.report?.framework === 'v3';
 }
 
-async function boardPicture(entry, item, blob) {
-    if (itemAnimated(entry, item) && typeof ImageDecoder === 'function') {
-        try {
-            let data = blob || null;
-            if (!data) {
-                const response = await fetch(item.url);
-                data = response.ok ? await response.blob() : null;
-            }
-            const format = data ? await sniffFormat(data) : '';
-            if (format && await isAnimated({ blob: data, format })) {
-                const decoder = new ImageDecoder({ data: new Uint8Array(await data.arrayBuffer()), type: format === 'gif' ? 'image/gif' : format === 'webp' ? 'image/webp' : 'image/png' });
-                const images = [];
-                try {
-                    await decoder.tracks.ready;
-                    await decoder.completed?.catch(() => {});
-                    const total = decoder.tracks.selectedTrack?.frameCount || 1;
-                    if (total > 1) {
-                        const wanted = Math.min(total, SHEET_FRAMES);
-                        const picks = [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (total - 1) / Math.max(1, wanted - 1))))];
-                        for (const frameIndex of picks) {
-                            images.push((await decoder.decode({ frameIndex })).image);
-                        }
-                        return { picture: await frameSheet(images, 768), moments: images.length };
-                    }
-                } finally {
-                    images.forEach(image => image.close?.());
-                    decoder.close?.();
-                }
-            }
-        } catch (error) {
-            console.warn('[Image Search] could not make a frame sheet for the look at the whole sequence', error);
-        }
+async function boardClip(entry, item, blob) {
+    if (!itemAnimated(entry, item) || typeof ImageDecoder !== 'function') {
+        return null;
     }
-    return { picture: await imageDataUrl(item.url, blob || null, 768), moments: 0 };
+    let data = blob || null;
+    if (!data) {
+        const response = await fetch(item.url);
+        data = response.ok ? await response.blob() : null;
+    }
+    const format = data ? await sniffFormat(data) : '';
+    if (!format || !await isAnimated({ blob: data, format })) {
+        return null;
+    }
+    const type = format === 'gif' ? 'image/gif' : format === 'webp' ? 'image/webp' : 'image/png';
+    const decoder = new ImageDecoder({ data: new Uint8Array(await data.arrayBuffer()), type });
+    try {
+        await decoder.tracks.ready;
+        await decoder.completed?.catch(() => {});
+        const count = decoder.tracks.selectedTrack?.frameCount || 1;
+        if (count < 2) {
+            return null;
+        }
+        const clip = await clipOf(item.url, data, decoder, count);
+        return { ...clip, data, type };
+    } finally {
+        decoder.close?.();
+    }
 }
 
-function boardPrompt(entry, batch, shown, tags, earlier) {
+async function boardSheets(clip, wanted) {
+    const decoder = new ImageDecoder({ data: new Uint8Array(await clip.data.arrayBuffer()), type: clip.type });
+    const images = [];
+    try {
+        await decoder.tracks.ready;
+        await decoder.completed?.catch(() => {});
+        for (const frameIndex of timedPicks(clip.delays, Math.max(1, Math.min(wanted, clip.frames)))) {
+            images.push((await decoder.decode({ frameIndex })).image);
+        }
+        return { pictures: await frameSheets(images, 768), moments: images.length, seconds: clip.seconds, loop: clip.loop };
+    } finally {
+        images.forEach(image => image.close?.());
+        decoder.close?.();
+    }
+}
+
+function boardFrames(clip) {
+    return clip ? Math.min(clip.frames, 32, framesForLength(clip.seconds)) : 1;
+}
+
+function boardPrompt(entry, batch, shown, tags, earlier, facts = '', again = '') {
     const count = entry.variants.length;
     const together = batch.length > 1;
+    const round = value => Math.round(value * 10) / 10;
     const timing = index => {
         const part = entry.fromVideo?.parts?.[index];
-        return part ? `, ${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''}` : '';
+        return part ? `${Math.max(0, part.start).toFixed(1)} s to ${Math.max(0, part.end).toFixed(1)} s of the video${PART_HINTS[part.kind] ? `, ${PART_HINTS[part.kind]}` : ''}` : '';
     };
-    const parts = batch.map((index, at) => `item ${index + 1} is picture ${at + 1}${shown[at].moments || timing(index) ? ` (${[shown[at].moments ? `an animation: ${shown[at].moments} moments in order on one sheet, numbered left to right, then top to bottom` : '', timing(index).replace(/^, /, '')].filter(Boolean).join('; ')})` : ''}`);
+    let next = 1;
+    const parts = batch.map((index, at) => {
+        const view = shown[at];
+        const size = view.pictures.length;
+        const from = next;
+        next += size;
+        const bits = [];
+        if (view.moments) {
+            bits.push(`an animation${view.seconds ? `, ${view.seconds} s long` : ''}: ${view.moments} moments in order${size > 1 ? ` across its ${size} pictures, numbered 1 to ${view.moments}` : ' on one sheet, numbered'}, left to right, then top to bottom${view.seconds && view.moments > 1 ? `, about ${round(view.seconds / view.moments)} s apart` : ''}`);
+        } else if (view.seconds) {
+            bits.push(`an animation, ${view.seconds} s long, shown here by its first moment only`);
+        }
+        if (view.loop) {
+            bits.push('its last moment matches its first almost exactly, so it most likely repeats as a loop');
+        }
+        if (timing(index)) {
+            bits.push(timing(index));
+        }
+        return `item ${index + 1} is ${size > 1 ? `pictures ${from} to ${from + size - 1}` : `picture ${from}`}${bits.length ? ` (${bits.join('; ')})` : ''}`;
+    });
+    const total = next - 1;
     const { matter } = rememberedTags();
     const hints = tagHintLines(tags.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length));
-    const tagPart = tags.length ? `\n\nThen, for each of the sequence's tags below, say which items show it or clear signs of it. Tags never match a picture word for word: close enough counts, and a tag can also name something happening or a known character. Answer none only when no item shows it.` : '';
-    const tagFormat = tags.length ? '\nTags:\na_tag: 1, 3\nanother_tag: none\n(one line for every tag below)' : '';
+    const tagPart = tags.length ? `\n\nThen, for each of the sequence's tags below, say ${together ? 'which items show it' : 'whether this item shows it'} or clear signs of it. Tags never match a picture word for word: close enough counts, and a tag can also name something happening or a known character. Answer none only when no item shows it.` : '';
+    const tagFormat = tags.length ? `\nTags:\na_tag: ${together ? '1, 3' : batch[0] + 1}\nanother_tag: none\n(one line for every tag below)` : '';
     const tagList = tags.length ? `\n\nThe sequence's tags:\n${tags.join('\n')}${hints.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints on how they show:\n${hints.join('\n')}` : ''}` : '';
     const opening = together
-        ? `You get ${batch.length} pictures, showing ${batch.length === count ? `all ${count} items` : `items ${batch[0] + 1} to ${batch[batch.length - 1] + 1}`} of one ${groupWhat(entry)}: ${parts.join('; ')}. Look at all of them together before you answer. You are the only one who sees the whole sequence at once: each item will then be described by someone who sees only that item, and they will rely on what you say.`
-        : `You get one picture: item ${batch[0] + 1} of one ${groupWhat(entry)}${parts[0].replace(/^item \d+ is picture 1/, '')}. Someone will describe it next and rely on what you say, so they know who is there and where this moment sits in the story.`;
+        ? `You get ${total} pictures, showing ${batch.length === count ? `all ${count} items` : `items ${batch[0] + 1} to ${batch[batch.length - 1] + 1}`} of one ${groupWhat(entry)}: ${parts.join('; ')}. Look at all of them together before you answer. You are the only one who sees the whole sequence at once: each item will then be described by someone who sees only that item, and they will rely on what you say.`
+        : `You get ${total === 1 ? 'one picture' : `${total} pictures`}: item ${batch[0] + 1} of one ${groupWhat(entry)}${parts[0].replace(/^item \d+ is pictures? [\d to]+/, '')}. Someone will describe it next and rely on what you say, so they know who is there and where this moment sits in the story.`;
     const ask = together ? 'For each item, give' : 'For this item, give';
     const peak = together ? '\nThen say which item is the emotional peak of the sequence: the most intense moment of emotion, not only of action.' : '';
-    return `${opening}${earlier ? `\n\nWhat was seen in the items before ${together ? 'these' : 'this one'}:\n${earlier}` : ''}\n\n${ask}:\n- Cast: everyone there, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows) and anyone from the other items who is most likely still there out of view (say so). A few words each, and the same words for the same person in every item (the girl in the yellow raincoat; a man, only his arm in view).\n- Beat: one sentence on what happens in this item and how it follows from the item before.${peak}${tagPart.replace('which items show it', together ? 'which items show it' : 'whether this item shows it')}\n\nReply in exactly this format and nothing else:\nItem ${batch[0] + 1} cast: ...\nItem ${batch[0] + 1} beat: ...\n${together ? `Item ${batch[1] + 1} cast: ...\nItem ${batch[1] + 1} beat: ...\nPeak: item N, because ...` : ''}${together ? tagFormat : tagFormat.replace('a_tag: 1, 3', `a_tag: ${batch[0] + 1}`)}${tagList}\n\n${NO_NAMES_RULE}`;
+    return `${opening}${facts ? `\n\n${facts}` : ''}${again ? `\n\n${again}` : ''}${earlier ? `\n\nWhat was seen in the items before ${together ? 'these' : 'this one'}:\n${earlier}` : ''}\n\n${ask}:\n- Cast: everyone there, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows) and anyone from the other items who is most likely still there out of view (say so). A few words each, and the same words for the same person in every item (the girl in the yellow raincoat; a man, only his arm in view).\n- Beat: one sentence on what happens in this item and how it follows from the item before.${peak}${tagPart}\n\nReply in exactly this format and nothing else:\nItem ${batch[0] + 1} cast: ...\nItem ${batch[0] + 1} beat: ...\n${together ? `Item ${batch[1] + 1} cast: ...\nItem ${batch[1] + 1} beat: ...\nPeak: item N, because ...` : ''}${tagFormat}${tagList}\n\n${NO_NAMES_RULE}`;
 }
 
 function readBoard(reply, batch, tags) {
@@ -6525,32 +6878,59 @@ function readBoard(reply, batch, tags) {
     return { items, peak, found };
 }
 
-async function lookAtBoard(entry, blobs, tags, report) {
+async function lookAtBoard(entry, blobs, tags, report, facts = '', again = '') {
     const items = entry.variants;
-    const shown = [];
+    const clips = [];
     for (const [index, item] of items.entries()) {
         try {
-            shown[index] = await boardPicture(entry, item, blobs[index]);
+            clips[index] = await boardClip(entry, item, blobs[index]);
         } catch (error) {
-            shown[index] = null;
-            report.errors.push(`The whole sequence, picture of item ${index + 1}: ${error?.message || error}`);
+            clips[index] = null;
+            console.warn('[Image Search] could not read the GIF for the look at the whole sequence', error);
+        }
+        if (clips[index]) {
+            item.clip = { seconds: clips[index].seconds, frames: clips[index].frames, loop: clips[index].loop };
         }
     }
-    const ready = items.map((item, index) => index).filter(index => shown[index]);
     const per = maxPictures();
     const batches = [];
-    for (let start = 0; start < ready.length; start += per) {
-        batches.push(ready.slice(start, start + per));
+    for (let start = 0; start < items.length; start += per) {
+        batches.push(items.slice(start, start + per).map((item, at) => start + at));
     }
+    const still = async index => ({ pictures: [await imageDataUrl(items[index].url, blobs[index] || null, 768)], moments: 0, seconds: clips[index]?.seconds || 0, loop: Boolean(clips[index]?.loop) });
+    const view = async (index, sheets) => {
+        if (!clips[index]) {
+            return still(index);
+        }
+        try {
+            return await boardSheets(clips[index], Math.min(boardFrames(clips[index]), sheets * SHEET_FRAMES));
+        } catch (error) {
+            console.warn('[Image Search] could not make the frame sheets for the look at the whole sequence', error);
+            return still(index);
+        }
+    };
+    const plan = batch => {
+        const sheets = new Map(batch.map(index => [index, 1]));
+        const want = index => Math.ceil(boardFrames(clips[index]) / SHEET_FRAMES);
+        let spare = per - batch.length;
+        while (spare > 0) {
+            const next = batch.filter(index => sheets.get(index) < want(index)).sort((a, b) => (want(b) - sheets.get(b)) - (want(a) - sheets.get(a)) || (clips[b]?.seconds || 0) - (clips[a]?.seconds || 0))[0];
+            if (next === undefined) {
+                break;
+            }
+            sheets.set(next, sheets.get(next) + 1);
+            spare -= 1;
+        }
+        return sheets;
+    };
     const found = new Map(tags.map(tag => [tag, new Set()]));
     const replies = [];
     let stills = false;
     let single = false;
     const earlierThan = first => items.slice(0, first).map((item, index) => (item.cast || item.beat ? `Item ${index + 1}: ${[item.cast, item.beat].filter(Boolean).join('; ')}` : '')).filter(Boolean).join('\n');
-    const ask = async (batch, still) => {
-        const views = still ? await Promise.all(batch.map(async index => ({ picture: await imageDataUrl(items[index].url, blobs[index] || null, 768), moments: 0 }))) : batch.map(index => shown[index]);
+    const ask = async (batch, views) => {
         report.cost.vision += 1;
-        return visionAsk(boardPrompt(entry, batch, views, tags, earlierThan(batch[0])), views.map(view => view.picture), 160 + 120 * batch.length + 14 * tags.length, 0.2);
+        return visionAsk(boardPrompt(entry, batch, views, tags, earlierThan(batch[0]), facts, again), views.flatMap(seen => seen.pictures), 160 + 120 * batch.length + 14 * tags.length, 0.2);
     };
     const take = (reply, batch) => {
         replies.push(reply);
@@ -6566,15 +6946,20 @@ async function lookAtBoard(entry, blobs, tags, report) {
         read.found.forEach((numbers, tag) => numbers.forEach(number => found.get(tag)?.add(number)));
     };
     for (const batch of batches) {
+        const sheets = plan(batch);
+        const views = [];
+        for (const index of batch) {
+            views.push(await view(index, sheets.get(index)));
+        }
         let reply = '';
         let failure = null;
         try {
-            reply = await ask(batch, false);
+            reply = await ask(batch, views);
         } catch (error) {
-            const still = batch.some(index => shown[index]?.moments);
+            const moving = views.some(seen => seen.moments || seen.pictures.length > 1);
             try {
-                reply = await ask(batch, still);
-                stills = stills || still;
+                reply = await ask(batch, moving ? await Promise.all(batch.map(still)) : views);
+                stills = stills || moving;
             } catch (again) {
                 failure = again;
             }
@@ -6587,7 +6972,7 @@ async function lookAtBoard(entry, blobs, tags, report) {
             let any = false;
             for (const index of batch) {
                 try {
-                    take(await ask([index], false), [index]);
+                    take(await ask([index], [await view(index, Math.min(per, Math.ceil(boardFrames(clips[index]) / SHEET_FRAMES)))]), [index]);
                     any = true;
                 } catch (error) {
                     failure = error;
@@ -6600,9 +6985,84 @@ async function lookAtBoard(entry, blobs, tags, report) {
         }
         report.errors.push(`The whole sequence: ${failure?.message || failure}`);
     }
-    report.boardReply = replies.join('\n\n').slice(0, 4000);
+    report.boardReply = [report.boardReply, ...replies].filter(Boolean).join('\n\n').slice(-4000);
     report.steps.board = !replies.length ? 'failed' : single ? 'one by one' : stills ? 'stills only' : 'on';
     return replies.length ? found : null;
+}
+
+const FEMALE_TAG = /^(\d+\+?girls?|multiple_girls|female_focus|yuri|mature_female|female_child|genderswap_\(mtf\)|girl|woman|women|female)$/;
+const MALE_TAG = /^(\d+\+?boys?|multiple_boys|male_focus|yaoi|mature_male|male_child|genderswap_\(ftm\)|boy|man|men|male|otoko_no_ko|trap|femboy|bishounen)$/;
+const FEMALE_WORDS = /\b(girls?|wom[ae]n|she|her|hers|herself|lady|ladies|female|kunoichi|maiden)\b/i;
+const MALE_WORDS = /\b(boys?|m[ae]n|he|him|his|himself|guy|male)\b/i;
+
+function genderFacts(tags, characters = null) {
+    const list = (tags || []).map(normalizeTag);
+    const female = list.some(tag => FEMALE_TAG.test(tag)) || characters?.female > 0;
+    const male = list.some(tag => MALE_TAG.test(tag)) || characters?.male > 0;
+    const unlike = list.filter(tag => /^(otoko_no_ko|trap|femboy|crossdressing|androgynous|bishounen|reverse_trap|tomboy)$/.test(tag));
+    const count = peopleHint(list);
+    const lines = [];
+    if (count) {
+        lines.push(`The site's tags count: ${count}.`);
+    }
+    if (characters && (characters.male || characters.female)) {
+        lines.push(`The characters the tags name are, from the site's wiki: ${[characters.male ? `${characters.male} male` : '', characters.female ? `${characters.female} female` : ''].filter(Boolean).join(' and ')}. Never use their names.`);
+    }
+    if (male && !female) {
+        lines.push('No tag counts a girl or a woman: everyone the tags count is male. Someone who looks feminine (long hair, a slim build, a pretty face, a dress) is most likely one of the boys, androgynous or feminine-looking: call him he, unless the picture clearly shows a girl the tags missed.');
+    } else if (female && !male) {
+        lines.push('No tag counts a boy or a man: everyone the tags count is female. Someone who looks boyish (short hair, a broad build, plain clothes) is most likely one of the girls: call her she, unless the picture clearly shows a boy the tags missed.');
+    }
+    if (unlike.length) {
+        lines.push(`The tags ${unlike.join(', ').replace(/_/g, ' ')} say someone's looks do not match their gender: go by the tags for who is male or female, not by looks.`);
+    }
+    return { onlyMale: male && !female, onlyFemale: female && !male, text: lines.length ? `Facts from the site's tags (trust them over a first impression):\n${lines.join('\n')}` : '' };
+}
+
+function genderClash(text, facts) {
+    const value = String(text || '');
+    const [wrong, right] = facts?.onlyMale ? [FEMALE_WORDS, MALE_WORDS] : facts?.onlyFemale ? [MALE_WORDS, FEMALE_WORDS] : [null, null];
+    const found = wrong ? value.match(wrong) : null;
+    return found && !right.test(value) ? found[0] : '';
+}
+
+function genderProblem(word, facts) {
+    return facts.onlyMale
+        ? `It calls someone "${word}", but no tag counts a girl or a woman and everyone the tags count is male: that person is most likely one of the boys, androgynous or feminine-looking. Describe him as he, unless the picture clearly shows a girl the tags missed.`
+        : `It calls someone "${word}", but no tag counts a boy or a man and everyone the tags count is female: that person is most likely one of the girls. Describe her as she, unless the picture clearly shows a boy the tags missed.`;
+}
+
+async function characterGenders(tags, site = '') {
+    const s = settings();
+    const day = 24 * 3600 * 1000;
+    const known = s.characterGender && typeof s.characterGender === 'object' ? s.characterGender : {};
+    const unknown = tags.filter(tag => !known[tag] || Date.now() - (Number(known[tag].at) || 0) > 90 * day).slice(0, 40);
+    if (unknown.length) {
+        const own = siteEntries().find(entry => entry.domain === site);
+        const engineName = own ? await engineOf(own, unknown).catch(() => '') : '';
+        const origin = `https://${own && (engineName === 'danbooru' || engineName === 'e621') ? own.domain : 'danbooru.donmai.us'}`;
+        const next = { ...known };
+        const listed = await request(`${origin}/tags.json?search%5Bname_comma%5D=${encodeURIComponent(unknown.join(','))}&search%5Bcategory%5D=4&limit=50`);
+        const characters = new Set((Array.isArray(listed?.data) ? listed.data : []).map(tag => normalizeTag(tag?.name || '')).filter(tag => unknown.includes(tag)));
+        unknown.filter(tag => !characters.has(tag)).forEach(tag => {
+            next[tag] = { g: '', at: Date.now() };
+        });
+        await eachLimit([...characters].slice(0, 8), 2, async tag => {
+            try {
+                const wiki = await request(`${origin}/wiki_pages/${encodeURIComponent(tag)}.json`);
+                const body = String(wiki?.data?.body || '').slice(0, 3000).toLowerCase();
+                const he = (body.match(/\b(he|him|his|himself)\b/g) || []).length;
+                const she = (body.match(/\b(she|her|hers|herself)\b/g) || []).length;
+                next[tag] = { g: he >= 2 && he >= 2 * she ? 'male' : she >= 2 && she >= 2 * he ? 'female' : '?', at: Date.now() };
+            } catch (error) {
+                next[tag] = { g: '?', at: Date.now() };
+            }
+        });
+        s.characterGender = Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 400));
+        save();
+    }
+    const now = s.characterGender || {};
+    return { male: tags.filter(tag => now[tag]?.g === 'male').length, female: tags.filter(tag => now[tag]?.g === 'female').length };
 }
 
 function boardLines(entry, index) {
@@ -6662,7 +7122,10 @@ function readChecked(raw, verify) {
 async function v3Describe(entry, index, blob, { problems = [], roleFix = null, verify = [] } = {}, report = null) {
     const item = entry.variants[index];
     const before = index > 0 ? entry.variants[index - 1] : null;
-    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}.` : ''}`];
+    const context = [`This picture is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}${item.roleLock ? ' (set by the user)' : ''}.` : ''}`];
+    if (report?.facts) {
+        context.push(report.facts);
+    }
     const board = boardLines(entry, index);
     if (board) {
         context.push(board);
@@ -6691,7 +7154,10 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     if (report) {
         report.cost.vision += 1;
     }
-    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true });
+    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true, timed: true });
+    if (parsed.clip) {
+        item.clip = { seconds: parsed.clip.seconds, frames: parsed.clip.frames, loop: parsed.clip.loop };
+    }
     let result = parsed;
     let checked = { kept: [], left: [], said: false };
     if (verify.length) {
@@ -6708,14 +7174,14 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     return checked;
 }
 
-function v3ReviewPrompt(entry) {
-    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:`, `First look at the whole sequence: ${[item.cast ? `who is there: ${item.cast}` : '', item.beat ? `what happens: ${item.beat}` : ''].filter(Boolean).join('; ') || 'none'}`, `Tags: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
-    return `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Someone first looked at all the items together and said who is there and what happens in each; then each item was described by someone looking at it, who was told what that first look saw. For each item you get that first look, its tags, its description, and its role and story line.${entry.arc ? ` The shape given to the sequence: ${entry.arc}.` : ''}\n\nLook for these problems:\n- the description and the first look disagree on who is there or what happens (one of them may be wrong: say what differs, and the picture will be looked at again);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- a person count that drops from one item to the next with nothing to explain it (someone hidden or out of view still counts);\n- a person or character called by a name in a description or story line (they must be he, she, they or described);\n- a story line that its description does not support (the roles and intensities are settled and correct: never question them).\nTags never match a picture word for word: never report a tag that a description leaves out. Only report real problems; most items have none.\n\nThen write an overview of the whole sequence: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with a story line, and "description" for the rest.\n\n${blocks}`;
+function v3ReviewPrompt(entry, facts = '') {
+    const blocks = entry.variants.map((item, index) => [`Item ${index + 1}:${item.clip?.seconds ? ` (a GIF, ${item.clip.seconds} s long${item.clip.loop ? ', loops' : ''})` : ''}`, `First look at the whole sequence: ${[item.cast ? `who is there: ${item.cast}` : '', item.beat ? `what happens: ${item.beat}` : ''].filter(Boolean).join('; ') || 'none'}`, `Tags: ${item.shows.join(', ').replace(/_/g, ' ') || 'none'}`, item.description, item.role ? `Role: ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}\nStory line: ${item.diff || 'not given'}` : ''].filter(Boolean).join('\n')).join('\n\n');
+    return `You are checking the descriptions of the ${entry.variants.length} items of one ${groupWhat(entry)}. Someone first looked at all the items together and said who is there and what happens in each; then each item was described by someone looking at it, who was told what that first look saw. For each item you get that first look, its tags, its description, and its role and story line.${entry.arc ? ` The shape given to the sequence: ${entry.arc}.` : ''}\n\nLook for these problems:\n- the description and the first look disagree on who is there or what happens (one of them may be wrong: say what differs, and the picture will be looked at again);\n- the same person or thing described differently between items (hair, eyes, skin, clothing) with nothing in the story lines to explain it;\n- a person count that drops from one item to the next with nothing to explain it (someone hidden or out of view still counts);\n- a person or character called by a name in a description or story line (they must be he, she, they or described);\n- a story line that its description does not support (the roles and intensities are settled and correct: never question them).\nTags never match a picture word for word: never report a tag that a description leaves out. Only report real problems; most items have none.\n\nThen write an overview of the whole sequence: 1 to 2 sentences on who is in it and what happens from the first item to the last, without names.${facts ? `\n\n${facts}` : ''}\n\nReply with only JSON like this:\n{"overview": "...", "keywords": ["...", "..."], "problems": [{"item": 2, "about": "description", "problem": "..."}]}\nUse "about": "story" for a problem with a story line, and "description" for the rest.\n\n${blocks}`;
 }
 
 async function v3Review(entry, report) {
     report.cost.text += 1;
-    const data = jsonIn(await textAsk(v3ReviewPrompt(entry), 300 + 80 * entry.variants.length));
+    const data = jsonIn(await textAsk(v3ReviewPrompt(entry, report.facts || ''), 300 + 80 * entry.variants.length));
     if (!data) {
         throw new Error('the check gave no readable answer');
     }
@@ -6756,23 +7222,40 @@ async function describeSequence(entry, blobs = []) {
         item.seen = [];
         item.cast = '';
         item.beat = '';
-        item.role = null;
-        item.diff = '';
+        if (!item.roleLock) {
+            item.role = null;
+        }
+        if (!item.roleLock || !item.diffEdited) {
+            item.diff = '';
+        }
     });
     entry.arc = '';
-    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 } };
+    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 }, facts: '', gender: null };
     const checkable = checkableTags(entry);
     const ordered = list => checkable.filter(tag => list.includes(tag));
     try {
         const { matter } = rememberedTags();
         const hinted = checkable.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length);
+        const characters = await Promise.race([characterGenders(checkable, entry.site), new Promise(done => setTimeout(() => done(null), 8000))]).catch(() => null);
+        const facts = genderFacts(entry.tags, characters);
+        report.facts = facts.text;
         if (hinted.length) {
             await Promise.race([ensureDefinitions(hinted, entry.site), new Promise(done => setTimeout(done, 15000))]).catch(() => null);
         }
         groupStep(entry, `Looking at all ${count} items together…`);
         let seen = null;
         try {
-            seen = await lookAtBoard(entry, blobs, checkable, report);
+            seen = await lookAtBoard(entry, blobs, checkable, report, facts.text);
+            const clash = items.map((item, index) => ({ index, word: genderClash(`${item.cast} ${item.beat}`, facts) })).filter(found => found.word);
+            if (seen && clash.length) {
+                report.gender = { word: clash[0].word, board: 'asked again', items: [] };
+                const again = `Your first answer called someone "${clash[0].word}" (item ${clash.map(found => found.index + 1).join(', ')}), but ${facts.onlyMale ? 'no tag counts a girl or a woman, and everyone the tags count is male' : 'no tag counts a boy or a man, and everyone the tags count is female'}. Look again: that person is most likely ${facts.onlyMale ? 'one of the boys, androgynous or feminine-looking' : 'one of the girls'}. Answer again in the same format, for every item.`;
+                const second = await lookAtBoard(entry, blobs, checkable, report, facts.text, again).catch(() => null);
+                if (second) {
+                    seen = second;
+                }
+                report.gender.board = items.some(item => genderClash(`${item.cast} ${item.beat}`, facts)) ? 'asked again, still says so' : 'asked again, fixed';
+            }
         } catch (error) {
             report.errors.push(`The whole sequence: ${error?.message || error}`);
             report.steps.board = 'failed';
@@ -6924,6 +7407,13 @@ async function describeSequence(entry, blobs = []) {
         verify.forEach((list, index) => {
             need(index).verify = list;
         });
+        items.forEach((item, index) => {
+            const word = genderClash(item.description, facts);
+            if (word && !item.lock) {
+                need(index).problems.push(genderProblem(word, facts));
+                report.gender = { board: '', ...(report.gender || {}), word: report.gender?.word || word, items: [...(report.gender?.items || []), index + 1] };
+            }
+        });
         const redone = new Set();
         for (const [index, asks] of [...work].sort((a, b) => a[0] - b[0])) {
             const item = items[index];
@@ -6962,6 +7452,11 @@ async function describeSequence(entry, blobs = []) {
         });
         report.problems = problems.map(problem => ({ ...problem, redone: problem.about === 'story' ? storied : redone.has(problem.item) }));
         const storyNotes = problems.filter(problem => problem.about === 'story').map(problem => `item ${problem.item}: ${problem.problem}`);
+        const storyClash = items.map((item, index) => ({ number: index + 1, word: genderClash(item.diff, facts) })).filter(found => found.word);
+        if (storyClash.length) {
+            storyNotes.push(`the story lines of item ${storyClash.map(found => found.number).join(', ')} call someone "${storyClash[0].word}", but ${facts.onlyMale ? 'everyone the tags count is male: use he for that person' : 'everyone the tags count is female: use she for that person'}.`);
+            report.gender = { board: '', items: [], ...(report.gender || {}), word: report.gender?.word || storyClash[0].word, story: true };
+        }
         if (storied && (redone.size || storyNotes.length)) {
             groupStep(entry, 'Story again: rewriting the story lines, roles kept…');
             try {
@@ -8156,6 +8651,16 @@ function groupReportBox(entry, current) {
     }
     if (v3 && report.cost) {
         lines.push(`This run: ${report.cost.vision + report.cost.text} requests (${report.cost.vision} vision, ${report.cost.text} text), ${report.cost.seconds} s`);
+    }
+    if (report.facts) {
+        lines.push(report.facts.replace(/\n/g, ' '));
+    }
+    if (report.gender?.word) {
+        lines.push(`Gender check: "${report.gender.word}" goes against the tags${[report.gender.board ? `; the look at the whole sequence was ${report.gender.board}` : '', report.gender.items.length ? `; item ${report.gender.items.join(', ')} looked at again` : '', report.gender.story ? '; story lines rewritten' : ''].join('')}`);
+    }
+    const timed = entry.variants.filter(item => item.clip?.seconds);
+    if (v3 && timed.length) {
+        lines.push(`GIF lengths: ${entry.variants.map((item, index) => (item.clip?.seconds ? `item ${index + 1} ${item.clip.seconds} s${item.clip.loop ? ' (loops)' : ''}` : '')).filter(Boolean).join(', ')}`);
     }
     const owned = Object.entries(report.owned || {});
     if (owned.length) {
@@ -12977,8 +13482,11 @@ async function openPicker(initialTags = null, focus = null) {
             }
             if (owner && member.role) {
                 const waiting = member.deduced?.some(d => !owner.report?.deduced?.[d.tag]?.confirmed);
-                const label = el('span', 'stis-variant-role', `${waiting ? '⚠ ' : ''}${member.role.main}${member.role.intensity ? ` · ${member.role.intensity}` : ''}`);
-                label.title = `${roleText(member.role)}${member.role.intensity ? `, intensity ${member.role.intensity}/10` : ''}${waiting ? ' · has a deduced tag to check' : ''}`;
+                const label = el('span', `stis-variant-role${member.roleLock ? ' stis-variant-role-locked' : ''}`, `${waiting ? '⚠ ' : ''}${member.role.main}${member.role.intensity ? ` · ${member.role.intensity}` : ''}`);
+                if (member.roleLock) {
+                    label.prepend(el('i', 'fa-solid fa-lock'));
+                }
+                label.title = `${roleText(member.role)}${member.role.intensity ? `, intensity ${member.role.intensity}/10` : ''}${member.roleLock ? ' · locked by you' : ''}${waiting ? ' · has a deduced tag to check' : ''}`;
                 wrap.appendChild(label);
                 wrap.classList.add('stis-variant-wrap-role');
             }
@@ -14061,6 +14569,9 @@ async function openPicker(initialTags = null, focus = null) {
             }
             if (current.deduced.length) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-deduced', `Deduced, not seen: ${current.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}`));
+            }
+            if (sequence && current.role) {
+                desc.appendChild(roleEditor(entry, current, () => showEntry(entry, current)));
             }
         } else {
             desc.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));

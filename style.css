@@ -2067,3 +2067,37 @@ video.stis-preview-img {
     margin: 0;
     padding: 2px 4px;
 }
+
+.stis-role-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.stis-role-lock-state {
+    opacity: 0.8;
+}
+
+.stis-variant-role-locked .fa-lock {
+    font-size: 0.75em;
+    margin-right: 3px;
+}
+
+.stis-role-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0;
+}
+
+.stis-role-form .text_pole {
+    margin: 0;
+    width: 100%;
+}
+
+.stis-role-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}

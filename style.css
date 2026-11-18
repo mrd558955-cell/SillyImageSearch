@@ -2133,3 +2133,10 @@ video.stis-preview-img {
 .stis-role-locked .fa-lock {
     margin-right: 4px;
 }
+
+.stis-sent-prompt-text {
+    white-space: pre-wrap;
+    font-size: 0.85em;
+    max-height: 50vh;
+    overflow-y: auto;
+}

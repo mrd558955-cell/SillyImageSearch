@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.56.2';
+const VERSION = '2.56.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4611,8 +4611,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
             ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
             : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
         const length = set.clip ? ` ${clipWords(set.clip, set.count)}` : '';
-        const reply = await ask(`This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
-        rememberSent(url, 'describe', sentView(set));
+        const text = `This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`;
+        const reply = await ask(text, set);
+        rememberSent(url, 'describe', { ...sentView(set), prompt: text });
         return reply;
     };
     if (frames?.count > 1) {
@@ -4633,7 +4634,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     if (!raw) {
         const still = await imageDataUrl(url, blob);
         raw = await ask(prompt, [still]);
-        rememberSent(url, 'describe', { pictures: [still], moments: 0, seconds: frames?.clip?.seconds || 0 });
+        rememberSent(url, 'describe', { pictures: [still], moments: 0, seconds: frames?.clip?.seconds || 0, prompt });
     }
     const parsed = parseDescription(raw);
     parsed.raw = raw;
@@ -5593,6 +5594,13 @@ function sentPanel(entry, item) {
             image.alt = title;
             wrap.appendChild(image);
         });
+        const said = el('details', 'stis-sent-prompt');
+        said.appendChild(el('summary', '', 'The prompt sent with these pictures'));
+        said.appendChild(el('div', 'stis-entry-text stis-sent-prompt-text', view.prompt || 'The prompt is only kept for pictures sent since SillyTavern was opened (the last 12). Describe this item again to see it.'));
+        if (view.together > view.pictures.length) {
+            said.appendChild(el('small', 'stis-sent-moments', `It was sent with ${view.together} pictures in all: this item's pictures above, and the other items' pictures.`));
+        }
+        wrap.appendChild(said);
         const answer = el('div', 'stis-sent-answer');
         answer.appendChild(el('small', 'stis-sent-moments', 'Asking the vision model with these pictures only…'));
         wrap.appendChild(answer);
@@ -7068,8 +7076,9 @@ async function lookAtBoard(entry, blobs, tags, report, facts = '', again = '') {
     const earlierThan = first => items.slice(0, first).map((item, index) => (item.cast || item.beat ? `Item ${index + 1}: ${[item.cast, item.beat].filter(Boolean).join('; ')}` : '')).filter(Boolean).join('\n');
     const ask = async (batch, views) => {
         report.cost.vision += 1;
-        batch.forEach((index, at) => rememberSent(items[index].url, 'board', views[at]));
-        return visionAsk(boardPrompt(entry, batch, views, tags, earlierThan(batch[0]), facts, again), views.flatMap(seen => seen.pictures), 160 + 120 * batch.length + 14 * tags.length, 0.2);
+        const text = boardPrompt(entry, batch, views, tags, earlierThan(batch[0]), facts, again);
+        batch.forEach((index, at) => rememberSent(items[index].url, 'board', { ...views[at], prompt: text, together: views.flatMap(seen => seen.pictures).length }));
+        return visionAsk(text, views.flatMap(seen => seen.pictures), 160 + 120 * batch.length + 14 * tags.length, 0.2);
     };
     const take = (reply, batch) => {
         replies.push(reply);

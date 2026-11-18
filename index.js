@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.59.2';
+const VERSION = '2.59.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -119,6 +119,7 @@ const DEFAULTS = {
     leadPrompt: '',
     inlinePictures: true,
     keepLibraryFiles: true,
+    libAnimate: true,
     pickMix: true,
     describeRules: '',
     boardNote: '',
@@ -2528,6 +2529,7 @@ function waitFor(target, event, ms = 8000) {
 }
 
 const THUMB_SHORT = 300;
+const LIB_PLAYING = 6;
 const THUMB_LONG = 900;
 const thumbs = { db: null, made: new Map(), queue: [], running: 0 };
 
@@ -2642,11 +2644,12 @@ function showThumb(img, url) {
         return;
     }
     thumbFor(url).then(src => {
-        if (img.dataset.full === url) {
+        img.dataset.thumb = src;
+        if (img.dataset.full === url && !img.dataset.playing) {
             img.src = src;
         }
     }).catch(error => {
-        if (img.dataset.full === url && error?.message !== 'closed') {
+        if (img.dataset.full === url && error?.message !== 'closed' && !img.dataset.playing) {
             img.src = url;
         }
     });
@@ -13614,6 +13617,7 @@ async function openPicker(initialTags = null, focus = null) {
     let previewState = null;
     let libraryOrder = [];
     let libLazy = null;
+    let libPlay = null;
     const libFilter = new Set();
     let libMoreOpen = false;
     let reps = [];
@@ -16313,6 +16317,42 @@ async function openPicker(initialTags = null, focus = null) {
                 }
             });
         }, { root: ui.libGrid, rootMargin: '600px 0px' }) : null;
+        libPlay?.disconnect();
+        const playing = new Set();
+        const waiting = new Set();
+        const play = img => {
+            img.dataset.playing = '1';
+            img.src = img.dataset.full;
+            playing.add(img);
+        };
+        const stop = img => {
+            delete img.dataset.playing;
+            if (img.dataset.thumb) {
+                img.src = img.dataset.thumb;
+            }
+        };
+        libPlay = s.libAnimate !== false && typeof IntersectionObserver === 'function' ? new IntersectionObserver(seen => {
+            seen.forEach(item => {
+                const img = item.target;
+                if (item.isIntersecting) {
+                    if (playing.size < LIB_PLAYING) {
+                        play(img);
+                    } else {
+                        waiting.add(img);
+                    }
+                    return;
+                }
+                waiting.delete(img);
+                if (playing.delete(img)) {
+                    stop(img);
+                    const next = waiting.values().next().value;
+                    if (next) {
+                        waiting.delete(next);
+                        play(next);
+                    }
+                }
+            });
+        }, { root: ui.libGrid, threshold: 0.4 }) : null;
         for (const entry of libraryOrder) {
             const cell = el('div', 'stis-cell');
             const img = el('img');
@@ -16328,7 +16368,11 @@ async function openPicker(initialTags = null, focus = null) {
             cell.title = shortDescription(entry);
             cell.dataset.entry = entry.id;
             cell.appendChild(img);
-            if (entry.animated || entry.variants.some(item => itemAnimated(entry, item))) {
+            const moves = entry.animated || itemAnimated(entry, entry);
+            if (moves && libPlay) {
+                libPlay.observe(img);
+            }
+            if (!libPlay && (moves || entry.variants.some(item => itemAnimated(entry, item)))) {
                 const moving = el('span', 'stis-anim-badge');
                 moving.appendChild(el('i', 'fa-solid fa-play'));
                 moving.title = 'Animated (GIF): it plays in the preview';
@@ -16694,6 +16738,7 @@ async function openPicker(initialTags = null, focus = null) {
             closed = true;
             state.pickerOpen = false;
             libLazy?.disconnect();
+            libPlay?.disconnect();
             dropThumbJobs();
             lengthWatch.disconnect();
             lengthQueue.length = 0;
@@ -16956,6 +17001,7 @@ function buildSettings() {
                     <div class="stis-section-body">
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures</span></label><small class="stis-help">Into SillyTavern. Needs the CORS proxy or the image fetcher.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep them in the library</span></label></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_lib_animate"> <span>Play GIFs in the library</span></label><small class="stis-help">Only the ones on screen play (6 at most); the others show a small still copy, so a big library does not run the phone out of memory. Off: still copies only, with a play badge, the lightest.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep_files"> <span>Keep library files when a picture is deleted from a message</span></label><small class="stis-help">SillyTavern's "Delete media from message?" ticks "Also delete files from server" by default. On: it is unticked when the message has a picture from your library, so the library keeps its file (tick it to delete anyway). If a library file is gone, open the picture on its site in the picker and tap "Download again": it comes back with its description.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures to messages</span></label><small class="stis-help">So vision models can see them.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>Find tags for tag-poor pictures</span></label><small class="stis-help">When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites (and on Danbooru when your Danbooru account is set) and take their tags before describing it. It searches the artist with each other tag, compares 4 frames of a GIF, then asks the vision model for a few specific tags to try.</small></div>
@@ -17243,6 +17289,7 @@ function buildSettings() {
     bind('st_imagesearch_describe', 'describe', 'checked');
     bind('st_imagesearch_keep', 'keepLibrary', 'checked');
     bind('st_imagesearch_keep_files', 'keepLibraryFiles', 'checked');
+    bind('st_imagesearch_lib_animate', 'libAnimate', 'checked');
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');

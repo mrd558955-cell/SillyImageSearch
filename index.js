@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.55.0';
+const VERSION = '2.56.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4112,6 +4112,7 @@ async function animationFrames(url, blob = null, most = 0, options = {}) {
                 sheet.count = images.length;
                 sheet.sheet = true;
                 sheet.clip = clip;
+                Object.assign(sheet, { picks, total: count, times: clip ? picks.map(pick => frameStarts(clip.delays)[pick]) : null });
                 return sheet;
             } finally {
                 images.forEach(image => image.close?.());
@@ -4125,6 +4126,7 @@ async function animationFrames(url, blob = null, most = 0, options = {}) {
         }
         frames.count = frames.length;
         frames.clip = clip;
+        Object.assign(frames, { picks, total: count, times: clip ? picks.map(pick => frameStarts(clip.delays)[pick]) : null });
         return frames;
     } finally {
         decoder.close?.();
@@ -4178,6 +4180,34 @@ function gifDelays(bytes) {
         }
     }
     return delays.length ? delays : null;
+}
+
+function frameStarts(delays) {
+    const starts = [];
+    let time = 0;
+    (delays || []).forEach(delay => {
+        starts.push(Math.round(time * 10) / 10);
+        time += delay;
+    });
+    return starts;
+}
+
+const sentPictures = new Map();
+
+function rememberSent(url, part, view) {
+    if (!url || !view?.pictures?.length) {
+        return;
+    }
+    const known = sentPictures.get(url) || {};
+    sentPictures.delete(url);
+    sentPictures.set(url, { ...known, [part]: { ...view, pictures: [...view.pictures], at: Date.now() } });
+    while (sentPictures.size > 12) {
+        sentPictures.delete(sentPictures.keys().next().value);
+    }
+}
+
+function sentView(set) {
+    return { pictures: [...set], moments: set.count || set.length, times: set.times || null, picks: set.picks || null, total: set.total || 0, seconds: set.clip?.seconds || 0, loop: Boolean(set.clip?.loop) };
 }
 
 function framesForLength(seconds) {
@@ -4581,7 +4611,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
             ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
             : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
         const length = set.clip ? ` ${clipWords(set.clip, set.count)}` : '';
-        return ask(`This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
+        const reply = await ask(`This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
+        rememberSent(url, 'describe', sentView(set));
+        return reply;
     };
     if (frames?.count > 1) {
         try {
@@ -4599,7 +4631,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         }
     }
     if (!raw) {
-        raw = await ask(prompt, [await imageDataUrl(url, blob)]);
+        const still = await imageDataUrl(url, blob);
+        raw = await ask(prompt, [still]);
+        rememberSent(url, 'describe', { pictures: [still], moments: 0, seconds: frames?.clip?.seconds || 0 });
     }
     const parsed = parseDescription(raw);
     parsed.raw = raw;
@@ -5499,6 +5533,68 @@ function missedPrompt(base, missed, item, asked, why = {}) {
 
 function roleText(role) {
     return role ? [role.main, role.sub].filter(Boolean).join(', ') : '';
+}
+
+async function rebuildSent(entry, item) {
+    const out = { ...(sentPictures.get(item.url) || {}) };
+    if (!out.describe) {
+        const frames = await animationFrames(item.url, null, 0, v3Entry(entry) ? { timed: true } : {}).catch(() => null);
+        out.describe = frames?.count > 1 ? { ...sentView(frames), rebuilt: true } : { pictures: [await imageDataUrl(item.url, null)], moments: 0, rebuilt: true };
+    }
+    const index = isMulti(entry) ? entry.variants.indexOf(item) : -1;
+    if (!out.board && index >= 0 && v3Entry(entry)) {
+        out.board = { ...(await rebuildBoardView(entry, index)), rebuilt: true };
+    }
+    return out;
+}
+
+function sentPanel(entry, item) {
+    const box = el('div', 'stis-sent');
+    box.appendChild(el('small', 'stis-card-head', 'What the AI saw'));
+    const body = el('div', 'stis-sent-body');
+    body.appendChild(el('small', '', 'Getting the pictures…'));
+    box.appendChild(body);
+    const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const part = (title, view) => {
+        const wrap = el('div', 'stis-sent-part');
+        const bits = [`${view.pictures.length} picture${view.pictures.length === 1 ? '' : 's'}`];
+        if (view.moments) {
+            bits.push(`${view.moments} moments`);
+        }
+        if (view.seconds) {
+            bits.push(`from a ${view.seconds} s GIF${view.loop ? ' that loops' : ''}`);
+        }
+        wrap.appendChild(el('div', 'stis-sent-title', `${title}: ${bits.join(', ')} · ${view.rebuilt ? 'rebuilt from the GIF with your current settings' : `exactly as sent at ${clock(view.at)}`}`));
+        const marks = view.times?.length ? view.times : view.picks?.length ? view.picks : null;
+        if (view.moments && marks) {
+            wrap.appendChild(el('small', 'stis-sent-moments', `Moments: ${marks.map((value, at) => `${at + 1} · ${view.times?.length ? `${Number(value).toFixed(1)} s` : `frame ${value + 1}${view.total ? ` of ${view.total}` : ''}`}`).join(', ')}`));
+        } else if (!view.moments && view.seconds) {
+            wrap.appendChild(el('small', 'stis-sent-moments', 'Only the first moment of the GIF was sent.'));
+        }
+        view.pictures.forEach(src => {
+            const image = el('img', 'stis-sent-img');
+            image.src = src;
+            image.alt = title;
+            wrap.appendChild(image);
+        });
+        return wrap;
+    };
+    (async () => {
+        try {
+            const seen = await rebuildSent(entry, item);
+            body.innerHTML = '';
+            if (seen.board) {
+                body.appendChild(part('The look at the whole sequence', seen.board));
+            }
+            if (seen.describe) {
+                body.appendChild(part(isMulti(entry) ? 'The description of this item' : 'The description', seen.describe));
+            }
+        } catch (error) {
+            body.innerHTML = '';
+            body.appendChild(el('small', '', `Could not get the pictures: ${error?.message || error}`));
+        }
+    })();
+    return box;
 }
 
 function roleEditor(entry, item, redraw) {
@@ -6770,10 +6866,12 @@ async function boardSheets(clip, wanted) {
     try {
         await decoder.tracks.ready;
         await decoder.completed?.catch(() => {});
-        for (const frameIndex of timedPicks(clip.delays, Math.max(1, Math.min(wanted, clip.frames)))) {
+        const picks = timedPicks(clip.delays, Math.max(1, Math.min(wanted, clip.frames)));
+        for (const frameIndex of picks) {
             images.push((await decoder.decode({ frameIndex })).image);
         }
-        return { pictures: await frameSheets(images, 768), moments: images.length, seconds: clip.seconds, loop: clip.loop };
+        const starts = frameStarts(clip.delays);
+        return { pictures: await frameSheets(images, 768), moments: images.length, seconds: clip.seconds, loop: clip.loop, picks, total: clip.frames, times: picks.map(pick => starts[pick]) };
     } finally {
         images.forEach(image => image.close?.());
         decoder.close?.();
@@ -6782,6 +6880,48 @@ async function boardSheets(clip, wanted) {
 
 function boardFrames(clip) {
     return clip ? Math.min(clip.frames, 32, framesForLength(clip.seconds)) : 1;
+}
+
+function boardPlan(batch, clips, per) {
+    const sheets = new Map(batch.map(index => [index, 1]));
+    const want = index => Math.ceil(boardFrames(clips[index]) / SHEET_FRAMES);
+    let spare = per - batch.length;
+    while (spare > 0) {
+        const next = batch.filter(index => sheets.get(index) < want(index)).sort((a, b) => (want(b) - sheets.get(b)) - (want(a) - sheets.get(a)) || (clips[b]?.seconds || 0) - (clips[a]?.seconds || 0))[0];
+        if (next === undefined) {
+            break;
+        }
+        sheets.set(next, sheets.get(next) + 1);
+        spare -= 1;
+    }
+    return sheets;
+}
+
+async function boardStill(item, clip, blob) {
+    return { pictures: [await imageDataUrl(item.url, blob || null, 768)], moments: 0, seconds: clip?.seconds || 0, loop: Boolean(clip?.loop) };
+}
+
+async function boardView(item, clip, sheets, blob) {
+    if (!clip) {
+        return boardStill(item, clip, blob);
+    }
+    try {
+        return await boardSheets(clip, Math.min(boardFrames(clip), sheets * SHEET_FRAMES));
+    } catch (error) {
+        console.warn('[Image Search] could not make the frame sheets for the look at the whole sequence', error);
+        return boardStill(item, clip, blob);
+    }
+}
+
+async function rebuildBoardView(entry, index) {
+    const clips = [];
+    for (const [at, item] of entry.variants.entries()) {
+        clips[at] = await boardClip(entry, item, null).catch(() => null);
+    }
+    const per = maxPictures();
+    const start = Math.floor(index / per) * per;
+    const batch = entry.variants.slice(start, start + per).map((item, at) => start + at);
+    return boardView(entry.variants[index], clips[index], boardPlan(batch, clips, per).get(index), null);
 }
 
 function boardPrompt(entry, batch, shown, tags, earlier, facts = '', again = '') {
@@ -6897,32 +7037,9 @@ async function lookAtBoard(entry, blobs, tags, report, facts = '', again = '') {
     for (let start = 0; start < items.length; start += per) {
         batches.push(items.slice(start, start + per).map((item, at) => start + at));
     }
-    const still = async index => ({ pictures: [await imageDataUrl(items[index].url, blobs[index] || null, 768)], moments: 0, seconds: clips[index]?.seconds || 0, loop: Boolean(clips[index]?.loop) });
-    const view = async (index, sheets) => {
-        if (!clips[index]) {
-            return still(index);
-        }
-        try {
-            return await boardSheets(clips[index], Math.min(boardFrames(clips[index]), sheets * SHEET_FRAMES));
-        } catch (error) {
-            console.warn('[Image Search] could not make the frame sheets for the look at the whole sequence', error);
-            return still(index);
-        }
-    };
-    const plan = batch => {
-        const sheets = new Map(batch.map(index => [index, 1]));
-        const want = index => Math.ceil(boardFrames(clips[index]) / SHEET_FRAMES);
-        let spare = per - batch.length;
-        while (spare > 0) {
-            const next = batch.filter(index => sheets.get(index) < want(index)).sort((a, b) => (want(b) - sheets.get(b)) - (want(a) - sheets.get(a)) || (clips[b]?.seconds || 0) - (clips[a]?.seconds || 0))[0];
-            if (next === undefined) {
-                break;
-            }
-            sheets.set(next, sheets.get(next) + 1);
-            spare -= 1;
-        }
-        return sheets;
-    };
+    const still = index => boardStill(items[index], clips[index], blobs[index]);
+    const view = (index, sheets) => boardView(items[index], clips[index], sheets, blobs[index]);
+    const plan = batch => boardPlan(batch, clips, per);
     const found = new Map(tags.map(tag => [tag, new Set()]));
     const replies = [];
     let stills = false;
@@ -6930,6 +7047,7 @@ async function lookAtBoard(entry, blobs, tags, report, facts = '', again = '') {
     const earlierThan = first => items.slice(0, first).map((item, index) => (item.cast || item.beat ? `Item ${index + 1}: ${[item.cast, item.beat].filter(Boolean).join('; ')}` : '')).filter(Boolean).join('\n');
     const ask = async (batch, views) => {
         report.cost.vision += 1;
+        batch.forEach((index, at) => rememberSent(items[index].url, 'board', views[at]));
         return visionAsk(boardPrompt(entry, batch, views, tags, earlierThan(batch[0]), facts, again), views.flatMap(seen => seen.pictures), 160 + 120 * batch.length + 14 * tags.length, 0.2);
     };
     const take = (reply, batch) => {
@@ -14895,6 +15013,20 @@ async function openPicker(initialTags = null, focus = null) {
             });
             convert.title = sequence ? 'Versions to use on their own, with no story order: every item is described again' : 'Pictures that tell a story in order: every item is described again, with roles and story lines';
             bar.append(convert);
+        }
+        if (itemized ? current.description : entry.description) {
+            const sent = el('div', 'menu_button stis-sent-button', 'What the AI saw');
+            sent.title = 'The pictures the vision model got for this item, with the time of each moment in the GIF';
+            sent.addEventListener('click', () => {
+                const shown = desc.querySelector('.stis-sent');
+                if (shown) {
+                    shown.remove();
+                    return;
+                }
+                desc.open = true;
+                desc.appendChild(sentPanel(entry, itemized ? current : current || entry));
+            });
+            bar.append(sent);
         }
         const use = el('div', 'menu_button stis-use', 'Use this');
         use.addEventListener('click', () => pickEntry(entry, use, current));

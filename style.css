@@ -2101,3 +2101,31 @@ video.stis-preview-img {
     flex-wrap: wrap;
     gap: 6px;
 }
+
+.stis-sent {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.stis-sent-part {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stis-sent-title {
+    font-weight: 600;
+    font-size: 0.9em;
+}
+
+.stis-sent-moments {
+    opacity: 0.8;
+}
+
+.stis-sent-img {
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+}

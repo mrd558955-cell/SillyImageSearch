@@ -2140,3 +2140,8 @@ video.stis-preview-img {
     max-height: 50vh;
     overflow-y: auto;
 }
+
+textarea.stis-sent-prompt-text {
+    width: 100%;
+    box-sizing: border-box;
+}

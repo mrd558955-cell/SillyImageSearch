@@ -1757,6 +1757,39 @@ video.stis-preview-img {
     padding-left: 6px;
 }
 
+.stis-intensity-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.stis-intensity-track {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--SmartThemeBorderColor);
+}
+
+.stis-intensity-fill {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--SmartThemeQuoteColor, #e18a24);
+}
+
+.stis-intensity-climax {
+    font-size: 0.8em;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--SmartThemeQuoteColor, #e18a24);
+    color: #fff;
+}
+
+.stis-role-differs {
+    color: #e57373;
+    font-weight: bold;
+}
+
 .stis-role-story {
     opacity: 0.85;
 }

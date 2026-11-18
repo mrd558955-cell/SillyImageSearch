@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.48.0';
+const VERSION = '2.50.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -81,6 +81,7 @@ const DEFAULTS = {
     aiShowDepth: 2,
     groupsInLore: false,
     groupStory: true,
+    maxPictures: 8,
     roleCheck: false,
     groupDeduce: true,
     storyPrompt: DEFAULT_STORY_PROMPT,
@@ -3955,7 +3956,27 @@ async function frameDataUrl(source, width, height, maxSide = 768) {
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-async function frameSheet(images, maxSide = 768) {
+const SHEET_FRAMES = 4;
+
+function maxPictures() {
+    return Math.max(1, Math.min(16, Math.round(Number(settings().maxPictures) || 8)));
+}
+
+async function frameSheets(images, maxSide = 768) {
+    const sheets = [];
+    for (let start = 0; start < images.length; start += SHEET_FRAMES) {
+        sheets.push(await frameSheet(images.slice(start, start + SHEET_FRAMES), maxSide, start));
+    }
+    return sheets;
+}
+
+function sheetWords(count, sheets) {
+    return sheets > 1
+        ? `${sheets} pictures holding ${count} moments, numbered 1 to ${count} in order across the pictures (picture 1 has moments 1 to ${Math.min(SHEET_FRAMES, count)}, picture 2 the next ones, and so on; in each picture left to right, then top to bottom)`
+        : `one picture with ${count} moments, numbered 1 to ${count} (left to right, then top to bottom)`;
+}
+
+async function frameSheet(images, maxSide = 768, start = 0) {
     const width = images[0].displayWidth || images[0].codedWidth || images[0].width || 1;
     const height = images[0].displayHeight || images[0].codedHeight || images[0].height || 1;
     const cols = Math.ceil(Math.sqrt(images.length));
@@ -3976,16 +3997,16 @@ async function frameSheet(images, maxSide = 768) {
         const y = Math.floor(index / cols) * (tileHeight + gap);
         context.drawImage(image, x, y, tileWidth, tileHeight);
         context.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        context.fillRect(x, y, font * (index >= 9 ? 2.1 : 1.5), font * 1.3);
+        context.fillRect(x, y, font * (start + index >= 9 ? 2.1 : 1.5), font * 1.3);
         context.fillStyle = '#ffffff';
         context.font = `bold ${font}px sans-serif`;
         context.textBaseline = 'top';
-        context.fillText(String(index + 1), x + font * 0.3, y + font * 0.15);
+        context.fillText(String(start + index + 1), x + font * 0.3, y + font * 0.15);
     });
     return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-async function animationFrames(url, blob = null) {
+async function animationFrames(url, blob = null, most = 0) {
     if (typeof ImageDecoder !== 'function') {
         return null;
     }
@@ -4014,7 +4035,8 @@ async function animationFrames(url, blob = null) {
             return null;
         }
         const s = settings();
-        const wanted = Math.min(count, 16, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        const sheetsAllowed = s.gifSheet ? maxPictures() * SHEET_FRAMES : maxPictures();
+        const wanted = Math.min(count, 32, most || 32, sheetsAllowed, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
         const size = Math.min(2048, Math.max(128, Number(s.gifFrameSize) || 768));
         const picks = wanted === 1 ? [0] : [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (count - 1) / (wanted - 1))))];
         if (s.gifSheet && picks.length > 1) {
@@ -4023,7 +4045,7 @@ async function animationFrames(url, blob = null) {
                 for (const frameIndex of picks) {
                     images.push((await decoder.decode({ frameIndex })).image);
                 }
-                const sheet = [await frameSheet(images, size)];
+                const sheet = await frameSheets(images, size);
                 sheet.count = images.length;
                 sheet.sheet = true;
                 return sheet;
@@ -4334,14 +4356,25 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         console.warn('[Image Search] could not read the animation frames', error);
     }
     let raw = '';
+    const askFrames = async set => {
+        const shown = set.sheet
+            ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
+            : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
+        return ask(`This picture is a short animation (a GIF). ${shown} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, set);
+    };
     if (frames?.count > 1) {
-        const shown = frames.sheet
-            ? `You get one picture with ${frames.count} moments from it, numbered 1 to ${frames.count} (left to right, then top to bottom), evenly spread from the start to the end.`
-            : `You get ${frames.count} moments from it, in order, evenly spread from the start to the end.`;
         try {
-            raw = await ask(`This picture is a short animation (a GIF). ${shown} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`, frames);
+            raw = await askFrames(frames);
         } catch (error) {
-            console.warn('[Image Search] the vision model refused several frames, using the first one', error);
+            console.warn('[Image Search] the vision model refused all the frames, trying fewer', error);
+            if (frames.length > 1) {
+                try {
+                    const fewer = await animationFrames(url, blob, SHEET_FRAMES);
+                    raw = fewer?.count > 1 ? await askFrames(fewer) : '';
+                } catch (again) {
+                    console.warn('[Image Search] the vision model refused the frames, using the first one', again);
+                }
+            }
         }
     }
     if (!raw) {
@@ -4948,12 +4981,14 @@ async function partSheet(url, blob = null, maxSide = 768) {
             await decoder.tracks.ready;
             await decoder.completed?.catch(() => {});
             const total = decoder.tracks.selectedTrack?.frameCount || 1;
-            const wanted = Math.min(total, 6, Math.max(2, Math.round(Number(settings().gifFrames) || 3)));
+            const wanted = Math.min(total, 32, maxPictures() * SHEET_FRAMES, Math.max(2, Math.round(Number(settings().gifFrames) || 3)));
             const picks = [...new Set(Array.from({ length: wanted }, (_, i) => Math.round(i * (total - 1) / Math.max(1, wanted - 1))))];
             for (const frameIndex of picks) {
                 images.push((await decoder.decode({ frameIndex })).image);
             }
-            return await frameSheet(images, maxSide);
+            const sheets = await frameSheets(images, maxSide);
+            sheets.count = images.length;
+            return sheets;
         } finally {
             images.forEach(image => image.close?.());
             decoder.close?.();
@@ -5074,13 +5109,44 @@ async function findMissingTags(entry, pictures, tags, report) {
     const found = new Map(tags.map(tag => [tag, new Set()]));
     const hints = tagHints(tags);
     const count = entry.variants.length;
-    const animated = entry.variants.some(item => itemAnimated(entry, item));
+    const per = maxPictures();
+    const groups = [];
+    let current = [];
+    let used = 0;
+    entry.variants.forEach((item, index) => {
+        const size = [].concat(pictures[index]).length;
+        if (current.length && (used + size > per || current.length >= 4)) {
+            groups.push(current);
+            current = [];
+            used = 0;
+        }
+        current.push(index);
+        used += size;
+    });
+    if (current.length) {
+        groups.push(current);
+    }
     let together = true;
-    for (let start = 0; start < count && together; start += 4) {
-        const batch = Array.from({ length: Math.min(4, count - start) }, (_, i) => start + i);
-        const text = `You get ${batch.length} picture${batch.length === 1 ? '' : 's'}, numbered ${batch[0] + 1} to ${batch[batch.length - 1] + 1} in this order${animated ? '; an animated one is shown as a sheet of numbered frames' : ''}. They are items of one ${groupWhat(entry)}. For each tag below, say which of these pictures clearly show it. A tag can also name a known character or something happening. Reply with one line per tag, exactly like "tag: ${batch[0] + 1}, ${batch[batch.length - 1] + 1}" or "tag: none".\n\nTags:\n${tags.join('\n')}`;
+    for (const batch of groups) {
+        if (!together) {
+            break;
+        }
+        const images = batch.flatMap(index => [].concat(pictures[index]));
+        let at = 0;
+        const parts = batch.map(index => {
+            const size = [].concat(pictures[index]).length;
+            const from = at + 1;
+            at += size;
+            const animated = itemAnimated(entry, entry.variants[index]);
+            return size > 1 || animated ? `item ${index + 1} is picture${size > 1 ? `s ${from} to ${at}` : ` ${from}`}${animated ? ' (an animation, its moments numbered in order)' : ''}` : `item ${index + 1} is picture ${from}`;
+        });
+        const plain = images.length === batch.length && !batch.some(index => itemAnimated(entry, entry.variants[index]));
+        const text = plain
+            ? `You get ${batch.length} picture${batch.length === 1 ? '' : 's'}, numbered ${batch[0] + 1} to ${batch[batch.length - 1] + 1} in this order. They are items of one ${groupWhat(entry)}.`
+            : `You get ${images.length} picture${images.length === 1 ? '' : 's'}, numbered 1 to ${images.length}, showing items ${batch[0] + 1} to ${batch[batch.length - 1] + 1} of one ${groupWhat(entry)}: ${parts.join('; ')}. Answer with item numbers, not picture numbers.`;
+        const filler = `${text} For each tag below, say which of these ${plain ? 'pictures' : 'items'} clearly show it. A tag can also name a known character or something happening. Reply with one line per tag, exactly like "tag: ${batch[0] + 1}, ${batch[batch.length - 1] + 1}" or "tag: none".\n\nTags:\n${tags.join('\n')}`;
         try {
-            const reply = await visionAsk(`${text}${hints}`, batch.map(index => pictures[index]), 60 + tags.length * 14, 0.1);
+            const reply = await visionAsk(`${filler}${hints}`, images, 60 + tags.length * 14, 0.1);
             const lines = readTagLines(reply, batch.map(index => index + 1));
             if (!lines.size) {
                 throw new Error('the answer listed no tags');
@@ -5096,7 +5162,8 @@ async function findMissingTags(entry, pictures, tags, report) {
         const failures = [];
         await eachLimit(entry.variants, 2, async (item, index) => {
             try {
-                const reply = await visionAsk(`This picture is item ${index + 1} of one ${groupWhat(entry)}${itemAnimated(entry, item) ? ', shown as a sheet of numbered frames' : ''}. Which of these tags does it clearly show? A tag can also name a known character or something happening. Reply with only those tags, separated by commas, or "none".\n\nTags: ${tags.join(', ')}${hints}`, [pictures[index]], 60 + tags.length * 10, 0.1);
+                const shown = [].concat(pictures[index]);
+                const reply = await visionAsk(`This ${shown.length > 1 ? `item is shown as ${shown.length} pictures` : 'picture'} is item ${index + 1} of one ${groupWhat(entry)}${itemAnimated(entry, item) ? `, an animation shown as numbered moments${shown.length > 1 ? ' in order across the pictures' : ''}` : ''}. Which of these tags does it clearly show? A tag can also name a known character or something happening. Reply with only those tags, separated by commas, or "none".\n\nTags: ${tags.join(', ')}${hints}`, shown, 60 + tags.length * 10, 0.1);
                 parseTagReply(reply).forEach(tag => found.get(tag)?.add(index + 1));
             } catch (error) {
                 failures.push(`item ${index + 1}: ${error?.message || error}`);
@@ -5829,8 +5896,9 @@ async function describeSet(entry, blobs = []) {
             groupStep(entry, `Looking at each of the ${count} items…`);
             await eachLimit(items, 2, async (item, index) => {
                 try {
-                    const frames = itemAnimated(entry, item) ? 'This picture is a short animation shown as numbered frames (left to right, then top to bottom); list tags for anything seen in any frame. ' : '';
-                    item.seen = parseTagReply(await visionAsk(`${frames}${BLIND_PROMPT}`, [await picture(index)], 260, 0.2)).slice(0, 40);
+                    const shown = [].concat(await picture(index));
+                    const frames = itemAnimated(entry, item) ? (shown.length > 1 ? `These ${shown.length} pictures show one short animation as numbered moments, in order across the pictures (left to right, then top to bottom in each); list tags for anything seen in any moment. ` : 'This picture is a short animation shown as numbered frames (left to right, then top to bottom); list tags for anything seen in any frame. ') : '';
+                    item.seen = parseTagReply(await visionAsk(`${frames}${BLIND_PROMPT}`, shown, 260, 0.2)).slice(0, 40);
                 } catch (error) {
                     item.seen = [];
                     report.errors.push(`First look at item ${index + 1}: ${error?.message || error}`);
@@ -13037,21 +13105,43 @@ async function openPicker(initialTags = null, focus = null) {
             info.appendChild(groupReportBox(entry, current));
         }
         if (s.roleCheck && sequence && itemized && entry.report?.storyReply) {
-            const roles = section('roles', 'Role check', true);
-            if (entry.arc) {
-                roles.appendChild(el('div', 'stis-role-line stis-role-shape', `Shape: ${entry.arc}`));
-            }
+            const roles = section('roles', 'Intensity check', true);
+            const rated = entry.variants.map(item => item.role?.intensity || 0);
+            const top = Math.max(0, ...rated);
             entry.variants.forEach((item, number) => {
-                const line = el('div', `stis-role-line${item === current ? ' stis-role-current' : ''}`);
-                line.appendChild(el('b', '', `${number + 1} · ${item.role?.intensity ? `${item.role.intensity}/10 · ` : ''}${item.role ? roleText(item.role) : 'no role'}`));
-                if (item.role?.why) {
-                    line.append(` (${item.role.why})`);
+                const line = el('div', `stis-role-line stis-intensity-line${item === current ? ' stis-role-current' : ''}`);
+                const head = el('div', 'stis-intensity-head');
+                head.appendChild(el('b', '', `${number + 1}`));
+                const track = el('span', 'stis-intensity-track');
+                const fill = el('span', 'stis-intensity-fill');
+                fill.style.width = `${(rated[number] || 0) * 10}%`;
+                track.appendChild(fill);
+                head.append(track, el('b', 'stis-intensity-value', rated[number] ? `${rated[number]}/10` : '?'));
+                if (item.role?.main === 'climax') {
+                    head.appendChild(el('span', 'stis-intensity-climax', 'climax'));
                 }
-                if (item.diff) {
-                    line.appendChild(el('div', 'stis-role-story', item.diff));
+                line.appendChild(head);
+                if (item.role?.why) {
+                    line.appendChild(el('div', 'stis-role-story', item.role.why));
                 }
                 roles.appendChild(line);
             });
+            const climax = entry.variants.findIndex(item => item.role?.main === 'climax');
+            const highest = rated.map((value, index) => (value === top && top ? index + 1 : 0)).filter(Boolean);
+            if (top) {
+                roles.appendChild(el('div', `stis-role-line${climax >= 0 && !highest.includes(climax + 1) ? ' stis-role-differs' : ''}`, `Highest intensity: item ${highest.join(' and ')} · climax: ${climax >= 0 ? `item ${climax + 1}` : 'none'}`));
+            }
+            const after = el('details', 'stis-group-report-raw stis-intensity-roles');
+            after.appendChild(el('summary', '', `Roles and story lines${entry.arc ? ` · ${entry.arc}` : ''}`));
+            entry.variants.forEach((item, number) => {
+                const line = el('div', 'stis-role-line');
+                line.appendChild(el('b', '', `${number + 1} · ${item.role ? roleText(item.role) : 'no role'}`));
+                if (item.diff) {
+                    line.appendChild(el('div', 'stis-role-story', item.diff));
+                }
+                after.appendChild(line);
+            });
+            roles.appendChild(after);
             if (entry.report.storyAsked) {
                 const asked = el('details', 'stis-group-report-raw');
                 asked.appendChild(el('summary', '', 'The prompt sent'));
@@ -13279,8 +13369,8 @@ async function openPicker(initialTags = null, focus = null) {
         const actions = [...bar.children].slice(navCount);
         const main = [use, fixButton, redo];
         if (s.roleCheck && sequence && groupDescribed(entry)) {
-            const check = el('div', 'menu_button stis-role-check', 'Check roles');
-            check.title = 'Run only the story step on the descriptions this sequence already has, and stop there';
+            const check = el('div', 'menu_button stis-role-check', 'Check intensity');
+            check.title = 'Run only the story step (intensity, then roles) on the descriptions this sequence already has, and stop there';
             check.classList.toggle('disabled', groupProgress.has(entry.id));
             check.addEventListener('click', async () => {
                 if (check.classList.contains('disabled') || groupProgress.has(entry.id)) {
@@ -13296,7 +13386,7 @@ async function openPicker(initialTags = null, focus = null) {
                     sectionOpen.set('roles', true);
                     await saveLibrary();
                 } catch (error) {
-                    toastr.warning(`Could not check the roles: ${error?.message || error}`, 'Image Search');
+                    toastr.warning(`Could not check the intensity: ${error?.message || error}`, 'Image Search');
                 } finally {
                     groupStep(entry, '');
                 }
@@ -14121,7 +14211,8 @@ function buildSettings() {
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_describe"> <span>Describe saved pictures</span></label><small class="stis-help">A vision model looks at the picture and its tags. The description goes to the AI with the picture, hidden from the chat.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Description length (tokens)</span><input type="number" min="32" max="4000" id="st_imagesearch_vision_tokens" class="text_pole"></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Wait for it when sending (s)</span><input type="number" min="0" max="120" id="st_imagesearch_describe_wait" class="text_pole"></div><small class="stis-help">After this, the message goes without it and the description is added when ready.</small></div>
-                        <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>GIF frames sent</span><input type="range" min="1" max="16" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div><small class="stis-help">Spread from the start to the end of the GIF. More frames show more of the motion, and cost more.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>GIF frames sent</span><input type="range" min="1" max="32" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div><small class="stis-help">Spread from the start to the end of the GIF. More frames show more of the motion, and cost more. On a sheet, frames go 4 to a picture (2×2) so each stays big, numbered in order across the pictures.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Most pictures in one request</span><input type="number" min="1" max="16" id="st_imagesearch_max_pictures" class="text_pole"></div><small class="stis-help">Frames are cut to fit (4 per picture on a sheet), and the second look sends fewer items at once. Lower it if your vision model refuses many pictures.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>GIF frame size</span><select id="st_imagesearch_gif_size" class="text_pole"><option value="384">384 px (cheapest)</option><option value="512">512 px</option><option value="768">768 px (default)</option><option value="1024">1024 px</option><option value="1536">1536 px</option><option value="2048">2048 px (most detail)</option></select></div></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>GIF frames as one sheet</span></label><small class="stis-help">One numbered picture instead of several: cheaper, less detail per frame.</small></div>
                         <div class="stis-set">
@@ -14148,7 +14239,7 @@ function buildSettings() {
                             <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
                             <div id="st_imagesearch_story_reset" class="menu_button">Reset this prompt</div>
                         </div>
-                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_role_check"> <span>Role check (for testing)</span></label><small class="stis-help">Adds "Check roles" to a sequence in the library: it runs only the story step on the descriptions it already has (one quick text request, no pictures) and stops there. The preview then shows each item's intensity and role, the shape, the exact prompt sent and the answer, so you can tweak the story prompt above and check again.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_role_check"> <span>Intensity check (for testing)</span></label><small class="stis-help">Adds "Check intensity" to a sequence in the library: it runs only the story step on the descriptions it already has (one quick text request, no pictures) and stops there. The preview then shows each item's intensity with its reason and which one became the climax, then the roles, the exact prompt sent and the answer, so you can tweak the story prompt above and check again.</small></div>
                         <div class="stis-set">
                             <div class="stis-label">Tags that matter</div>
                             <textarea id="st_imagesearch_tags_matter" class="text_pole" placeholder="one per line"></textarea>
@@ -14370,10 +14461,12 @@ function buildSettings() {
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     const framesValue = document.getElementById('st_imagesearch_gif_frames_value');
     const showFrames = () => {
-        const count = Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
-        framesValue.textContent = `${count} frame${count === 1 ? '' : 's'}`;
+        const count = Math.min(32, Math.max(1, Math.round(Number(s.gifFrames) || 3)));
+        const sheets = Math.ceil(count / SHEET_FRAMES);
+        framesValue.textContent = `${count} frame${count === 1 ? '' : 's'}${s.gifSheet && count > 1 ? ` · ${sheets} picture${sheets === 1 ? '' : 's'}` : ''}`;
     };
     bind('st_imagesearch_gif_frames', 'gifFrames', 'number', showFrames);
+    bind('st_imagesearch_max_pictures', 'maxPictures', 'number');
     const senseValue = document.getElementById('st_imagesearch_split_sense_value');
     const senseNames = ['', 'strict', 'a bit strict', 'normal', 'a bit loose', 'loose'];
     const showSense = () => {
@@ -14390,7 +14483,7 @@ function buildSettings() {
     showRepeats();
     document.getElementById('st_imagesearch_split_sense').value = String(Math.min(5, Math.max(1, Math.round(Number(s.splitSense) || 3))));
     showSense();
-    document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(16, Math.max(1, Math.round(Number(s.gifFrames) || 3))));
+    document.getElementById('st_imagesearch_gif_frames').value = String(Math.min(32, Math.max(1, Math.round(Number(s.gifFrames) || 3))));
     showFrames();
     bind('st_imagesearch_gif_size', 'gifFrameSize', 'number');
     bind('st_imagesearch_video_reader', 'videoReader');

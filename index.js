@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.59.0';
+const VERSION = '2.59.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -118,6 +118,7 @@ const DEFAULTS = {
     forcePrompt: '',
     leadPrompt: '',
     inlinePictures: true,
+    keepLibraryFiles: true,
     pickMix: true,
     describeRules: '',
     boardNote: '',
@@ -4390,18 +4391,104 @@ async function shrinkImage(picture) {
     }
 }
 
-async function uploadImage(picture) {
+async function uploadImage(picture, name = '') {
     const image = await blobToBase64(picture.blob);
     const upload = await fetch('/api/images/upload', {
         method: 'POST',
         headers: ctx().getRequestHeaders(),
-        body: JSON.stringify({ image, format: picture.format, ch_name: 'imagesearch', filename: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }),
+        body: JSON.stringify({ image, format: picture.format, ch_name: 'imagesearch', filename: name || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }),
     });
     if (!upload.ok) {
         throw new Error(`SillyTavern could not save the picture (${upload.status}).`);
     }
     const data = await upload.json();
     return `/${String(data.path).replace(/\\/g, '/').replace(/^\/+/, '')}`;
+}
+
+const missingFiles = new Map();
+
+function fileMissing(url) {
+    if (!url || !String(url).startsWith('/user/')) {
+        return Promise.resolve(false);
+    }
+    if (!missingFiles.has(url)) {
+        const check = fetch(url, { method: 'HEAD', cache: 'no-store' }).then(response => response.status === 404).catch(() => false);
+        missingFiles.set(url, check);
+        check.then(gone => {
+            if (!gone && missingFiles.get(url) === check) {
+                missingFiles.delete(url);
+            }
+        });
+    }
+    return missingFiles.get(url);
+}
+
+async function restoreFile(found, item) {
+    if (item.video) {
+        throw new Error('This one was made from a video: remove it from the library and make it again.');
+    }
+    const picture = await prepareDownload(item);
+    const old = found.variant?.url || found.entry.url;
+    const name = old.split('/').pop();
+    const same = old.startsWith('/user/images/imagesearch/') && name.toLowerCase().endsWith(`.${String(picture.format).toLowerCase()}`);
+    const src = await uploadImage(picture, same ? name.replace(/\.[^.]+$/, '') : '');
+    missingFiles.delete(old);
+    missingFiles.delete(src);
+    if (src !== old) {
+        if (found.variant) {
+            found.variant.url = src;
+        }
+        if (found.entry.url === old) {
+            found.entry.url = src;
+        }
+        descriptions.delete(old);
+        await saveLibrary();
+    }
+    return src;
+}
+
+function libraryFile(url) {
+    return Boolean(url) && (library.loaded ? urlInUse(url) : String(url).startsWith('/user/images/imagesearch/'));
+}
+
+function onMediaDeleted(url) {
+    if (!url) {
+        return;
+    }
+    missingFiles.set(url, Promise.resolve(true));
+    if (library.loaded && urlInUse(url)) {
+        toastr.warning('That picture is in your library, and its file is now gone from the server. To get it back, open it on its site in the picker and tap "Download again".', 'Image Search', { timeOut: 12000 });
+    }
+}
+
+let mediaDeleteUrls = [];
+
+function watchMediaDelete() {
+    const chat = document.getElementById('chat');
+    if (!chat || watchMediaDelete.on || typeof MutationObserver === 'undefined') {
+        return;
+    }
+    watchMediaDelete.on = true;
+    chat.addEventListener('click', event => {
+        const button = event.target?.closest?.('.mes_media_delete');
+        if (!button) {
+            return;
+        }
+        const message = (ctx().chat || [])[Number(button.closest('.mes')?.getAttribute('mesid'))];
+        mediaDeleteUrls = (Array.isArray(message?.extra?.media) ? message.extra.media : []).map(item => item?.url).filter(Boolean);
+    }, true);
+    new MutationObserver(records => {
+        for (const record of records) {
+            record.addedNodes.forEach(node => {
+                const box = node.nodeType === 1 ? node.querySelector?.('#delete_media_files_checkbox') : null;
+                if (!box || !settings().keepLibraryFiles || !mediaDeleteUrls.some(libraryFile)) {
+                    return;
+                }
+                box.checked = false;
+                box.closest('label')?.after(el('small', 'stis-delete-note', 'Unticked by Image Search: this message has a picture from your library. Tick it to delete the file anyway.'));
+            });
+        }
+    }).observe(document.body, { childList: true });
 }
 
 const downloads = new Map();
@@ -9525,6 +9612,15 @@ async function storePicture(item, searchTags, keep = settings().keepLibrary) {
         await loadLibrary();
         const found = findBySource(item.page);
         if (found) {
+            if (!item.video && await fileMissing(found.variant?.url || found.entry.url)) {
+                try {
+                    await restoreFile(found, item);
+                    toastr.info('Its file was gone from the server, so it was downloaded again.', 'Image Search');
+                } catch (error) {
+                    console.warn('[Image Search] could not download the missing file again', error);
+                    toastr.warning(`Its file is gone from the server and could not be downloaded again (${String(error?.message || error).slice(0, 140)}).`, 'Image Search');
+                }
+            }
             prepareEntryDescription(found.entry, found.variant);
             return { url: found.variant?.url || found.entry.url, entry: found.entry, existed: true };
         }
@@ -15329,7 +15425,16 @@ async function openPicker(initialTags = null, focus = null) {
             const paintKeep = () => {
                 const state = saveState(current);
                 const found = library.loaded ? findBySource(current.page) : null;
-                keep.textContent = state === 'queued' || state === 'saving' ? 'Saving…' : found ? (found.entry.kind === 'set' ? 'In a saved set' : 'In library') : state === 'failed' ? 'Retry saving' : 'Save to library';
+                keep.textContent = keep.dataset.restoring ? 'Downloading again…' : state === 'queued' || state === 'saving' ? 'Saving…' : found ? (found.entry.kind === 'set' ? 'In a saved set' : 'In library') : state === 'failed' ? 'Retry saving' : 'Save to library';
+                const shown = current;
+                if (found && !current.video && !keep.dataset.restoring) {
+                    fileMissing(found.variant?.url || found.entry.url).then(gone => {
+                        if (gone && previewState?.paintKeep === paintKeep && shown === current && !keep.dataset.restoring) {
+                            keep.textContent = 'Download again';
+                            keep.title = 'This picture is in your library, but its file is gone from the server: download it again from the site, keeping its description';
+                        }
+                    });
+                }
             };
             previewState.paintKeep = paintKeep;
             paintKeep();
@@ -15339,6 +15444,27 @@ async function openPicker(initialTags = null, focus = null) {
                 }
             });
             keep.addEventListener('click', () => {
+                if (keep.textContent === 'Download again') {
+                    const found = findBySource(current.page);
+                    if (!found) {
+                        return;
+                    }
+                    keep.dataset.restoring = '1';
+                    paintKeep();
+                    restoreFile(found, current).then(() => {
+                        toastr.success('Downloaded again. Its description and everything else are kept.', 'Image Search');
+                        updateLibraryTab();
+                    }).catch(error => {
+                        toastr.warning(String(error?.message || error), 'Image Search');
+                    }).finally(() => {
+                        delete keep.dataset.restoring;
+                        keep.title = 'Save it in the library without adding it to the chat; you can keep browsing';
+                        if (previewState?.paintKeep === paintKeep) {
+                            paintKeep();
+                        }
+                    });
+                    return;
+                }
                 if (keep.textContent !== 'Save to library' && keep.textContent !== 'Retry saving') {
                     return;
                 }
@@ -16684,6 +16810,7 @@ function buildSettings() {
                     <div class="stis-section-body">
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures</span></label><small class="stis-help">Into SillyTavern. Needs the CORS proxy or the image fetcher.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep them in the library</span></label></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep_files"> <span>Keep library files when a picture is deleted from a message</span></label><small class="stis-help">SillyTavern's "Delete media from message?" ticks "Also delete files from server" by default. On: it is unticked when the message has a picture from your library, so the library keeps its file (tick it to delete anyway). If a library file is gone, open the picture on its site in the picker and tap "Download again": it comes back with its description.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures to messages</span></label><small class="stis-help">So vision models can see them.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt"> <span>Find tags for tag-poor pictures</span></label><small class="stis-help">When a saved picture has fewer than ${FEW_TAGS} tags, look for it on your other sites (and on Danbooru when your Danbooru account is set) and take their tags before describing it. It searches the artist with each other tag, compares 4 frames of a GIF, then asks the vision model for a few specific tags to try.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_hunt_iqdb"> <span>Also ask IQDB</span></label><small class="stis-help">A free lookalike search, when the picture is not found on your sites.</small></div>
@@ -16969,6 +17096,7 @@ function buildSettings() {
     bind('st_imagesearch_debug', 'debug', 'checked');
     bind('st_imagesearch_describe', 'describe', 'checked');
     bind('st_imagesearch_keep', 'keepLibrary', 'checked');
+    bind('st_imagesearch_keep_files', 'keepLibraryFiles', 'checked');
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');
@@ -17553,8 +17681,13 @@ jQuery(() => {
     registerCommand();
     addButtons();
     watchInline();
+    watchMediaDelete();
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);
     c.eventSource.on(c.eventTypes.APP_READY, watchInline);
+    c.eventSource.on(c.eventTypes.APP_READY, watchMediaDelete);
+    if (c.eventTypes.MEDIA_ATTACHMENT_DELETED) {
+        c.eventSource.on(c.eventTypes.MEDIA_ATTACHMENT_DELETED, onMediaDeleted);
+    }
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onForcedReply);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onAiPictures);
     if (c.eventTypes.GENERATION_STARTED) {

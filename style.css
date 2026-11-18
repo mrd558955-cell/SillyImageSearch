@@ -2213,3 +2213,9 @@ textarea.stis-sent-prompt-text {
     cursor: pointer;
     opacity: 0.8;
 }
+
+.stis-delete-note {
+    display: block;
+    opacity: 0.75;
+    text-align: center;
+}

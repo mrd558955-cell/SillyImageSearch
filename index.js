@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.50.0';
+const VERSION = '2.50.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -14214,7 +14214,7 @@ function buildSettings() {
                         <div class="stis-set"><div class="st-imagesearch-row stis-range-row"><span>GIF frames sent</span><input type="range" min="1" max="32" step="1" id="st_imagesearch_gif_frames"><b id="st_imagesearch_gif_frames_value" class="stis-range-value"></b></div><small class="stis-help">Spread from the start to the end of the GIF. More frames show more of the motion, and cost more. On a sheet, frames go 4 to a picture (2×2) so each stays big, numbered in order across the pictures.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Most pictures in one request</span><input type="number" min="1" max="16" id="st_imagesearch_max_pictures" class="text_pole"></div><small class="stis-help">Frames are cut to fit (4 per picture on a sheet), and the second look sends fewer items at once. Lower it if your vision model refuses many pictures.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>GIF frame size</span><select id="st_imagesearch_gif_size" class="text_pole"><option value="384">384 px (cheapest)</option><option value="512">512 px</option><option value="768">768 px (default)</option><option value="1024">1024 px</option><option value="1536">1536 px</option><option value="2048">2048 px (most detail)</option></select></div></div>
-                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>GIF frames as one sheet</span></label><small class="stis-help">One numbered picture instead of several: cheaper, less detail per frame.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_gif_sheet"> <span>GIF frames on sheets</span></label><small class="stis-help">On: 4 frames per numbered picture (2×2), so up to 32 frames fit in 8 pictures. Off: one picture per frame, so at most as many frames as "Most pictures in one request".</small></div>
                         <div class="stis-set">
                             <div class="stis-label">Description prompt</div>
                             <textarea id="st_imagesearch_vision_prompt" class="text_pole"></textarea>

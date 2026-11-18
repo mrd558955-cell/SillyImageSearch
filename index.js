@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.56.0';
+const VERSION = '2.56.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -5343,6 +5343,22 @@ async function visionAsk(text, images, maxTokens = 300, temperature = 0.3) {
     return cleanReply(await service.sendRequest(profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(temperature)));
 }
 
+async function picturesOnlyAsk(images, maxTokens = 200) {
+    const service = ctx().ConnectionManagerRequestService;
+    const profile = visionProfileId();
+    if (!service || !profile) {
+        throw new Error('No vision profile chosen in Image Search settings.');
+    }
+    const send = content => service.sendRequest(profile, [{ role: 'user', content }], maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+    const pictures = images.map(url => ({ type: 'image_url', image_url: { url } }));
+    try {
+        return { reply: cleanReply(await send(pictures)), asked: '' };
+    } catch (error) {
+        const asked = 'Describe this briefly.';
+        return { reply: cleanReply(await send([{ type: 'text', text: asked }, ...pictures])), asked, refused: String(error?.message || error).slice(0, 160) };
+    }
+}
+
 async function textAsk(prompt, maxTokens = 600) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
@@ -5576,6 +5592,17 @@ function sentPanel(entry, item) {
             image.src = src;
             image.alt = title;
             wrap.appendChild(image);
+        });
+        const answer = el('div', 'stis-sent-answer');
+        answer.appendChild(el('small', 'stis-sent-moments', 'Asking the vision model with these pictures only…'));
+        wrap.appendChild(answer);
+        picturesOnlyAsk(view.pictures).then(result => {
+            answer.innerHTML = '';
+            answer.appendChild(el('small', 'stis-sent-title', result.asked ? `What it says with only "${result.asked}" added (it refused the pictures alone: ${result.refused})` : 'What it says with the pictures only, nothing else'));
+            answer.appendChild(el('div', 'stis-entry-text', result.reply || 'No answer.'));
+        }).catch(error => {
+            answer.innerHTML = '';
+            answer.appendChild(el('small', 'stis-sent-moments', `Could not ask the vision model: ${error?.message || error}`));
         });
         return wrap;
     };

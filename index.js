@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.47.0';
+const VERSION = '2.48.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -81,6 +81,7 @@ const DEFAULTS = {
     aiShowDepth: 2,
     groupsInLore: false,
     groupStory: true,
+    roleCheck: false,
     groupDeduce: true,
     storyPrompt: DEFAULT_STORY_PROMPT,
     versionsPrompt: DEFAULT_VERSIONS_PROMPT,
@@ -4579,6 +4580,7 @@ function cleanReport(report) {
         problems: Array.isArray(report.problems) ? report.problems.filter(item => item && item.problem).slice(0, 20).map(item => ({ item: Number(item.item) || 0, about: item.about === 'story' ? 'story' : 'description', problem: String(item.problem).slice(0, 300), redone: Boolean(item.redone) })) : [],
         errors: cleanStrings(report.errors, 12),
         storyReply: String(report.storyReply || '').slice(0, 4000),
+        storyAsked: String(report.storyAsked || '').slice(0, 16000),
         deduceReply: String(report.deduceReply || '').slice(0, 3000),
         noteLog: cleanStrings(report.noteLog, 40),
     };
@@ -5224,9 +5226,11 @@ function parseStory(reply, count, versions) {
 
 async function writeStory(entry, notes = '', report = entry.report) {
     const count = entry.variants.length;
-    const reply = await textAsk(storyPrompt(entry, notes), 200 + 130 * count);
+    const asked = storyPrompt(entry, notes);
+    const reply = await textAsk(asked, 200 + 130 * count);
     if (report) {
         report.storyReply = String(reply).slice(0, 4000);
+        report.storyAsked = settings().roleCheck ? asked.slice(0, 16000) : '';
     }
     const lines = parseStory(reply, count, versionsOnly(entry));
     if (!lines.size) {
@@ -13032,6 +13036,33 @@ async function openPicker(initialTags = null, focus = null) {
         if (multi && entry.report) {
             info.appendChild(groupReportBox(entry, current));
         }
+        if (s.roleCheck && sequence && itemized && entry.report?.storyReply) {
+            const roles = section('roles', 'Role check', true);
+            if (entry.arc) {
+                roles.appendChild(el('div', 'stis-role-line stis-role-shape', `Shape: ${entry.arc}`));
+            }
+            entry.variants.forEach((item, number) => {
+                const line = el('div', `stis-role-line${item === current ? ' stis-role-current' : ''}`);
+                line.appendChild(el('b', '', `${number + 1} · ${item.role?.intensity ? `${item.role.intensity}/10 · ` : ''}${item.role ? roleText(item.role) : 'no role'}`));
+                if (item.role?.why) {
+                    line.append(` (${item.role.why})`);
+                }
+                if (item.diff) {
+                    line.appendChild(el('div', 'stis-role-story', item.diff));
+                }
+                roles.appendChild(line);
+            });
+            if (entry.report.storyAsked) {
+                const asked = el('details', 'stis-group-report-raw');
+                asked.appendChild(el('summary', '', 'The prompt sent'));
+                asked.appendChild(el('small', 'stis-group-report-line stis-entry-text', entry.report.storyAsked));
+                roles.appendChild(asked);
+            }
+            const answer = el('details', 'stis-group-report-raw');
+            answer.appendChild(el('summary', '', 'The answer'));
+            answer.appendChild(el('small', 'stis-group-report-line stis-entry-text', entry.report.storyReply));
+            roles.appendChild(answer);
+        }
         section('card', 'Filing card', false).appendChild(cardBox(itemized ? unitView(entry, current) : entry, () => {
             if (!closed) {
                 renderLibFilters();
@@ -13247,6 +13278,31 @@ async function openPicker(initialTags = null, focus = null) {
         use.addEventListener('click', () => pickEntry(entry, use, current));
         const actions = [...bar.children].slice(navCount);
         const main = [use, fixButton, redo];
+        if (s.roleCheck && sequence && groupDescribed(entry)) {
+            const check = el('div', 'menu_button stis-role-check', 'Check roles');
+            check.title = 'Run only the story step on the descriptions this sequence already has, and stop there';
+            check.classList.toggle('disabled', groupProgress.has(entry.id));
+            check.addEventListener('click', async () => {
+                if (check.classList.contains('disabled') || groupProgress.has(entry.id)) {
+                    return;
+                }
+                check.classList.add('disabled');
+                check.textContent = 'Checking…';
+                entry.report = entry.report || cleanReport({});
+                groupStep(entry, 'Writing what each item means in the story…');
+                try {
+                    await writeStory(entry, '', entry.report);
+                    entry.report.steps.story = 'on';
+                    sectionOpen.set('roles', true);
+                    await saveLibrary();
+                } catch (error) {
+                    toastr.warning(`Could not check the roles: ${error?.message || error}`, 'Image Search');
+                } finally {
+                    groupStep(entry, '');
+                }
+            });
+            main.push(check);
+        }
         const moreRow = el('div', 'stis-more-row');
         moreRow.append(...actions.filter(button => !main.includes(button)));
         moreRow.hidden = !moreOpen;
@@ -14092,6 +14148,7 @@ function buildSettings() {
                             <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
                             <div id="st_imagesearch_story_reset" class="menu_button">Reset this prompt</div>
                         </div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_role_check"> <span>Role check (for testing)</span></label><small class="stis-help">Adds "Check roles" to a sequence in the library: it runs only the story step on the descriptions it already has (one quick text request, no pictures) and stops there. The preview then shows each item's intensity and role, the shape, the exact prompt sent and the answer, so you can tweak the story prompt above and check again.</small></div>
                         <div class="stis-set">
                             <div class="stis-label">Tags that matter</div>
                             <textarea id="st_imagesearch_tags_matter" class="text_pole" placeholder="one per line"></textarea>
@@ -14281,6 +14338,7 @@ function buildSettings() {
     renderDefinitions();
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
+    bind('st_imagesearch_role_check', 'roleCheck', 'checked');
     bind('st_imagesearch_tags_matter', 'tagsMatter', 'value', () => {
         clearTimeout(definitionTimer);
         definitionTimer = setTimeout(() => {

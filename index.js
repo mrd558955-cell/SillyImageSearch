@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.58.0';
+const VERSION = '2.59.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -34,7 +34,9 @@ const DEFAULT_BOARD_NOTE = 'A first look at all the items together saw in this o
 const DEFAULT_AGAIN_PROMPT = 'This is the description of this picture so far:\n\n{{description}}\n\nLook at the picture again and rewrite it:\n{{asks}}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n{{prompt}}{{#first_tag}}\n\nAfter the last line of that format, add one more line, exactly like "Checked: {{first_tag}} kept" or "Checked: {{first_tag}} left out, because …"{{#several}}, naming every tag above, separated by semicolons{{/several}}.{{/first_tag}}';
 const DEFAULT_LOOP_NOTE = 'This item is a loop: it repeats. Describe the repeating moment as one moment, not as a story.{{#before_loop}} The item before is a loop too.{{/before_loop}}{{#before_not_loop}} The item before is not a loop.{{/before_not_loop}}{{#after_loop}} The item after is a loop too.{{/after_loop}}{{#after_not_loop}} The item after is not a loop.{{/after_not_loop}}';
 const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: if this sequence has a climax, it is most likely there.';
-const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING };
+const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. Do not mention a picture, an image or tags.{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
+const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT };
 
 function fillTemplate(text, values) {
     let out = String(text);
@@ -113,6 +115,10 @@ const DEFAULTS = {
     gifNote: '',
     loopNote: '',
     oneMoving: '',
+    forcePrompt: '',
+    leadPrompt: '',
+    inlinePictures: true,
+    pickMix: true,
     describeRules: '',
     boardNote: '',
     againPrompt: '',
@@ -11632,9 +11638,10 @@ async function rankedCandidates(message) {
     };
     let started = clock();
     const cut = sceneCut(message);
-    const banned = ruledOut(message);
-    const fromMessage = messageValues(message);
-    const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(message)} ${judgedNotes().join(' ')}`);
+    const asked = [message, String(pickOptions.wish || '').trim()].filter(Boolean).join('\n');
+    const banned = ruledOut(asked);
+    const fromMessage = messageValues(asked);
+    const choices = pictureCandidates(`${cut ? '' : recentText(2)} ${withoutRuledOut(asked)} ${judgedNotes().join(' ')}`);
     timing.keywords = clock() - started;
     if (!choices.length) {
         return choices;
@@ -11642,7 +11649,7 @@ async function rankedCandidates(message) {
     let order = null;
     let meaningFailed = false;
     const [rank, cast] = await Promise.all([
-        timed('meaning', meaningRank(meaningQuery(message || recentText(1)), Infinity)).catch(error => {
+        timed('meaning', meaningRank(meaningQuery(asked || recentText(1)), Infinity)).catch(error => {
             meaningFailed = true;
             if (!meaning.warned) {
                 meaning.warned = true;
@@ -11838,30 +11845,96 @@ const sendState = { pending: null, busy: false };
 function chatPictures() {
     const meta = ctx().chatMetadata;
     if (!meta || typeof meta !== 'object') {
-        return { shown: [], forced: null };
+        return { forced: null, packs: [] };
     }
     if (!meta.imagesearch || typeof meta.imagesearch !== 'object') {
         meta.imagesearch = {};
     }
-    if (!Array.isArray(meta.imagesearch.shown)) {
-        meta.imagesearch.shown = [];
+    if (!Array.isArray(meta.imagesearch.packs)) {
+        meta.imagesearch.packs = [];
+    }
+    if (meta.imagesearch.forced && !meta.imagesearch.forced.token) {
+        meta.imagesearch.forced = null;
     }
     return meta.imagesearch;
 }
 
-function markShown(ids) {
-    const record = chatPictures();
-    record.shown = [...record.shown.filter(id => !ids.includes(id)), ...ids].slice(-100);
-}
-
-function lastUserIndex() {
-    const chat = ctx().chat || [];
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i]?.is_user && !chat[i].is_system) {
-            return i;
+function shownInChat() {
+    const urls = new Set();
+    for (const message of ctx().chat || []) {
+        if (!message || message.is_system || !message.extra || typeof message.extra !== 'object') {
+            continue;
+        }
+        (Array.isArray(message.extra.media) ? message.extra.media : []).forEach(item => {
+            if (item?.url) {
+                urls.add(item.url);
+            }
+        });
+        if (typeof message.extra.image === 'string') {
+            urls.add(message.extra.image);
         }
     }
-    return -1;
+    const ids = new Set();
+    if (!urls.size) {
+        return ids;
+    }
+    for (const entry of library.entries) {
+        if (urls.has(entry.url)) {
+            ids.add(entry.id);
+        }
+        (entry.variants || []).forEach(variant => {
+            if (urls.has(variant.url)) {
+                ids.add(variant.id);
+            }
+        });
+    }
+    return ids;
+}
+
+const PACK_LIMIT = 30;
+
+function messageMark(message) {
+    return message ? `${message.is_user ? 'user' : 'char'}|${message.name || ''}|${message.send_date || ''}` : '';
+}
+
+function packToken(message) {
+    if (!message || message.is_user) {
+        return '';
+    }
+    if (message.extra?.stis_pack) {
+        return message.extra.stis_pack;
+    }
+    const info = Array.isArray(message.swipe_info) ? message.swipe_info.find(item => item?.extra?.stis_pack) : null;
+    return info?.extra?.stis_pack || '';
+}
+
+function packOf(token) {
+    return token ? chatPictures().packs.find(pack => pack.token === token) || null : null;
+}
+
+function keepPack(pack) {
+    const record = chatPictures();
+    record.packs = [...record.packs.filter(item => item.token !== pack.token), pack].slice(-PACK_LIMIT);
+}
+
+function packForRedo(type) {
+    const record = chatPictures();
+    const chat = ctx().chat || [];
+    const last = chat[chat.length - 1];
+    if (!last) {
+        return null;
+    }
+    if (!last.is_user) {
+        return packOf(packToken(last));
+    }
+    if (type !== 'regenerate') {
+        return null;
+    }
+    const waiting = packOf(record.forced?.token);
+    if (waiting && !Number.isInteger(waiting.reply)) {
+        return waiting;
+    }
+    return record.packs.find(pack => pack.reply === chat.length && pack.before === messageMark(last)) || null;
 }
 
 function choiceId(choice) {
@@ -11889,7 +11962,7 @@ function nextPicture(entry, shown) {
 const ITEMS_PER_SET = 3;
 
 function pictureCandidates(text) {
-    const shown = new Set(chatPictures().shown);
+    const shown = shownInChat();
     const words = wordsOf(text);
     const character = ctx().name2 || '';
     const units = [];
@@ -11957,20 +12030,25 @@ function judgedNotes() {
     return appearanceNotes().filter(line => [...allowed].some(name => line.toLowerCase().startsWith(`${name} (`)));
 }
 
+function castLooks() {
+    return [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...judgedNotes()];
+}
+
 function pickContext(message) {
     const c = ctx();
     const user = c.name1 || 'The user';
-    const looks = [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...judgedNotes()];
+    const looks = castLooks();
     const cut = sceneCut(message);
-    const banned = ruledOut(message);
+    const wish = String(pickOptions.wish || '').trim();
+    const banned = ruledOut([message, wish].filter(Boolean).join('\n'));
     const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
     const plan = castPlan();
     const everyone = [...sceneMembers(), personaMember()].filter(Boolean);
     const left = everyone.filter(member => member !== plan.main && !plan.extras.includes(member) && member.key !== plan.main?.key && !plan.extras.some(extra => extra.key === member.key)).map(member => member.name);
     const focus = plan.main ? `\nThe picture must show ${plan.main.name}: judge looks against ${plan.main.name} first.${plan.extras.length ? ` ${plan.extras.map(member => member.name).join(', ')} may also be in it, but does not have to be.` : ''}` : '';
     const ignoreUser = focus + (left.length ? `\n${left.join(', ')} ${left.length > 1 ? 'are' : 'is'} not part of this check: never judge a picture by whether ${left.join(' or ')} ${left.length > 1 ? 'are' : 'is'} in it or how they look, and do not mention them in your reasons.` : '');
-    const rules = (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + ignoreUser;
-    return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}`;
+    const rules = (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + (wish ? `\n${user} also says what the picture should be about (below): for the action, it counts as much as the newest message.` : '') + ignoreUser;
+    return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}${wish ? `\n\nWhat ${user} wants the picture to be about:\n${wish}` : ''}`;
 }
 
 async function askPicturePick(message, candidates) {
@@ -12023,22 +12101,34 @@ async function askPicturePick(message, candidates) {
     };
 }
 
-function forceInstruction(choice) {
+function forceInstruction(choice, lead = '') {
+    const c = ctx();
     const described = describedVariant(choice.entry, choice.variant);
-    return `[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. Do not mention a picture, an image or tags. The picture shows:\n${described.text || tagsLine(choice.entry.tags)}]`;
+    return fillTemplate(promptPart('forcePrompt'), {
+        picture: described.text || tagsLine(choice.entry.tags),
+        lead: String(lead || '').trim(),
+        marker: settings().inlinePictures !== false ? 'yes' : '',
+        user: c.name1 || 'the user',
+        char: c.name2 || 'the character',
+    }).trim();
 }
 
-function setForcePrompt(choice) {
-    ctx().setExtensionPrompt?.(PROMPT_KEY, forceInstruction(choice), 1, 0, false, 0);
+function setForcePrompt(text) {
+    ctx().setExtensionPrompt?.(PROMPT_KEY, text, 1, 0, false, 0);
 }
 
 function clearForcePrompt() {
     ctx().setExtensionPrompt?.(PROMPT_KEY, '', 1, 0, false, 0);
 }
 
-function forcePicture(choice) {
-    sendState.pending = { id: choiceId(choice) };
-    setForcePrompt(choice);
+function newPackToken() {
+    return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function forcePicture(choice, send = {}) {
+    const text = forceInstruction(choice, send.lead);
+    sendState.pending = { token: newPackToken(), pic: choiceId(choice), text, lead: String(send.lead || '').trim(), wish: String(send.wish || '').trim(), typed: String(send.typed || '').trim(), options: Array.isArray(send.options) ? send.options.slice(0, 3) : [], at: Date.now() };
+    setForcePrompt(text);
     const button = document.getElementById('send_but');
     if (button) {
         button.click();
@@ -12046,6 +12136,201 @@ function forcePicture(choice) {
         sendState.pending = null;
         clearForcePrompt();
         toastr.warning('Could not find SillyTavern\'s send button.', 'Image Search');
+    }
+}
+
+function nextStep(choice) {
+    const entry = choice.entry;
+    if (entry.kind !== 'sequence' || !isMulti(entry) || !choice.variant) {
+        return '';
+    }
+    const index = entry.variants.findIndex(item => item.id === choice.variant.id);
+    const next = index >= 0 ? entry.variants[index + 1] : null;
+    if (!next) {
+        return '';
+    }
+    return `Item ${index + 2} of ${entry.variants.length}: ${itemStory(entry, next, index + 1) || next.diff || 'the next picture.'}`;
+}
+
+function leadInPrompt(choice, send = {}) {
+    const c = ctx();
+    const focus = castPlan().main?.name || '';
+    return fillTemplate(promptPart('leadPrompt'), {
+        user: c.name1 || 'The user',
+        char: c.name2 || 'The character',
+        focus,
+        looks: castLooks().join('\n') || '(only what the story says)',
+        story: storyLines(6) || '(start of the story)',
+        typed: String(send.typed || '').trim(),
+        wish: String(send.wish || '').trim(),
+        picture: describedVariant(choice.entry, choice.variant).text || tagsLine(choice.entry.tags),
+        next: nextStep(choice),
+    }).trim();
+}
+
+function readLeadIns(reply) {
+    const text = String(reply || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+    const items = [];
+    let current = null;
+    for (const raw of text.split('\n')) {
+        const line = raw.replace(/\*\*/g, '').trim();
+        const match = line.match(/^(?:[-*•]\s*)?(?:option|way)?\s*#?([1-9])\s*[.):\-–—]\s*(.+)$/i);
+        if (match) {
+            current = { text: match[2].trim() };
+            items.push(current);
+        } else if (current && line && items.length <= 3) {
+            current.text += ` ${line}`;
+        } else if (!line) {
+            current = null;
+        }
+    }
+    let options = items.map(item => item.text.trim()).filter(Boolean);
+    if (!options.length) {
+        options = text.split(/\n\s*\n/).map(part => part.replace(/\s+/g, ' ').trim()).filter(part => part.length > 12);
+    }
+    return options.slice(0, 3);
+}
+
+async function leadInOptions(choice, send) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    if (!service || !s.tagProfile) {
+        throw new Error('no Tag model is set in the settings');
+    }
+    const prompt = leadInPrompt(choice, send);
+    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 600, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.8));
+    const options = readLeadIns(typeof result === 'string' ? result : result?.content || '');
+    if (!options.length) {
+        throw new Error('the answer had no options');
+    }
+    return options;
+}
+
+function askLeadIn(choice, send) {
+    const c = ctx();
+    return new Promise(resolve => {
+        let answer = null;
+        let options = [];
+        let picked = 0;
+        let asking = false;
+        const root = el('div', 'stis-leadin');
+        const head = el('div', 'stis-leadin-head');
+        const thumb = el('img', 'stis-leadin-img');
+        thumb.alt = '';
+        thumb.src = (choice.variant || choice.entry).url;
+        head.append(thumb, el('b', '', 'How the story gets there'));
+        const status = el('small', 'stis-leadin-status');
+        const list = el('div', 'stis-leadin-list');
+        const ownRow = el('label', 'stis-leadin-option stis-leadin-own');
+        const ownPick = el('input');
+        ownPick.type = 'radio';
+        ownPick.name = 'stis_leadin_pick';
+        const own = el('textarea', 'text_pole');
+        own.rows = 2;
+        own.placeholder = 'Or write your own';
+        ownRow.append(ownPick, own);
+        const bar = el('div', 'stis-sendcard-bar');
+        const go = el('div', 'menu_button stis-use', 'Send');
+        const again = el('div', 'menu_button', 'New options');
+        const plain = el('div', 'menu_button', 'Without');
+        plain.title = 'Send the picture without a way in';
+        const cancel = el('div', 'menu_button', 'Cancel');
+        bar.append(go, again, plain, cancel);
+        root.append(head, status, list, ownRow, bar);
+        const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true, onClose: () => resolve(answer) });
+        const rows = () => [...list.querySelectorAll('.stis-leadin-option')];
+        const mark = () => {
+            rows().forEach((row, index) => {
+                row.querySelector('input').checked = index === picked;
+            });
+            ownPick.checked = picked === -1;
+        };
+        const draw = () => {
+            list.textContent = '';
+            options.forEach((option, index) => {
+                const row = el('label', 'stis-leadin-option');
+                const pick = el('input');
+                pick.type = 'radio';
+                pick.name = 'stis_leadin_pick';
+                const area = el('textarea', 'text_pole');
+                area.rows = 3;
+                area.value = option;
+                const choose = () => {
+                    picked = index;
+                    mark();
+                };
+                pick.addEventListener('change', choose);
+                area.addEventListener('focus', choose);
+                area.addEventListener('input', () => {
+                    options[index] = area.value;
+                });
+                row.append(pick, area);
+                list.appendChild(row);
+            });
+            if (picked >= options.length) {
+                picked = options.length ? 0 : -1;
+            }
+            mark();
+        };
+        const ask = async () => {
+            if (asking) {
+                return;
+            }
+            asking = true;
+            again.classList.add('stis-disabled');
+            status.textContent = options.length ? 'Writing new options…' : 'Writing 3 ways to get there…';
+            try {
+                options = await leadInOptions(choice, send);
+                picked = picked === -1 && own.value.trim() ? -1 : 0;
+                status.textContent = 'Pick one, edit it if you like, or write your own.';
+            } catch (error) {
+                console.warn('[Image Search] lead-in options failed', error);
+                status.textContent = `Could not write the options (${String(error?.message || error).slice(0, 140)}). Write your own, or send without.`;
+                if (!options.length) {
+                    picked = -1;
+                }
+            } finally {
+                asking = false;
+                again.classList.remove('stis-disabled');
+            }
+            draw();
+        };
+        ownPick.addEventListener('change', () => {
+            picked = -1;
+            mark();
+        });
+        own.addEventListener('focus', () => {
+            picked = -1;
+            mark();
+        });
+        go.addEventListener('click', async () => {
+            const lead = picked === -1 ? own.value.trim() : String(options[picked] || '').trim();
+            if (!lead) {
+                status.textContent = picked === -1 ? 'Write your way first, pick one above, or send without.' : 'This one is empty: write something, pick another, or send without.';
+                return;
+            }
+            answer = { lead, options: options.slice(0, 3) };
+            await popup.completeCancelled();
+        });
+        again.addEventListener('click', ask);
+        plain.addEventListener('click', async () => {
+            answer = { lead: '', options: options.slice(0, 3) };
+            await popup.completeCancelled();
+        });
+        cancel.addEventListener('click', () => popup.completeCancelled());
+        popup.show();
+        ask();
+    });
+}
+
+async function bringIn(choice, send = {}) {
+    if (!send.mix) {
+        forcePicture(choice, send);
+        return;
+    }
+    const answer = await askLeadIn(choice, send);
+    if (answer) {
+        forcePicture(choice, { ...send, lead: answer.lead, options: answer.options });
     }
 }
 
@@ -12120,7 +12405,7 @@ function showPictureCard(session) {
     send.addEventListener('click', async () => {
         const choice = options[index];
         await popup.completeCancelled();
-        forcePicture(choice);
+        await bringIn(choice, session.send || {});
     });
     another.addEventListener('click', () => {
         if (index < options.length - 1) {
@@ -12160,7 +12445,7 @@ function showPictureCard(session) {
 
 function storedSendOptions() {
     const s = settings();
-    return { focus: s.pickFocus === 'user' ? 'user' : 'char', main: String(s.pickMain || ''), allowOther: typeof s.pickAllowOther === 'boolean' ? s.pickAllowOther : s.pickWithUser !== false };
+    return { focus: s.pickFocus === 'user' ? 'user' : 'char', main: String(s.pickMain || ''), allowOther: typeof s.pickAllowOther === 'boolean' ? s.pickAllowOther : s.pickWithUser !== false, wish: '', mix: s.pickMix !== false };
 }
 
 function askSendOptions() {
@@ -12210,14 +12495,26 @@ function askSendOptions() {
         focus.addEventListener('change', paint);
         box.addEventListener('change', paint);
         paint();
+        const wishLabel = el('div', 'stis-label', 'What should the picture be about? (optional)');
+        const wish = el('textarea', 'text_pole stis-sendopts-wish');
+        wish.id = 'stis_sendopts_wish';
+        wish.rows = 2;
+        wish.placeholder = 'He finally gives in and laughs';
+        const wishHelp = el('small', 'stis-sendopts-hint', 'Helps choose the picture, together with what is in the chat box, and goes to the ways in.');
+        const mixLabel = el('label', 'checkbox_label');
+        const mix = el('input');
+        mix.type = 'checkbox';
+        mix.id = 'stis_sendopts_mix';
+        mix.checked = stored.mix;
+        mixLabel.append(mix, el('span', '', ' Suggest 3 ways to bring it in'));
         const bar = el('div', 'stis-sendcard-bar');
         const go = el('div', 'menu_button stis-use', 'Choose picture');
         const cancel = el('div', 'menu_button', 'Cancel');
         bar.append(go, cancel);
-        root.append(row, label, hint, bar);
+        root.append(row, label, hint, wishLabel, wish, wishHelp, mixLabel, bar);
         const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', onClose: () => resolve(answer) });
         go.addEventListener('click', async () => {
-            answer = { focus: focus.value === 'user' ? 'user' : 'char', main: focus.value === 'user' ? stored.main : focus.value.slice(5), allowOther: box.checked };
+            answer = { focus: focus.value === 'user' ? 'user' : 'char', main: focus.value === 'user' ? stored.main : focus.value.slice(5), allowOther: box.checked, wish: wish.value.trim(), mix: mix.checked };
             s.pickFocus = answer.focus;
             s.pickMain = answer.main;
             s.pickAllowOther = answer.allowOther;
@@ -12290,14 +12587,15 @@ async function sendWithPicture() {
     if (!options.length) {
         return;
     }
+    const send = { typed: message, wish: choices.wish || '', mix: Boolean(choices.mix) };
     if (s.confirmPicture || noneFits) {
-        showPictureCard({ message, cast, timing, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks });
+        showPictureCard({ message, cast, timing, options, noneFits, reasons, noneWhy, picked: aiPicked, shortlist, ranks, send });
     } else {
-        forcePicture(options[0]);
+        await bringIn(options[0], send);
     }
 }
 
-function attachPicture(message, entry, variant, note = 'shown in the story') {
+function attachPicture(message, entry, variant, note = 'shown in the story', line = null) {
     if (!message.extra || typeof message.extra !== 'object') {
         message.extra = {};
     }
@@ -12305,11 +12603,159 @@ function attachPicture(message, entry, variant, note = 'shown in the story') {
         message.extra.media = [];
     }
     const url = variant?.url || entry.url;
-    if (!message.extra.media.some(item => item.url === url)) {
-        message.extra.media.push({ type: 'image', url, title: pictureNote(describedVariant(entry, variant), note), append_title: true, source: 'upload' });
+    let media = message.extra.media.find(item => item.url === url);
+    if (!media) {
+        media = { type: 'image', url, title: pictureNote(describedVariant(entry, variant), note), append_title: true, source: 'upload' };
+        message.extra.media.push(media);
     }
-    markShown([(variant || entry).id]);
+    if (Number.isInteger(line)) {
+        media.stis_line = line;
+    }
     noteUse(entry, message.name || ctx().name2 || '');
+}
+
+const PICTURE_MARK = /\[\s*picture\s*\]/gi;
+
+function hasWords(text) {
+    return /[^\s*_~>]/.test(String(text || ''));
+}
+
+function cutMarks(text, pattern) {
+    const kept = [];
+    const found = [];
+    for (const line of String(text || '').split('\n')) {
+        const hits = [...line.matchAll(pattern)];
+        if (!hits.length) {
+            kept.push(line);
+            continue;
+        }
+        const place = kept.filter(hasWords).length + (hasWords(line.slice(0, hits[0].index)) ? 1 : 0);
+        hits.forEach(hit => found.push({ hit, line: place }));
+        const rest = line.replace(pattern, '').replace(/[ \t]{2,}/g, ' ').trimEnd();
+        if (hasWords(rest)) {
+            kept.push(rest);
+        }
+    }
+    return { text: kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(), found };
+}
+
+const LINE_BLOCKS = new Set(['P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'DT', 'DD', 'TR']);
+const SKIP_BLOCKS = new Set(['HR', 'TEXTAREA', 'SCRIPT', 'STYLE']);
+
+function textSpots(root) {
+    const spots = [];
+    const walk = node => {
+        for (const child of node.children) {
+            if (child.classList.contains('stis-inline') || SKIP_BLOCKS.has(child.tagName)) {
+                continue;
+            }
+            if (child.tagName === 'BR') {
+                spots.push(child);
+                continue;
+            }
+            if (child.tagName !== 'PRE') {
+                walk(child);
+            }
+            if (LINE_BLOCKS.has(child.tagName) && !endsWithBreak(child)) {
+                spots.push(child);
+            }
+        }
+    };
+    walk(root);
+    return spots;
+}
+
+function endsWithBreak(node) {
+    for (let child = node.lastChild; child; child = child.previousSibling) {
+        if (child.nodeType === 3 && !child.textContent.trim()) {
+            continue;
+        }
+        return child.nodeType === 1 && child.tagName === 'BR';
+    }
+    return false;
+}
+
+function placeInline(block) {
+    if (!block?.querySelector) {
+        return;
+    }
+    const message = (ctx().chat || [])[Number(block.getAttribute('mesid'))];
+    const media = Array.isArray(message?.extra?.media) ? message.extra.media : [];
+    const text = block.querySelector('.mes_text');
+    const wrapper = block.querySelector('.mes_media_wrapper');
+    if (!text || !wrapper || (!media.some(item => Number.isInteger(item?.stis_line)) && !text.querySelector('.stis-inline'))) {
+        return;
+    }
+    const off = settings().inlinePictures === false || Boolean(text.querySelector('textarea')) || block.getAttribute('data-media-display') === 'gallery';
+    const sources = [...wrapper.children].filter(node => node.classList.contains('mes_img_container'));
+    const wanted = off ? [] : sources.map(node => ({ node, index: Number(node.getAttribute('data-index')) })).filter(item => Number.isInteger(media[item.index]?.stis_line));
+    const copies = [...text.querySelectorAll('.stis-inline')];
+    const settled = wanted.every(item => item.node.classList.contains('stis-inline-src') && copies.some(copy => copy.getAttribute('data-index') === String(item.index))) && copies.length === wanted.length && sources.every(node => wanted.some(item => item.node === node) || !node.classList.contains('stis-inline-src'));
+    if (settled) {
+        return;
+    }
+    copies.forEach(copy => copy.remove());
+    sources.forEach(node => node.classList.toggle('stis-inline-src', wanted.some(item => item.node === node)));
+    if (!wanted.length) {
+        return;
+    }
+    const spots = textSpots(text);
+    const after = new Map();
+    wanted.sort((a, b) => media[a.index].stis_line - media[b.index].stis_line || a.index - b.index).forEach(({ node, index }) => {
+        const copy = node.cloneNode(true);
+        copy.classList.remove('stis-inline-src');
+        copy.classList.add('stis-inline');
+        const line = Math.max(0, media[index].stis_line);
+        const spot = line === 0 ? null : spots[Math.min(line, spots.length) - 1] || null;
+        const anchor = after.get(line) || spot;
+        if (anchor) {
+            anchor.after(copy);
+        } else if (line === 0) {
+            text.prepend(copy);
+        } else {
+            text.appendChild(copy);
+        }
+        after.set(line, copy);
+    });
+}
+
+let inlineWatch = null;
+
+function watchInline() {
+    const chat = document.getElementById('chat');
+    if (!chat || inlineWatch || typeof MutationObserver === 'undefined') {
+        return;
+    }
+    inlineWatch = new MutationObserver(records => {
+        const blocks = new Set();
+        for (const record of records) {
+            const target = record.target;
+            if (target === chat) {
+                record.addedNodes.forEach(node => {
+                    if (node.nodeType === 1 && node.classList.contains('mes')) {
+                        blocks.add(node);
+                    }
+                });
+                continue;
+            }
+            const block = target.nodeType === 1 ? target.closest('.mes') : target.parentElement?.closest('.mes');
+            if (block) {
+                blocks.add(block);
+            }
+        }
+        blocks.forEach(placeInline);
+    });
+    inlineWatch.observe(chat, { childList: true, subtree: true });
+}
+
+function placeAllInline() {
+    document.querySelectorAll('#chat .mes').forEach(placeInline);
+}
+
+function armPack(pack) {
+    const record = chatPictures();
+    record.forced = { token: pack.token, armed: true, at: Date.now() };
+    setForcePrompt(pack.text || '');
 }
 
 function onGenerationStarted(type, _options, dryRun) {
@@ -12317,22 +12763,28 @@ function onGenerationStarted(type, _options, dryRun) {
         return;
     }
     const record = chatPictures();
-    if (sendState.pending) {
-        record.forced = { pic: sendState.pending.id, user: lastUserIndex(), armed: true };
+    if (sendState.pending && Date.now() - (sendState.pending.at || 0) > 15000) {
         sendState.pending = null;
+    }
+    if (sendState.pending) {
+        const pack = { ...sendState.pending, reply: null, before: '' };
+        sendState.pending = null;
+        keepPack(pack);
+        armPack(pack);
         return;
     }
-    if ((type === 'swipe' || type === 'regenerate') && record.forced && record.forced.user === lastUserIndex()) {
-        const found = resolvePic(record.forced.pic);
-        if (found) {
-            setForcePrompt(found);
-            record.forced.armed = true;
+    if (type === 'swipe' || type === 'regenerate') {
+        const pack = packForRedo(type);
+        if (pack?.text) {
+            armPack(pack);
             return;
         }
     }
-    if (record.forced) {
-        record.forced.armed = false;
+    const waiting = record.forced?.armed ? packOf(record.forced.token) : null;
+    if (waiting && !Number.isInteger(waiting.reply) && ctx().groupId && Date.now() - (record.forced.at || 0) < 60000) {
+        return;
     }
+    record.forced = type === 'continue' && record.forced ? { ...record.forced, armed: false } : null;
     clearForcePrompt();
 }
 
@@ -12342,20 +12794,30 @@ async function onForcedReply(messageId) {
     if (!record.forced?.armed) {
         return;
     }
+    const pack = packOf(record.forced.token);
     record.forced.armed = false;
     clearForcePrompt();
     const id = Number(messageId);
     const message = c.chat[id];
-    if (!message || message.is_user || message.is_system) {
+    if (!pack || !message || message.is_user || message.is_system) {
         return;
     }
     await loadLibrary();
-    const found = resolvePic(record.forced.pic);
+    const found = resolvePic(pack.pic);
     if (!found) {
         return;
     }
-    record.forced.reply = id;
-    attachPicture(message, found.entry, found.variant);
+    pack.reply = id;
+    pack.before = messageMark(c.chat[id - 1]);
+    if (!message.extra || typeof message.extra !== 'object') {
+        message.extra = {};
+    }
+    message.extra.stis_pack = pack.token;
+    const cut = typeof message.mes === 'string' ? cutMarks(message.mes, PICTURE_MARK) : { text: '', found: [] };
+    if (cut.found.length) {
+        setMessageText(message, cut.text);
+    }
+    attachPicture(message, found.entry, found.variant, 'shown in the story', cut.found[0]?.line ?? null);
     saveLibrary();
     syncCurrentSwipe(message);
     if (document.querySelector(`#chat .mes[mesid="${id}"]`)) {
@@ -12383,16 +12845,23 @@ async function onAiPictures(messageId) {
     const c = ctx();
     const id = Number(messageId);
     const message = c.chat[id];
-    if (!s.enabled || !message || message.is_user || message.is_system || typeof message.mes !== 'string' || !/\[pic:/i.test(message.mes)) {
+    if (!s.enabled || !message || message.is_user || message.is_system || typeof message.mes !== 'string' || !/\[pic:|\[\s*picture\s*\]/i.test(message.mes)) {
         return;
     }
     await loadLibrary();
-    const ids = [...message.mes.matchAll(PIC_TAG)].map(match => match[1].toLowerCase());
-    setMessageText(message, message.mes.replace(PIC_TAG, '').replace(/\n{3,}/g, '\n\n').trim());
-    const pictures = [...new Set(ids)].map(pid => resolvePic(pid)).filter(Boolean).slice(0, 2);
+    const cut = cutMarks(cutMarks(message.mes, PICTURE_MARK).text, PIC_TAG);
+    setMessageText(message, cut.text);
+    const lines = new Map();
+    cut.found.forEach(({ hit, line }) => {
+        const pid = hit[1].toLowerCase();
+        if (!lines.has(pid)) {
+            lines.set(pid, line);
+        }
+    });
+    const pictures = [...lines.keys()].map(pid => ({ pid, found: resolvePic(pid) })).filter(item => item.found).slice(0, 2);
     if (pictures.length) {
-        for (const { entry, variant } of pictures) {
-            attachPicture(message, entry, variant);
+        for (const { pid, found } of pictures) {
+            attachPicture(message, found.entry, found.variant, 'shown in the story', lines.get(pid));
         }
         saveLibrary();
     }
@@ -12448,7 +12917,8 @@ async function onMessageSent(messageId) {
     if (!message || !message.is_user || typeof message.mes !== 'string') {
         return;
     }
-    const found = [...message.mes.matchAll(LOCAL_IMAGE_MD)];
+    const cut = cutMarks(message.mes, LOCAL_IMAGE_MD);
+    const found = cut.found.map(item => item.hit);
     if (!found.length) {
         return;
     }
@@ -12458,19 +12928,12 @@ async function onMessageSent(messageId) {
     if (!Array.isArray(message.extra.media)) {
         message.extra.media = [];
     }
-    if (s.keepLibrary) {
-        await loadLibrary();
-        const shownIds = found.map(match => findPicture(item => item.url === match[2])).filter(Boolean).map(hit => (hit.variant || hit.entry).id);
-        if (shownIds.length) {
-            markShown(shownIds);
-        }
-    }
     const waits = [];
-    for (const match of found) {
+    for (const [position, match] of found.entries()) {
         const url = match[2];
         let media = message.extra.media.find(item => item.url === url);
         if (!media) {
-            media = { type: 'image', url, title: match[1], source: 'upload' };
+            media = { type: 'image', url, title: match[1], source: 'upload', stis_line: cut.found[position].line };
             message.extra.media.push(media);
         }
         let entry = descriptions.get(url);
@@ -12485,7 +12948,7 @@ async function onMessageSent(messageId) {
             waits.push(applyDescription(message, media, entry));
         }
     }
-    message.mes = message.mes.replace(LOCAL_IMAGE_MD, '').replace(/\n{3,}/g, '\n\n').trim();
+    message.mes = cut.text;
     await Promise.all(waits);
     await c.saveChat();
 }
@@ -16338,7 +16801,20 @@ function buildSettings() {
                     <div class="stis-section-body">
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sendbutton"> <span>Picture button next to Send</span></label></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_confirmpic"> <span>Show the picture before sending</span></label></div>
-                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> <span>Ask for the main focus first</span></label><small class="stis-help">Who the picture is about, and who else may be in it.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pickwindow"> <span>Ask for the main focus first</span></label><small class="stis-help">Who the picture is about, who else may be in it, and what you want the picture to be about.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pick_mix"> <span>Suggest ways to bring it in</span></label><small class="stis-help">After you choose the picture, the Tag model reads the story, what is in the chat box, what you want and the whole picture description, and writes 3 ways for the story to get there. Edit one, write your own, or send without. The window that asks for the main focus can turn it off for one send. A swipe or regenerate of that reply sends exactly the same again.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_inline"> <span>Pictures between the lines</span></label><small class="stis-help">The reply's AI writes [picture] where the picture belongs, and the picture is shown there instead of under the message. If it forgets, the picture stays under the message. Pictures in your own message, and the ones the AI shows on its own, go where they were written too.</small></div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">Picture send prompts</summary>
+                            <div class="stis-label">Reply instruction (to the reply's AI)</div>
+                            <textarea id="st_imagesearch_force_prompt" class="text_pole" rows="8"></textarea>
+                            <small class="stis-help">Filled in: {{picture}} (the picture's whole description), {{lead}} (the way in you chose), {{user}}, {{char}}. {{#marker}}…{{/marker}}: only when "Pictures between the lines" is on (keep [picture] in it, it is how the place is found); {{#lead}}…{{/lead}}: only when you chose a way in.</small>
+                            <div id="st_imagesearch_force_prompt_reset" class="menu_button">Reset this prompt</div>
+                            <div class="stis-label">Ways in (to the Tag model)</div>
+                            <textarea id="st_imagesearch_lead_prompt" class="text_pole" rows="10"></textarea>
+                            <small class="stis-help">Filled in: {{story}}, {{typed}} (the chat box), {{wish}} (what you want), {{picture}}, {{focus}} (the main focus), {{looks}}, {{next}} (the next item of a sequence), {{user}}, {{char}}. {{#typed}}…{{/typed}}, {{#wish}}…{{/wish}}, {{#focus}}…{{/focus}} and {{#next}}…{{/next}}: only when there is one. The answer needs lines like "1. …".</small>
+                            <div id="st_imagesearch_lead_prompt_reset" class="menu_button">Reset this prompt</div>
+                        </details>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures the AI compares</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div><small class="stis-help">Fewer is faster; a good picture ranked lower is not seen by the AI.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Embedding model</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div><small class="stis-help">Empty = the default.</small></div>
@@ -16537,6 +17013,8 @@ function buildSettings() {
     bind('st_imagesearch_sendbutton', 'sendButton', 'checked', updateButtons);
     bind('st_imagesearch_confirmpic', 'confirmPicture', 'checked');
     bind('st_imagesearch_pickwindow', 'pickWindow', 'checked');
+    bind('st_imagesearch_pick_mix', 'pickMix', 'checked');
+    bind('st_imagesearch_inline', 'inlinePictures', 'checked', placeAllInline);
     bind('st_imagesearch_vision_tokens', 'visionMaxTokens', 'number');
     bind('st_imagesearch_describe_wait', 'describeWaitSec', 'number');
     const framesValue = document.getElementById('st_imagesearch_gif_frames_value');
@@ -16577,7 +17055,7 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
-    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving']].forEach(([id, key]) => {
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt']].forEach(([id, key]) => {
         const area = document.getElementById(id);
         area.value = promptPart(key);
         area.addEventListener('input', () => {
@@ -17074,7 +17552,9 @@ jQuery(() => {
     setInterval(refreshCleanup, CLEANUP_REFRESH_MS);
     registerCommand();
     addButtons();
+    watchInline();
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);
+    c.eventSource.on(c.eventTypes.APP_READY, watchInline);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onForcedReply);
     c.eventSource.on(c.eventTypes.MESSAGE_RECEIVED, onAiPictures);
     if (c.eventTypes.GENERATION_STARTED) {

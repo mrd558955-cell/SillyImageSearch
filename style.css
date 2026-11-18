@@ -1345,6 +1345,68 @@ video.stis-preview-img {
     opacity: 0.75;
 }
 
+.stis-sendopts-wish {
+    resize: vertical;
+}
+
+.stis-leadin {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    text-align: left;
+    min-width: min(86vw, 360px);
+}
+
+.stis-leadin-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.stis-leadin-img {
+    width: 56px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex: none;
+}
+
+.stis-leadin-status {
+    opacity: 0.8;
+}
+
+.stis-leadin-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.stis-leadin-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.stis-leadin-option input[type="radio"] {
+    margin-top: 0.6em;
+    flex: none;
+}
+
+.stis-leadin-option textarea {
+    flex: 1;
+    min-width: 0;
+    resize: vertical;
+    margin: 0;
+}
+
+.mes .mes_media_wrapper > .stis-inline-src {
+    display: none !important;
+}
+
+.mes .mes_text .stis-inline {
+    margin: 0.5em 0;
+}
+
 #st_imagesearch_settings [hidden] {
     display: none !important;
 }

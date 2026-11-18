@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.56.4';
+const VERSION = '2.57.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -28,6 +28,28 @@ const OLD_NAMES_RULE = 'Use names only when the tags give them.';
 const NO_NAMES_RULE = 'Never use names for people or characters, even when the tags give them (a character tag is only a hint): say he, she or they, or describe the person (the blond boy in orange). If a text you are given uses names, replace them the same way.';
 const ACTORS_RULE = 'Begin the Visual line (keep its "Visual:" label) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Visual: Two people (one only partly in view): …". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
 const PICTURE_FIRST = 'The picture comes first: describe what you actually see. Tags, notes and earlier descriptions only support it; where they do not match the picture, follow the picture, and mention something that cannot be seen only as likely off screen or implied, in a few words, without changing what is visibly happening.';
+const DEFAULT_GIF_NOTE = 'This picture is a short animation (a GIF). {{frames}}{{#seconds}} It is {{seconds}} s long{{#apart}}, and the moments are spread evenly over that time, about {{apart}} s apart{{/apart}}.{{/seconds}}{{#loop}} Its last moment matches its first almost exactly, so it most likely repeats as a loop.{{/loop}}{{#long}} It is long enough to hold several actions in a row: in Action, say what happens in order (first…, then…, at the end…).{{/long}} Describe it as one moving picture; in Action, say what happens from the start to the end.';
+const DEFAULT_DESCRIBE_RULES = `{{tag_info}}\n\n${PICTURE_FIRST} ${ACTORS_RULE}{{#tag_count}} The site's tags say: {{tag_count}}. If they count more people than you first notice, look again for someone only partly in view before you give the count.{{/tag_count}} ${NO_NAMES_RULE}`;
+const DEFAULT_BOARD_NOTE = 'A first look at all the items together saw in this one:{{#who}}\nWho is there: {{who}}{{/who}}{{#what}}\nWhat happens: {{what}}{{/what}}{{#just_before}}\nJust before (item {{before_number}}): {{just_before}}{{/just_before}}{{#just_after}}\nJust after (item {{after_number}}): {{just_after}}{{/just_after}}\nUse it to know who is there (count anyone only partly in view, or most likely just out of view) and where this moment sits in the story. Where it does not match the picture, follow the picture.';
+const DEFAULT_AGAIN_PROMPT = 'This is the description of this picture so far:\n\n{{description}}\n\nLook at the picture again and rewrite it:\n{{asks}}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n{{prompt}}{{#first_tag}}\n\nAfter the last line of that format, add one more line, exactly like "Checked: {{first_tag}} kept" or "Checked: {{first_tag}} left out, because …"{{#several}}, naming every tag above, separated by semicolons{{/several}}.{{/first_tag}}';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT };
+
+function fillTemplate(text, values) {
+    let out = String(text);
+    for (let pass = 0; pass < 8; pass++) {
+        const next = out.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (all, key, inner) => (values[key] ? inner : ''));
+        if (next === out) {
+            break;
+        }
+        out = next;
+    }
+    return out.replace(/\{\{(\w+)\}\}/g, (all, key) => (key in values ? String(values[key] ?? '') : all));
+}
+
+function promptPart(key) {
+    const own = settings()[key];
+    return typeof own === 'string' && own.trim() ? own : PROMPT_PARTS[key];
+}
 const PREV_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nGive each item a role and a story line.\nRole: a main role, then a finer one. Main roles: setup (how things are before the action, often a loop or an idle moment), build-up (leading to the action), main action (the key moment), aftermath (the result or the reaction to it), transition (moving on to another scene). The finer role is 1 to 3 words of your own, like idle loop, wind-up, climax, impact, reveal, reaction, calm down. With 3 items, the first is often the setup, the second the main action and the third the aftermath, but go by what the descriptions say.\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per item and nothing else, like:\n1. setup, idle loop: ...\n2. main action, climax: ...';
 const V241_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst give the shape of the whole group, then a role and a story line for each item.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension rising toward an action or the climax), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between actions: catching breath, a standoff, a loop that holds the moment), climax (the single most intense moment of the whole group), aftermath (the result or the reaction after the climax), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, reaction, calm down.\nGuidelines:\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: a loop at the start is usually the setup, a loop between actions is a pause, a loop at the end can be the aftermath.\n- There is at most one climax. It is usually the last item or the one before it; an action earlier on is just an action unless nothing after it comes close.\n- Not every group has an aftermath. Use it only for an item that comes after the climax and shows its result or a reaction. If the group ends on the peak, the last item is the climax.\n- Judge each item by what it shows and by the items around it, not by its position.\nExamples: setup, climax, aftermath (a short scene with one peak); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); setup, action, action, transition (no real peak, so no climax).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with the shape line, then one line per item, and nothing else, like:\nShape: setup → action → pause → climax\n1. setup, idle loop: ...\n2. action, first clash: ...';
 const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst rate each item, then give the shape of the whole group, then a role and a story line for each item.\nIntensity: rate each item from 1 to 10 for how intense the moment is. Intensity is the peak of emotion, not just of action: a fierce blow, a confession, a reconciliation hug, a goodbye or someone breaking into tears can all be a 9 or a 10. Calm, ordinary or waiting moments are low. Compare the items with each other, not with other stories.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension or feeling rising toward the peak), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between two higher moments: catching breath, a standoff, a loop that holds the moment), climax (the item where the intensity peaks), aftermath (after the climax: its result, or the reaction to it, with the intensity coming down), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, embrace, tears, reaction, calm down.\nGuidelines:\n- Decide the climax from the intensity: it is the item with the highest one, and there is at most one. It can be anywhere, also the first item, and in a sad or tender scene it is the most emotional moment, not the most active one.\n- An item after the climax that shows its result or a reaction is the aftermath, even if something still moves in it. A group that ends on the peak has no aftermath.\n- Item 1 is not always the setup: a group can start in the middle of things, with a build-up or an action.\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: it can be a setup, a pause or an aftermath depending on what it shows.\nExamples: setup, climax, aftermath; build-up, climax, aftermath (starts in the middle of things); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); climax, aftermath, aftermath (starts at the peak); setup, build-up, climax (a tearful goodbye).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one rating line per item, then the shape line, then one line per item, and nothing else, like:\nIntensity 1: 4, they size each other up\nIntensity 2: 9, the decisive blow\nIntensity 3: 5, she staggers back, hurt\nShape: build-up → climax → aftermath\n1. build-up, sizing up: ...\n2. climax, finishing blow: ...';
@@ -86,6 +108,10 @@ const DEFAULTS = {
     groupLink: true,
     groupInText: true,
     sequenceV3: true,
+    gifNote: '',
+    describeRules: '',
+    boardNote: '',
+    againPrompt: '',
     tagLinks: [],
     tagAliasChecked: {},
     groupRoleFit: true,
@@ -4306,12 +4332,10 @@ async function clipOf(url, data, decoder, count) {
     return clip;
 }
 
-function clipWords(clip, count) {
-    if (!clip?.seconds) {
-        return '';
-    }
-    const apart = count > 1 ? Math.round(clip.seconds / count * 10) / 10 : 0;
-    return `It is ${clip.seconds} s long${apart ? `, and the moments are spread evenly over that time, about ${apart} s apart` : ''}.${clip.loop ? ' Its last moment matches its first almost exactly, so it most likely repeats as a loop.' : ''}${clip.seconds >= 5 ? ' It is long enough to hold several actions in a row: in Action, say what happens in order (first…, then…, at the end…).' : ''}`;
+function gifNoteText(set, shown) {
+    const seconds = set.clip?.seconds || 0;
+    const apart = seconds && set.count > 1 ? Math.round(seconds / set.count * 10) / 10 : 0;
+    return fillTemplate(promptPart('gifNote'), { frames: shown, seconds: seconds || '', apart: apart || '', loop: seconds && set.clip.loop ? 'yes' : '', long: seconds >= 5 ? 'yes' : '' });
 }
 
 async function isAnimated(picture) {
@@ -4589,9 +4613,9 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         throw new Error('No vision profile chosen in Image Search settings.');
     }
     const people = peopleHint(extra.peopleTags || tags);
-    const count = people ? ` The site's tags say: ${people}${extra.peopleTags ? ' (for the whole group, so not everyone may be in this item)' : ''}. If they count more people than you first notice, look again for someone only partly in view before you give the count.` : '';
     const info = extra.tagInfo ? importantTagInfo(tags) : '';
-    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}${info}\n\n${PICTURE_FIRST} ${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
+    const rules = fillTemplate(promptPart('describeRules'), { tag_info: info, tag_count: people ? `${people}${extra.peopleTags ? ' (for the whole group, so not everyone may be in this item)' : ''}` : '' });
+    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}${rules}`;
     const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
@@ -4610,8 +4634,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         const shown = set.sheet
             ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
             : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
-        const length = set.clip ? ` ${clipWords(set.clip, set.count)}` : '';
-        const text = `This picture is a short animation (a GIF). ${shown}${length} Describe it as one moving picture; in Action, say what happens from the start to the end.\n\n${prompt}`;
+        const text = `${gifNoteText(set, shown)}\n\n${prompt}`;
         const reply = await ask(text, set);
         rememberSent(url, 'describe', { ...sentView(set), prompt: text, tokens: Math.max(32, Number(s.visionMaxTokens) || 300), heat: 0.3 });
         return reply;
@@ -7246,8 +7269,7 @@ function boardLines(entry, index) {
     if (!item?.cast && !item?.beat) {
         return '';
     }
-    const near = [index > 0 && items[index - 1].beat ? `Just before (item ${index}): ${items[index - 1].beat}` : '', index + 1 < items.length && items[index + 1].beat ? `Just after (item ${index + 2}): ${items[index + 1].beat}` : ''].filter(Boolean);
-    return `A first look at all the items together saw in this one:${item.cast ? `\nWho is there: ${item.cast}` : ''}${item.beat ? `\nWhat happens: ${item.beat}` : ''}${near.length ? `\n${near.join('\n')}` : ''}\nUse it to know who is there (count anyone only partly in view, or most likely just out of view) and where this moment sits in the story. Where it does not match the picture, follow the picture.`;
+    return fillTemplate(promptPart('boardNote'), { who: item.cast || '', what: item.beat || '', just_before: index > 0 ? items[index - 1].beat || '' : '', before_number: index, just_after: index + 1 < items.length ? items[index + 1].beat || '' : '', after_number: index + 2 });
 }
 
 function v3FixPrompt(item, base, { problems = [], roleFix = null, verify = [] }, asked) {
@@ -7263,9 +7285,7 @@ function v3FixPrompt(item, base, { problems = [], roleFix = null, verify = [] },
         });
         asks.push(`Nobody saw ${verify.length === 1 ? 'this tag' : 'these tags'} of the sequence, but from the user's notes ${verify.length === 1 ? 'it most likely belongs' : 'they most likely belong'} to this moment, even off screen or only implied:\n${lines.join('\n')}\nIf the picture shows it or fits it, work it in (as likely off screen or implied when it cannot be seen). If the picture clearly goes against it, leave it out.`);
     }
-    const first = verify[0]?.tag.replace(/_/g, ' ');
-    const check = verify.length ? `\n\nAfter the last line of that format, add one more line, exactly like "Checked: ${first} kept" or "Checked: ${first} left out, because …"${verify.length > 1 ? ', naming every tag above, separated by semicolons' : ''}.` : '';
-    return `This is the description of this picture so far:\n\n${base}\n\nLook at the picture again and rewrite it:\n${asks.map(text => `- ${text}`).join('\n')}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n${asked}${check}`;
+    return fillTemplate(promptPart('againPrompt'), { description: base, asks: asks.map(text => `- ${text}`).join('\n'), prompt: asked, first_tag: verify[0]?.tag.replace(/_/g, ' ') || '', several: verify.length > 1 ? 'yes' : '' });
 }
 
 function readChecked(raw, verify) {
@@ -15984,6 +16004,26 @@ function buildSettings() {
                             <small class="stis-help">{{tags}} is filled in.</small>
                             <div id="st_imagesearch_vision_reset" class="menu_button">Reset description prompt</div>
                         </div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">The rest of the description prompt</summary>
+                            <small class="stis-help">Everything else the vision model gets around your description prompt ("What the AI saw" shows how it all comes together). Left empty or reset, the default is used. A part between {{#name}} and {{/name}} is only kept when that thing applies.</small>
+                            <div class="stis-label">GIF note (at the very top, for GIFs)</div>
+                            <textarea id="st_imagesearch_gif_note" class="text_pole" rows="5"></textarea>
+                            <small class="stis-help">Filled in: {{frames}} (how many moments and how they are laid out), {{seconds}} (the GIF's length), {{apart}} (seconds between moments). {{#seconds}}…{{/seconds}}: only when the length is known; {{#loop}}…{{/loop}}: only for a GIF whose last moment matches its first; {{#long}}…{{/long}}: only for GIFs of 5 s or more.</small>
+                            <div id="st_imagesearch_gif_note_reset" class="menu_button">Reset GIF note</div>
+                            <div class="stis-label">Rules after the description prompt (every picture)</div>
+                            <textarea id="st_imagesearch_describe_rules" class="text_pole" rows="8"></textarea>
+                            <small class="stis-help">Filled in: {{tag_info}} (the definitions and your notes for the picture's important tags), {{tag_count}} (who the tags count). {{#tag_count}}…{{/tag_count}}: only when the tags count people.</small>
+                            <div id="st_imagesearch_describe_rules_reset" class="menu_button">Reset rules</div>
+                            <div class="stis-label">What the look at the whole sequence saw (new sequence steps)</div>
+                            <textarea id="st_imagesearch_board_note" class="text_pole" rows="6"></textarea>
+                            <small class="stis-help">Given to each item of a sequence. Filled in: {{who}}, {{what}}, {{just_before}} and {{before_number}} (the item before), {{just_after}} and {{after_number}} (the item after).</small>
+                            <div id="st_imagesearch_board_note_reset" class="menu_button">Reset this part</div>
+                            <div class="stis-label">Looking again at an item (new sequence steps)</div>
+                            <textarea id="st_imagesearch_again_prompt" class="text_pole" rows="8"></textarea>
+                            <small class="stis-help">Used when an item is looked at again to fix its role, a problem from the final check or a tag from your notes. Filled in: {{description}} (its description so far), {{asks}} (what to fix), {{prompt}} (the whole description prompt), {{first_tag}} with {{#several}}…{{/several}} for the "Checked:" line (keep "Checked:" so the answer can be read).</small>
+                            <div id="st_imagesearch_again_prompt_reset" class="menu_button">Reset this part</div>
+                        </details>
                         <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, then a role and a story line. About 2 requests per item, plus 3.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_sequence_v3"> <span>New sequence steps (v3)</span></label><small class="stis-help">Sequences only. One look at all the items together first (who is there, what happens, which tags each item shows), then each item is described knowing where it sits in the story. The story uses your prompt. Role fit, your notes and the final check only collect what needs fixing; then each item that needs it is looked at again once, and the story lines rewritten once. Off: the steps below, as before.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_blind"> <span>First look without tags</span></label><small class="stis-help">The vision model lists what it sees in each item without the tags, so each tag goes to the items that show it. Tags it misses are looked for again in all items.</small></div>
@@ -16279,6 +16319,19 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt']].forEach(([id, key]) => {
+        const area = document.getElementById(id);
+        area.value = promptPart(key);
+        area.addEventListener('input', () => {
+            s[key] = area.value.trim() === PROMPT_PARTS[key].trim() ? '' : area.value;
+            save();
+        });
+        document.getElementById(`${id}_reset`).addEventListener('click', () => {
+            s[key] = '';
+            area.value = PROMPT_PARTS[key];
+            save();
+        });
+    });
     document.getElementById('st_imagesearch_vision_reset').addEventListener('click', () => {
         s.visionPrompt = DEFAULT_VISION_PROMPT;
         document.getElementById('st_imagesearch_vision_prompt').value = DEFAULT_VISION_PROMPT;

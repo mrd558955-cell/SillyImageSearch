@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.59.3';
+const VERSION = '2.60.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -210,12 +210,20 @@ function ctx() {
     return SillyTavern.getContext();
 }
 
+let settingsChecked = null;
+
 function settings() {
     const all = ctx().extensionSettings;
     if (!all[MODULE]) {
         all[MODULE] = {};
     }
     const s = all[MODULE];
+    if (s === settingsChecked && s.ratings && typeof s.ratings === 'object') {
+        if (!RATINGS.some(r => s.ratings[r])) {
+            s.ratings.general = true;
+        }
+        return s;
+    }
     if (!s.ratings || typeof s.ratings !== 'object') {
         const all4 = s.safeOnly === false;
         s.ratings = { general: true, sensitive: all4, questionable: all4, explicit: all4 };
@@ -305,6 +313,7 @@ function settings() {
         s.sites = DEFAULTS.sites;
         s.engines = {};
     }
+    settingsChecked = s;
     return s;
 }
 
@@ -323,8 +332,14 @@ function normalizeTagList(text) {
         .filter(line => line && !line.startsWith('#'));
 }
 
+let personalList = { text: null, tags: new Set() };
+
 function personalTags() {
-    return new Set(normalizeTagList(settings().extraExcluded));
+    const text = String(settings().extraExcluded || '');
+    if (personalList.text !== text) {
+        personalList = { text, tags: new Set(normalizeTagList(text)) };
+    }
+    return personalList.tags;
 }
 
 function isCleanupTag(tag) {
@@ -407,8 +422,11 @@ async function refreshCleanup() {
         const response = await fetch(`${CLEANUP_URL}?t=${Date.now()}`, { cache: 'no-store', referrerPolicy: 'no-referrer' });
         if (response.ok) {
             const list = normalizeTagList(await response.text());
-            s.cleanupCache = list;
-            save();
+            const before = Array.isArray(s.cleanupCache) ? s.cleanupCache : [];
+            if (list.length !== before.length || list.some((tag, index) => before[index] !== tag)) {
+                s.cleanupCache = list;
+                save();
+            }
         }
     } catch (error) {
         console.debug('[Image Search] cleanup list unavailable', error);
@@ -486,6 +504,56 @@ function hostOf(url) {
 
 function proxyUrl(url) {
     return `/proxy/${encodeURIComponent(url)}`;
+}
+
+async function fetchWithin(url, options = {}, ms = 60000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw new Error(`SillyTavern did not answer in ${Math.round(ms / 1000)} s.`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+const MODEL_WAIT_MS = 5 * 60 * 1000;
+
+async function modelRequest(service, profile, prompt, maxTokens, custom = {}, override = {}) {
+    const controller = new AbortController();
+    const outer = custom?.signal || null;
+    const relay = () => controller.abort();
+    if (outer?.aborted) {
+        controller.abort();
+    } else {
+        outer?.addEventListener?.('abort', relay, { once: true });
+    }
+    let late = false;
+    let timer = null;
+    const limit = new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+            late = true;
+            controller.abort();
+            reject(new Error(`The model did not answer in ${MODEL_WAIT_MS / 60000} minutes.`));
+        }, MODEL_WAIT_MS);
+    });
+    const asked = (async () => service.sendRequest(profile, prompt, maxTokens, { ...custom, signal: controller.signal }, override))();
+    asked.catch(() => {});
+    try {
+        return await Promise.race([asked, limit]);
+    } catch (error) {
+        if (late) {
+            throw new Error(`The model did not answer in ${MODEL_WAIT_MS / 60000} minutes.`);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+        outer?.removeEventListener?.('abort', relay);
+    }
 }
 
 async function rawFetch(url, options) {
@@ -1613,7 +1681,7 @@ async function suggestTags(signal) {
     const request = buildTagRequest();
     const messages = [{ role: 'user', content: request.prompt }];
     const prompt = service.constructPrompt(messages, s.tagProfile);
-    const result = await service.sendRequest(s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 250), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const result = await modelRequest(service, s.tagProfile, prompt, Math.max(16, Number(s.tagMaxTokens) || 250), { stream: false, signal, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = typeof result === 'string' ? result : result?.content || '';
     const { tags, dropped, subject, evidence, noQuotes } = parseSuggestion(text, request.evidence);
     if (noQuotes) {
@@ -2047,7 +2115,10 @@ async function sniffFormat(blob) {
 function blobToBase64(blob) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+        reader.onload = () => {
+            const result = String(reader.result || '');
+            resolve(result.slice(result.indexOf(',') + 1));
+        };
         reader.onerror = () => reject(reader.error);
         reader.readAsDataURL(blob);
     });
@@ -2528,9 +2599,9 @@ function waitFor(target, event, ms = 8000) {
     });
 }
 
-const THUMB_SHORT = 300;
+const THUMB_SHORT = 360;
 const LIB_PLAYING = 6;
-const THUMB_LONG = 900;
+const THUMB_LONG = 1080;
 const thumbs = { db: null, made: new Map(), queue: [], running: 0 };
 
 function thumbDb() {
@@ -2550,6 +2621,10 @@ function thumbDb() {
     return thumbs.db;
 }
 
+function thumbKey(url) {
+    return `${url}#${THUMB_SHORT}`;
+}
+
 async function storedThumb(url) {
     const db = await thumbDb();
     if (!db) {
@@ -2557,7 +2632,7 @@ async function storedThumb(url) {
     }
     return new Promise(resolve => {
         try {
-            const request = db.transaction('thumbs', 'readonly').objectStore('thumbs').get(url);
+            const request = db.transaction('thumbs', 'readonly').objectStore('thumbs').get(thumbKey(url));
             request.onsuccess = () => resolve(request.result instanceof Blob && request.result.size ? request.result : null);
             request.onerror = () => resolve(null);
         } catch {
@@ -2569,7 +2644,7 @@ async function storedThumb(url) {
 async function keepThumb(url, blob) {
     const db = await thumbDb();
     try {
-        db?.transaction('thumbs', 'readwrite').objectStore('thumbs').put(blob, url);
+        db?.transaction('thumbs', 'readwrite').objectStore('thumbs').put(blob, thumbKey(url));
     } catch {
     }
 }
@@ -2603,8 +2678,10 @@ async function drawThumb(url) {
     return blob;
 }
 
+const THUMB_JOBS = 3;
+
 function pumpThumbs() {
-    while (thumbs.running < 1 && thumbs.queue.length) {
+    while (thumbs.running < THUMB_JOBS && thumbs.queue.length) {
         const job = thumbs.queue.pop();
         thumbs.running++;
         job.work().then(job.resolve, job.reject).finally(() => {
@@ -2635,6 +2712,25 @@ function thumbFor(url) {
 
 function dropThumbJobs() {
     thumbs.queue.splice(0).forEach(job => job.reject(new Error('closed')));
+    const made = [...thumbs.made.values()];
+    thumbs.made.clear();
+    made.forEach(promise => promise.then(src => URL.revokeObjectURL(src), () => {}));
+}
+
+async function pruneThumbs() {
+    const db = await thumbDb();
+    if (!db || !library.loaded || library.broken) {
+        return;
+    }
+    const keep = new Set(library.entries.flatMap(entryUrls).map(thumbKey));
+    try {
+        const store = db.transaction('thumbs', 'readwrite').objectStore('thumbs');
+        const request = store.getAllKeys();
+        request.onsuccess = () => {
+            (request.result || []).filter(url => !keep.has(url)).forEach(url => store.delete(url));
+        };
+    } catch {
+    }
 }
 
 function showThumb(img, url) {
@@ -4521,11 +4617,11 @@ async function shrinkImage(picture) {
 
 async function uploadImage(picture, name = '') {
     const image = await blobToBase64(picture.blob);
-    const upload = await fetch('/api/images/upload', {
+    const upload = await fetchWithin('/api/images/upload', {
         method: 'POST',
         headers: ctx().getRequestHeaders(),
         body: JSON.stringify({ image, format: picture.format, ch_name: 'imagesearch', filename: name || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }),
-    });
+    }, 180000);
     if (!upload.ok) {
         throw new Error(`SillyTavern could not save the picture (${upload.status}).`);
     }
@@ -4540,7 +4636,7 @@ function fileMissing(url) {
         return Promise.resolve(false);
     }
     if (!missingFiles.has(url)) {
-        const check = fetch(url, { method: 'HEAD', cache: 'no-store' }).then(response => response.status === 404).catch(() => false);
+        const check = fetchWithin(url, { method: 'HEAD', cache: 'no-store' }, 15000).then(response => response.status === 404).catch(() => false);
         missingFiles.set(url, check);
         check.then(gone => {
             if (!gone && missingFiles.get(url) === check) {
@@ -4670,7 +4766,7 @@ function prepareDownload(item) {
     })();
     downloads.set(key, promise);
     promise.catch(() => downloads.delete(key));
-    while (downloads.size > 8) {
+    while (downloads.size > 4) {
         downloads.delete(downloads.keys().next().value);
     }
     return promise;
@@ -4680,6 +4776,9 @@ async function saveBest(item) {
     try {
         const picture = await prepareDownload(item);
         const src = await uploadImage(picture);
+        if (downloads.get(item.img) && !item.video) {
+            downloads.delete(item.img);
+        }
         return { src, blob: picture.blob, lines: [] };
     } catch (error) {
         return { src: '', blob: null, lines: [String(error?.message || error)] };
@@ -4845,7 +4944,7 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
-        const result = await service.sendRequest(profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+        const result = await modelRequest(service, profile, messages, Math.max(32, Number(s.visionMaxTokens) || 300), { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
         return String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     };
     let frames = null;
@@ -4950,7 +5049,7 @@ function pictureNote(entry, who = 'the user shared') {
     return '';
 }
 
-const library = { entries: [], loaded: false, broken: false, loading: null, saving: Promise.resolve(), deleted: new Set() };
+const library = { entries: [], loaded: false, broken: false, loading: null, saving: Promise.resolve(), queued: null, tag: '', deleted: new Set() };
 
 function validEntry(entry) {
     return entry && typeof entry === 'object' && typeof entry.id === 'string' && typeof entry.url === 'string';
@@ -5189,20 +5288,46 @@ function cleanEntry(entry) {
     };
 }
 
-async function readLibraryFile() {
-    const response = await fetch(`/user/files/${LIBRARY_FILE}?t=${Date.now()}`, { cache: 'no-store' });
+function fileTag(response) {
+    const headers = response?.headers;
+    const tag = headers?.get?.('etag') || '';
+    const modified = headers?.get?.('last-modified') || '';
+    return tag || (modified ? `${modified}|${headers?.get?.('content-length') || ''}` : '');
+}
+
+async function libraryTag(size = null) {
+    try {
+        const response = await fetchWithin(`/user/files/${LIBRARY_FILE}?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' }, 15000);
+        if (response.status === 404) {
+            return 'missing';
+        }
+        const length = Number(response.headers?.get?.('content-length'));
+        if (!response.ok || (size !== null && Number.isFinite(length) && length !== size)) {
+            return '';
+        }
+        return fileTag(response);
+    } catch {
+        return '';
+    }
+}
+
+async function readLibraryFile(known = null) {
+    const response = await fetchWithin(`/user/files/${LIBRARY_FILE}?t=${Date.now()}`, { cache: 'no-store' }, 60000);
     if (response.status === 404) {
+        library.tag = 'missing';
         return [];
     }
     if (!response.ok) {
         throw new Error(`The picture library could not be read (${response.status}).`);
     }
+    const tag = fileTag(response);
     const data = JSON.parse(await response.text());
-    return (Array.isArray(data?.entries) ? data.entries : []).filter(validEntry).map(cleanEntry);
+    library.tag = tag;
+    return (Array.isArray(data?.entries) ? data.entries : []).filter(entry => validEntry(entry) && !known?.has(entry.id)).map(cleanEntry);
 }
 
 async function loadLibrary(force = false) {
-    if (library.loaded && !force) {
+    if (library.loaded && !force && !(library.broken && Date.now() - (library.failedAt || 0) > 15000)) {
         return library.entries;
     }
     if (library.loading) {
@@ -5210,12 +5335,22 @@ async function loadLibrary(force = false) {
     }
     library.loading = (async () => {
         try {
-            library.entries = await readLibraryFile();
+            const fresh = await readLibraryFile();
+            if (library.broken && library.entries.length) {
+                const ids = new Set(fresh.map(entry => entry.id));
+                library.entries.filter(entry => !ids.has(entry.id) && !library.deleted.has(entry.id)).forEach(entry => fresh.push(entry));
+            }
+            library.entries = fresh;
             library.broken = false;
             scheduleFiling(6000);
+            if (!library.pruned) {
+                library.pruned = true;
+                setTimeout(() => pruneThumbs().catch(() => {}), 30000);
+            }
         } catch (error) {
             console.warn('[Image Search] library unavailable', error);
             library.broken = true;
+            library.failedAt = Date.now();
         }
         library.loaded = true;
         library.loading = null;
@@ -5233,8 +5368,28 @@ function utf8ToBase64(text) {
     return btoa(binary);
 }
 
+async function textToBase64(text) {
+    const bytes = new TextEncoder().encode(text);
+    if (typeof bytes.toBase64 === 'function') {
+        return { data: bytes.toBase64(), size: bytes.length };
+    }
+    if (typeof FileReader === 'function' && typeof Blob === 'function') {
+        return { data: await blobToBase64(new Blob([bytes])), size: bytes.length };
+    }
+    return { data: utf8ToBase64(text), size: bytes.length };
+}
+
 function saveLibrary({ skipSync = false, skipFiling = false } = {}) {
-    library.saving = library.saving.then(async () => {
+    const queued = library.queued;
+    if (queued) {
+        queued.skipSync = queued.skipSync && skipSync;
+        queued.skipFiling = queued.skipFiling && skipFiling;
+        return queued.promise;
+    }
+    const job = { skipSync, skipFiling, promise: null };
+    library.queued = job;
+    job.promise = library.saving.then(async () => {
+        library.queued = null;
         if (library.broken) {
             await loadLibrary(true);
             if (library.broken) {
@@ -5242,31 +5397,36 @@ function saveLibrary({ skipSync = false, skipFiling = false } = {}) {
             }
         }
         try {
-            const remote = await readLibraryFile();
-            const known = new Set(library.entries.map(entry => entry.id));
-            remote.filter(entry => !known.has(entry.id) && !library.deleted.has(entry.id)).forEach(entry => library.entries.push(entry));
+            const tag = library.tag ? await libraryTag() : '';
+            if (!tag || tag !== library.tag) {
+                const remote = await readLibraryFile(new Set(library.entries.map(entry => entry.id)));
+                remote.filter(entry => !library.deleted.has(entry.id)).forEach(entry => library.entries.push(entry));
+            }
         } catch {
         }
-        const body = JSON.stringify({ version: 1, entries: library.entries });
-        const response = await fetch('/api/files/upload', {
+        const { data, size } = await textToBase64(JSON.stringify({ version: 1, entries: library.entries }));
+        const response = await fetchWithin('/api/files/upload', {
             method: 'POST',
             headers: ctx().getRequestHeaders(),
-            body: JSON.stringify({ name: LIBRARY_FILE, data: utf8ToBase64(body) }),
-        });
+            body: `{"name":${JSON.stringify(LIBRARY_FILE)},"data":"${data}"}`,
+        }, 180000);
         if (!response.ok) {
+            library.tag = '';
             throw new Error(`The picture library could not be saved (${response.status}).`);
         }
-        if (!skipSync) {
+        library.tag = await libraryTag(size);
+        if (!job.skipSync) {
             scheduleLorebookSync();
         }
-        if (!skipFiling) {
+        if (!job.skipFiling) {
             scheduleFiling();
         }
     }).catch(error => {
         console.warn('[Image Search] library save failed', error);
         toastr.warning(String(error?.message || error), 'Image Search');
     });
-    return library.saving;
+    library.saving = job.promise;
+    return job.promise;
 }
 
 function newEntryId() {
@@ -5600,7 +5760,7 @@ async function visionAsk(text, images, maxTokens = 300, temperature = 0.3) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
     const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(url => ({ type: 'image_url', image_url: { url } }))] }];
-    return cleanReply(await service.sendRequest(profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(temperature)));
+    return cleanReply(await modelRequest(service, profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(temperature)));
 }
 
 async function picturesOnlyAsk(images, maxTokens = 200) {
@@ -5609,7 +5769,7 @@ async function picturesOnlyAsk(images, maxTokens = 200) {
     if (!service || !profile) {
         throw new Error('No vision profile chosen in Image Search settings.');
     }
-    const send = content => service.sendRequest(profile, [{ role: 'user', content }], maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
+    const send = content => modelRequest(service, profile, [{ role: 'user', content }], maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.3));
     const pictures = images.map(url => ({ type: 'image_url', image_url: { url } }));
     try {
         return { reply: cleanReply(await send(pictures)), asked: '' };
@@ -5623,12 +5783,12 @@ async function textAsk(prompt, maxTokens = 600) {
     const s = settings();
     const service = ctx().ConnectionManagerRequestService;
     if (service && s.tagProfile) {
-        return cleanReply(await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2)));
+        return cleanReply(await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2)));
     }
     if (!service || !visionProfileId()) {
         throw new Error('No tag profile or vision profile chosen in Image Search settings.');
     }
-    return cleanReply(await service.sendRequest(visionProfileId(), [{ role: 'user', content: prompt }], maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.2)));
+    return cleanReply(await modelRequest(service, visionProfileId(), [{ role: 'user', content: prompt }], maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.2)));
 }
 
 function readTagLines(reply, allowed) {
@@ -6638,6 +6798,10 @@ async function siteAliases(tags, site = '') {
             console.warn(`[Image Search] could not read the aliases of ${tag}`, error);
         }
     });
+    const checked = Object.entries(s.tagAliasChecked || {});
+    if (checked.length > 1500) {
+        s.tagAliasChecked = Object.fromEntries(checked.sort((a, b) => b[1] - a[1]).slice(0, 1200));
+    }
     save();
     return made;
 }
@@ -8793,7 +8957,7 @@ async function guessTags(entry, blob = null) {
     }
     const image = await imageDataUrl(entry.url, blob || null, 768);
     const prompt = 'Look at this picture and give 4 to 6 Danbooru tags for things that are clearly visible and specific to it: hair colour and length or style (blonde_hair, very_long_hair, twintails), eye colour (blue_eyes), clothing (school_uniform, kimono) and distinctive objects or features. Never give general tags such as 1girl, 1boy, solo, looking_at_viewer, simple_background or the number of people. Reply with only the tags, separated by commas.';
-    const result = await service.sendRequest(profile, [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 80, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.2));
+    const result = await modelRequest(service, profile, [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }], 80, { stream: false, extractData: true, includePreset: false, includeInstruct: false }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     return [...new Set(text.split(/[,\n]+/).map(tag => normalizeTag(tag.replace(/^[\s*•\-\d.]+/, '').replace(/[`"']/g, '').trim())))]
         .filter(tag => tag && /^[a-z0-9_()\-'.:]+$/.test(tag) && !WIDE_TAGS.has(tag)).slice(0, 6);
@@ -9912,6 +10076,26 @@ function wordsOf(text) {
     return new Set(String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length >= 3 && !STOP_WORDS.has(word)));
 }
 
+const derived = new WeakMap();
+
+function cachedFor(owner, kind, sig, make) {
+    if (!owner || typeof owner !== 'object') {
+        return make();
+    }
+    let slot = derived.get(owner);
+    if (!slot) {
+        slot = {};
+        derived.set(owner, slot);
+    }
+    const known = slot[kind];
+    if (known && known.sig === sig) {
+        return known.value;
+    }
+    const value = make();
+    slot[kind] = { sig, value };
+    return value;
+}
+
 function scoreEntry(entry, words, tags, character) {
     let score = 0;
     for (const tag of entry.tags) {
@@ -9923,7 +10107,8 @@ function scoreEntry(entry, words, tags, character) {
         }
     }
     const extra = entry.item ? entry.item.diff || '' : entry.variants.map(variant => variant.diff || '').join(' ');
-    for (const word of wordsOf(`${entry.description} ${extra}`)) {
+    const text = `${entry.description} ${extra}`;
+    for (const word of cachedFor(entry, 'words', text, () => wordsOf(text))) {
         if (words.has(word)) {
             score += 1;
         }
@@ -10254,7 +10439,10 @@ async function syncLorebook({ activate = false } = {}) {
     let nextUid = Math.max(-1, ...Object.keys(data.entries).map(Number).filter(Number.isFinite)) + 1;
     const depth = Math.max(0, Number(s.aiShowDepth) || 0);
     const disabledByUs = new Set(s.wiDisabledByUs);
-    for (const entry of loreEntries) {
+    for (const [position, entry] of loreEntries.entries()) {
+        if (position && position % 60 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
         let wi = byId.get(entry.id);
         if (!wi) {
             wi = newWiEntry(nextUid++, depth);
@@ -10305,8 +10493,11 @@ async function syncLorebook({ activate = false } = {}) {
             changed = true;
         }
     }
-    s.wiDisabledByUs = [...disabledByUs].filter(id => wanted.has(id));
-    save();
+    const keptDisabled = [...disabledByUs].filter(id => wanted.has(id));
+    if (keptDisabled.length !== s.wiDisabledByUs.length || keptDisabled.some((id, index) => s.wiDisabledByUs[index] !== id)) {
+        s.wiDisabledByUs = keptDisabled;
+        save();
+    }
     if (changed) {
         await c.saveWorldInfo(LOREBOOK, data, true);
         c.reloadWorldInfoEditor?.(LOREBOOK, false);
@@ -10380,7 +10571,7 @@ const EMPTY_VALUE = /^(none|n\/a|unknown|unclear|-|not shown|not visible|not sta
 
 function cleanPerson(person) {
     const out = isBackground(person) ? { role: 'background' } : {};
-    const suffixes = new Map(categories().map(category => [category.id, (category.phrase.match(/\{value\}\s+(.+)$/) || [])[1] || '']));
+    const suffixes = categorySuffixes();
     for (const [key, raw] of Object.entries(person).slice(0, 24)) {
         const field = slug(key);
         if (!field || field === 'role' || field === 'background' || field === 'name' || typeof raw === 'object') {
@@ -10450,10 +10641,8 @@ function builtinHashes() {
 }
 
 function cardBasis(entry) {
-    if (entry.item) {
-        return String(hashText(`${entry.item.description}\n${entry.item.diff}`));
-    }
-    return String(hashText(`${entry.description}\n${entry.variants.map(variant => variant.diff).join('\n')}`));
+    const text = entry.item ? `${entry.item.description}\n${entry.item.diff}` : `${entry.description}\n${entry.variants.map(variant => variant.diff).join('\n')}`;
+    return cachedFor(entry.item || entry, 'basis', text, () => String(hashText(text)));
 }
 
 function needsCard(entry) {
@@ -10636,7 +10825,7 @@ async function requestCards(batch) {
     const scene = sceneCategories();
     const example = { n: 1, people: [{ role: 'main', ...Object.fromEntries(people.map(category => [category.id, categoryExample(category)])) }], ...(scene.length ? { scene: Object.fromEntries(scene.map(category => [category.id, categoryExample(category)])) } : {}), pose: [poses[0] || 'standing'], mood: [moods[0] || 'calm'], place: 'forest at night', framing: 'full body', moments: ['after being shoved', 'losing a fight', 'an ambush'] };
     const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nEach person has these fields:\n  "role": "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people\n${cardFieldRules(people)}${scene.length ? `\nEach picture also has "scene" with these fields:\n${cardFieldRules(scene)}` : ''}\n\nRules:\n- people: the main people of the picture first, at most 6.\n- Take every field only from what the description or the tags say; never guess. Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}\n\nPictures:\n${picturesBlock(batch)}`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 150 + 300 * batch.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 150 + 300 * batch.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = replyText(result);
     return { cards: parseCards(text, batch.length, poses, moods), cut: looksCut(text) };
 }
@@ -10651,7 +10840,7 @@ async function requestCategoryUpdate(batch, list) {
     const scene = list.filter(category => category.scope === 'picture');
     const example = { n: 1, ...(people.length ? { people: [Object.fromEntries(people.map(category => [category.id, categoryExample(category)]))] } : {}), ...(scene.length ? { scene: Object.fromEntries(scene.map(category => [category.id, categoryExample(category)])) } : {}) };
     const prompt = `You are updating the filing cards of a roleplay picture library. For each picture below you get its description, its tags and the people already on its card. Fill only these fields.${people.length ? `\nFor each of those people, in the same order:\n${cardFieldRules(people)}` : ''}${scene.length ? `\nFor the picture, under "scene":\n${cardFieldRules(scene)}` : ''}\nTake every field only from what the description or the tags say; never guess. Use "" for what is not shown.\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}\n\nPictures:\n${picturesBlock(batch, true)}`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 100 + batch.length * (30 + 25 * list.length * 2), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 100 + batch.length * (30 + 25 * list.length * 2), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = replyText(result);
     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
     let items = [];
@@ -10934,11 +11123,15 @@ async function vectorCall(path, body) {
 
 function meaningItems() {
     const items = new Map();
+    const version = categoriesVersion();
     for (const unit of cardUnits()) {
         if (unit.card) {
-            const text = meaningText(unit);
             const key = unit.unitKey || unit.id;
-            items.set(hashText(`${key}\n${text}`), { entry: unit.unitOf || unit, key, text });
+            const made = cachedFor(unit, 'meaning', `${version}|${key}|${unit.sections?.action || ''}|${JSON.stringify(unit.card)}`, () => {
+                const text = meaningText(unit);
+                return { text, hash: hashText(`${key}\n${text}`) };
+            });
+            items.set(made.hash, { entry: unit.unitOf || unit, key, text: made.text });
         }
     }
     return items;
@@ -11130,8 +11323,18 @@ function storedCategories() {
     return s.lookCategories;
 }
 
+let categoryEpoch = 0;
+let categoryBuilds = 0;
+
+function categoriesChanged() {
+    categoryEpoch++;
+}
+
 function categories() {
     const stored = storedCategories();
+    if (categoryCache?.stored === stored && categoryCache.epoch === categoryEpoch && Date.now() - categoryCache.checked < 2000) {
+        return categoryCache.enabled;
+    }
     const key = JSON.stringify(stored);
     if (categoryCache?.key !== key) {
         const list = [];
@@ -11154,17 +11357,34 @@ function categories() {
             category.hash = String(hashText(JSON.stringify([category.id, category.question, category.scope, category.type, category.tags])));
             list.push(category);
         }
-        categoryCache = { key, list };
+        const enabled = list.filter(category => category.enabled);
+        categoryBuilds++;
+        categoryCache = { version: categoryBuilds, key, list, enabled, person: enabled.filter(category => category.scope === 'person'), scene: enabled.filter(category => category.scope === 'picture'), suffixes: new Map(enabled.map(category => [category.id, (category.phrase.match(/\{value\}\s+(.+)$/) || [])[1] || ''])) };
     }
-    return categoryCache.list.filter(category => category.enabled);
+    categoryCache.stored = stored;
+    categoryCache.epoch = categoryEpoch;
+    categoryCache.checked = Date.now();
+    return categoryCache.enabled;
+}
+
+function categoriesVersion() {
+    categories();
+    return categoryCache.version;
 }
 
 function personCategories() {
-    return categories().filter(category => category.scope === 'person');
+    categories();
+    return categoryCache.person;
 }
 
 function sceneCategories() {
-    return categories().filter(category => category.scope === 'picture');
+    categories();
+    return categoryCache.scene;
+}
+
+function categorySuffixes() {
+    categories();
+    return categoryCache.suffixes;
 }
 
 function valuesIn(category, raw) {
@@ -11654,7 +11874,7 @@ async function requestSheets(members) {
     const list = sheetCategories();
     const example = { name: 'Mira', ...Object.fromEntries(list.map(category => [category.id, categoryExample(category)])) };
     const prompt = `Below is what is written about the characters of a roleplay. Fill one look sheet per character, only from what is written. Each sheet has these fields:\n${cardFieldRules(list)}\nWork out the gender from she/her or he/his when it is not said outright. Use "" for anything that is not written.\n\nReply with only a JSON array, one object per character, like this:\n${JSON.stringify([example])}\n\n${members.map(member => `${member.name}:\n${member.source}`).join('\n\n')}`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 200 + 40 * list.length * members.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 200 + 40 * list.length * members.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
     const text = replyText(result).replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
     const start = text.indexOf('[');
     const end = text.lastIndexOf(']');
@@ -12051,6 +12271,10 @@ function cardFacets(entry) {
     if (!entry.card) {
         return entry.description ? ['card:none'] : [];
     }
+    return cachedFor(entry, 'facets', `${categoriesVersion()}|${JSON.stringify(entry.card)}`, () => readFacets(entry));
+}
+
+function readFacets(entry) {
     const keys = [];
     const people = entry.card.people.filter(person => person.role !== 'background');
     for (const category of personCategories()) {
@@ -12115,7 +12339,7 @@ function shownInChat() {
     return ids;
 }
 
-const PACK_LIMIT = 30;
+const PACK_LIMIT = 15;
 
 function messageMark(message) {
     return message ? `${message.is_user ? 'user' : 'char'}|${message.name || ''}|${message.send_date || ''}` : '';
@@ -12284,7 +12508,7 @@ async function askPicturePick(message, candidates) {
     }
     const shortlist = candidates.slice(0, shortlistSize());
     const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nRank all ${shortlist.length} pictures, best first, one per line, each with a short reason for its place (who it shows, what happens, what fits or does not), in at most 12 words, like this:\n#7 - Mira knocked down, right looks, follows the shove\n#12 - right looks, but she is standing calmly\nIf none of the pictures really fits, start with this line and still rank them all: #0 - why nothing fits`;
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 120 + 40 * shortlist.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 120 + 40 * shortlist.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const picks = [];
     let none = null;
@@ -12422,7 +12646,7 @@ async function leadInOptions(choice, send) {
         throw new Error('no Tag model is set in the settings');
     }
     const prompt = leadInPrompt(choice, send);
-    const result = await service.sendRequest(s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 600, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.8));
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 600, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.8));
     const options = readLeadIns(typeof result === 'string' ? result : result?.content || '');
     if (!options.length) {
         throw new Error('the answer had no options');
@@ -13011,7 +13235,7 @@ function onGenerationStarted(type, _options, dryRun) {
     clearForcePrompt();
 }
 
-async function onForcedReply(messageId) {
+async function onForcedReply(messageId, type) {
     const c = ctx();
     const record = chatPictures();
     if (!record.forced?.armed) {
@@ -13046,7 +13270,15 @@ async function onForcedReply(messageId) {
     if (document.querySelector(`#chat .mes[mesid="${id}"]`)) {
         c.updateMessageBlock(id, message);
     }
-    await c.saveChat();
+    if (!savedAfterReply(type)) {
+        await c.saveChat();
+    }
+}
+
+const SAVED_AFTER = new Set(['normal', 'swipe', 'regenerate', 'continue', 'append', 'appendFinal']);
+
+function savedAfterReply(type) {
+    return type === undefined || SAVED_AFTER.has(type);
 }
 
 function syncCurrentSwipe(message) {
@@ -13063,7 +13295,7 @@ function setMessageText(message, text) {
     }
 }
 
-async function onAiPictures(messageId) {
+async function onAiPictures(messageId, type) {
     const s = settings();
     const c = ctx();
     const id = Number(messageId);
@@ -13092,7 +13324,9 @@ async function onAiPictures(messageId) {
     if (document.querySelector(`#chat .mes[mesid="${id}"]`)) {
         c.updateMessageBlock(id, message);
     }
-    await c.saveChat();
+    if (!savedAfterReply(type)) {
+        await c.saveChat();
+    }
 }
 
 function setNote(media, entry) {
@@ -17439,6 +17673,7 @@ function buildSettings() {
     const catStatus = document.getElementById('st_imagesearch_cat_status');
     let catTimer = null;
     const catChanged = () => {
+        categoriesChanged();
         clearTimeout(catTimer);
         catTimer = setTimeout(() => {
             save();
@@ -17451,6 +17686,7 @@ function buildSettings() {
         stored.forEach(raw => catBox.appendChild(categoryEditor(raw, catChanged, () => {
             const list = storedCategories();
             list.splice(list.indexOf(raw), 1);
+            categoriesChanged();
             save();
             drawCats();
             catStatus.textContent = categoryStatus();
@@ -17473,6 +17709,7 @@ function buildSettings() {
             n++;
         }
         list.push({ id: `category-${n}`, label: `category ${n}`, question: 'what to look for', scope: 'person', against: 'character', type: 'match', must: false, judge: true, enabled: true, phrase: '{value}', from: '', tags: '', close: '', points: { match: 3, close: 0, different: -3, missing: 0 } });
+        categoriesChanged();
         save();
         drawCats(true);
         catStatus.textContent = categoryStatus();

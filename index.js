@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.59.1';
+const VERSION = '2.59.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2524,6 +2524,131 @@ function waitFor(target, event, ms = 8000) {
         };
         target.addEventListener(event, done, { once: true });
         target.addEventListener('error', failed, { once: true });
+    });
+}
+
+const THUMB_SHORT = 300;
+const THUMB_LONG = 900;
+const thumbs = { db: null, made: new Map(), queue: [], running: 0 };
+
+function thumbDb() {
+    if (!thumbs.db) {
+        thumbs.db = new Promise(resolve => {
+            try {
+                const request = indexedDB.open('stis-thumbs', 1);
+                request.onupgradeneeded = () => request.result.createObjectStore('thumbs');
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => resolve(null);
+                request.onblocked = () => resolve(null);
+            } catch {
+                resolve(null);
+            }
+        });
+    }
+    return thumbs.db;
+}
+
+async function storedThumb(url) {
+    const db = await thumbDb();
+    if (!db) {
+        return null;
+    }
+    return new Promise(resolve => {
+        try {
+            const request = db.transaction('thumbs', 'readonly').objectStore('thumbs').get(url);
+            request.onsuccess = () => resolve(request.result instanceof Blob && request.result.size ? request.result : null);
+            request.onerror = () => resolve(null);
+        } catch {
+            resolve(null);
+        }
+    });
+}
+
+async function keepThumb(url, blob) {
+    const db = await thumbDb();
+    try {
+        db?.transaction('thumbs', 'readwrite').objectStore('thumbs').put(blob, url);
+    } catch {
+    }
+}
+
+async function drawThumb(url) {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await img.decode();
+    const width = img.naturalWidth;
+    const height = img.naturalHeight;
+    if (!width || !height) {
+        throw new Error('the picture has no size');
+    }
+    const scale = Math.min(1, THUMB_SHORT / Math.min(width, height), THUMB_LONG / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const pen = canvas.getContext('2d');
+    if (!pen) {
+        throw new Error('no canvas');
+    }
+    pen.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.removeAttribute('src');
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+    canvas.width = 0;
+    canvas.height = 0;
+    if (!blob) {
+        throw new Error('the small copy could not be made');
+    }
+    return blob;
+}
+
+function pumpThumbs() {
+    while (thumbs.running < 1 && thumbs.queue.length) {
+        const job = thumbs.queue.pop();
+        thumbs.running++;
+        job.work().then(job.resolve, job.reject).finally(() => {
+            thumbs.running--;
+            pumpThumbs();
+        });
+    }
+}
+
+function thumbFor(url) {
+    if (!thumbs.made.has(url)) {
+        const made = (async () => {
+            let blob = await storedThumb(url);
+            if (!blob) {
+                blob = await new Promise((resolve, reject) => {
+                    thumbs.queue.push({ work: () => drawThumb(url), resolve, reject });
+                    pumpThumbs();
+                });
+                keepThumb(url, blob);
+            }
+            return URL.createObjectURL(blob);
+        })();
+        made.catch(() => thumbs.made.delete(url));
+        thumbs.made.set(url, made);
+    }
+    return thumbs.made.get(url);
+}
+
+function dropThumbJobs() {
+    thumbs.queue.splice(0).forEach(job => job.reject(new Error('closed')));
+}
+
+function showThumb(img, url) {
+    img.dataset.full = url || '';
+    if (!url || !String(url).startsWith('/user/')) {
+        img.src = url || '';
+        return;
+    }
+    thumbFor(url).then(src => {
+        if (img.dataset.full === url) {
+            img.src = src;
+        }
+    }).catch(error => {
+        if (img.dataset.full === url && error?.message !== 'closed') {
+            img.src = url;
+        }
     });
 }
 
@@ -12313,7 +12438,7 @@ function askLeadIn(choice, send) {
         const head = el('div', 'stis-leadin-head');
         const thumb = el('img', 'stis-leadin-img');
         thumb.alt = '';
-        thumb.src = (choice.variant || choice.entry).url;
+        showThumb(thumb, (choice.variant || choice.entry).url);
         head.append(thumb, el('b', '', 'How the story gets there'));
         const status = el('small', 'stis-leadin-status');
         const list = el('div', 'stis-leadin-list');
@@ -12517,9 +12642,8 @@ function showPictureCard(session) {
         options.forEach((choice, position) => {
             const cell = el('div', 'stis-sendcard-cell');
             const thumb = el('img');
-            thumb.loading = 'lazy';
             thumb.alt = '';
-            thumb.src = (choice.variant || choice.entry).url;
+            showThumb(thumb, (choice.variant || choice.entry).url);
             cell.title = shortDescription(choice.entry);
             cell.append(thumb, el('span', 'stis-sendcard-num', String(position + 1)));
             cell.addEventListener('click', () => {
@@ -13489,6 +13613,7 @@ async function openPicker(initialTags = null, focus = null) {
     let selectedWho = '';
     let previewState = null;
     let libraryOrder = [];
+    let libLazy = null;
     const libFilter = new Set();
     let libMoreOpen = false;
     let reps = [];
@@ -14444,7 +14569,7 @@ async function openPicker(initialTags = null, focus = null) {
             if (member.thumb) {
                 setThumbSource(thumb, member);
             } else {
-                thumb.src = member.url;
+                showThumb(thumb, member.url);
             }
             thumb.classList.toggle('stis-variant-on', member === current);
             thumb.addEventListener('click', () => onChoose(member));
@@ -16179,17 +16304,36 @@ async function openPicker(initialTags = null, focus = null) {
             ui.libGrid.appendChild(el('div', 'stis-status', message));
             return;
         }
+        libLazy?.disconnect();
+        libLazy = typeof IntersectionObserver === 'function' ? new IntersectionObserver(seen => {
+            seen.forEach(item => {
+                if (item.isIntersecting) {
+                    libLazy?.unobserve(item.target);
+                    showThumb(item.target, item.target.dataset.full);
+                }
+            });
+        }, { root: ui.libGrid, rootMargin: '600px 0px' }) : null;
         for (const entry of libraryOrder) {
             const cell = el('div', 'stis-cell');
             const img = el('img');
-            img.loading = 'lazy';
             img.alt = '';
             img.draggable = false;
-            img.src = entry.url;
+            img.dataset.full = entry.url;
             img.onerror = () => cell.classList.add('stis-broken');
+            if (libLazy) {
+                libLazy.observe(img);
+            } else {
+                showThumb(img, entry.url);
+            }
             cell.title = shortDescription(entry);
             cell.dataset.entry = entry.id;
             cell.appendChild(img);
+            if (entry.animated || entry.variants.some(item => itemAnimated(entry, item))) {
+                const moving = el('span', 'stis-anim-badge');
+                moving.appendChild(el('i', 'fa-solid fa-play'));
+                moving.title = 'Animated (GIF): it plays in the preview';
+                cell.appendChild(moving);
+            }
             if (groupProgress.has(entry.id)) {
                 cellProgress(cell, groupProgress.get(entry.id));
             }
@@ -16549,6 +16693,8 @@ async function openPicker(initialTags = null, focus = null) {
         onClose: () => {
             closed = true;
             state.pickerOpen = false;
+            libLazy?.disconnect();
+            dropThumbJobs();
             lengthWatch.disconnect();
             lengthQueue.length = 0;
             groupWatch.disconnect();

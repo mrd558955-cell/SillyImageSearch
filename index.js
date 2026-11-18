@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.50.1';
+const VERSION = '2.51.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4342,7 +4342,8 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     }
     const people = peopleHint(extra.peopleTags || tags);
     const count = people ? ` The site's tags say: ${people}${extra.peopleTags ? ' (for the whole group, so not everyone may be in this item)' : ''}. If they count more people than you first notice, look again for someone only partly in view before you give the count.` : '';
-    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}\n\n${PICTURE_FIRST} ${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
+    const info = extra.tagInfo ? importantTagInfo(tags) : '';
+    const asked = `${extra.before ? `${extra.before}\n\n` : ''}${note ? `${note}\n\n` : ''}${String(s.visionPrompt || DEFAULT_VISION_PROMPT).replace(/\{\{tags\}\}/g, () => tags.join(', ') || 'none')}${info}\n\n${PICTURE_FIRST} ${ACTORS_RULE}${count} ${NO_NAMES_RULE}`;
     const prompt = extra.wrap ? extra.wrap(asked) : locked ? lockedPrompt(locked, asked) : asked;
     const ask = async (text, images) => {
         const messages = [{ role: 'user', content: [{ type: 'text', text }, ...images.map(image => ({ type: 'image_url', image_url: { url: image } }))] }];
@@ -4403,7 +4404,7 @@ function startDescription(url, postTags, onDone, blob = null, tagsLater = null) 
         entry.tags = summaryTags(Array.isArray(value) ? value : value?.tags);
         note = String(value?.note || '');
     }).catch(() => {}) : Promise.resolve())
-        .then(() => requestDescription(url, entry.tags, blob, '', note))
+        .then(() => requestDescription(url, entry.tags, blob, '', note, { tagInfo: true }))
         .then(({ text, keywords, sections }) => {
             entry.text = text;
             entry.keywords = keywords;
@@ -4522,7 +4523,7 @@ async function correctDescription(entry, item, text, tags = []) {
         entry.fixes = [...entry.fixes, fix].slice(-6);
         entry.tags = [...new Set([...entry.tags, ...fix.tags])];
         const base = entry.lock?.text || entry.description;
-        const result = await requestDescription(entry.url, entry.tags, null, '', entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', { wrap: base ? asked => correctionPrompt(base, fix, asked) : null });
+        const result = await requestDescription(entry.url, entry.tags, null, '', entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', { wrap: base ? asked => correctionPrompt(base, fix, asked) : null, tagInfo: true });
         entry.description = result.text;
         entry.sections = result.sections || {};
         entry.keywords = result.keywords || [];
@@ -5092,6 +5093,23 @@ function readTagLines(reply, allowed) {
         }
     }
     return found;
+}
+
+function importantTagInfo(tags) {
+    const matter = rememberedTags().matter;
+    const wanted = [...new Set((tags || []).map(normalizeTag))].filter(tag => matter.has(tag)).slice(0, 8);
+    const missing = wanted.filter(tag => !settings().tagDefinitions?.[tag]);
+    if (missing.length) {
+        ensureDefinitions(missing).catch(() => null);
+    }
+    const lines = wanted.map(tag => {
+        const notes = tagNotesFor(tag);
+        const seen = notes.filter(note => !note.wrong && note.note).slice(-3).map(note => note.note);
+        const wrong = [...notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note), ...removalNotesFor(tag).filter(note => !note.wrong && note.reason).slice(-2).map(note => note.reason)];
+        const parts = [definitionLine(tag), seen.length || wrong.length ? `The user's notes: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : ''].filter(Boolean);
+        return parts.length ? `- ${tag.replace(/_/g, ' ')}: ${parts.join(' ')}` : '';
+    }).filter(Boolean);
+    return lines.length ? `\n\nSome of this picture's tags matter to the user. What they mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints only: mention such a tag only if this picture shows it or clear signs of it.\n${lines.join('\n')}` : '';
 }
 
 function tagHints(tags) {
@@ -6286,7 +6304,7 @@ async function redoEntry(entry, { save: saveNow = true } = {}) {
     if (isMulti(entry)) {
         await describeSet(entry);
     } else {
-        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '', [entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', fixesNote(entry.fixes)].filter(Boolean).join('\n\n'));
+        const result = await requestDescription(entry.url, entry.tags, null, entry.lock?.text || '', [entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', fixesNote(entry.fixes)].filter(Boolean).join('\n\n'), { tagInfo: true });
         entry.description = result.text;
         entry.described = visionHash();
         entry.sections = result.sections || {};

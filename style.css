@@ -2129,3 +2129,7 @@ video.stis-preview-img {
     height: auto;
     border-radius: 4px;
 }
+
+.stis-role-locked .fa-lock {
+    margin-right: 4px;
+}

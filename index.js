@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.56.1';
+const VERSION = '2.56.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -5626,6 +5626,7 @@ function sentPanel(entry, item) {
 
 function roleEditor(entry, item, redraw) {
     const box = el('div', 'stis-role-edit');
+    box.hidden = true;
     const done = async () => {
         entry.arc = entry.variants.map(member => member.role?.main || '?').join(' → ');
         entry.variants.forEach(member => descriptions.set(member.url, describedVariant(entry, member)));
@@ -5634,7 +5635,6 @@ function roleEditor(entry, item, redraw) {
     };
     box.appendChild(el('small', 'stis-role-lock-state', item.roleLock ? 'Locked: Redo all and every story rewrite keep this role and intensity, and fit the others around it.' : 'Not locked: the story step may change this role.'));
     const row = el('div', 'stis-role-buttons');
-    const edit = el('div', 'menu_button', 'Edit role');
     const lock = el('div', 'menu_button', item.roleLock ? 'Unlock role' : 'Lock role');
     const allLocked = entry.variants.every(member => !member.role || member.roleLock);
     const lockAll = el('div', 'menu_button', allLocked ? 'Unlock all roles' : 'Lock all roles');
@@ -5657,7 +5657,6 @@ function roleEditor(entry, item, redraw) {
         await done();
     });
     const form = el('div', 'stis-role-form');
-    form.hidden = true;
     const main = el('select', 'text_pole');
     [...new Set([...STORY_ROLES, item.role.main])].forEach(role => {
         const option = el('option', '', role);
@@ -5699,17 +5698,12 @@ function roleEditor(entry, item, redraw) {
     save.addEventListener('click', () => keep(false));
     saveLock.addEventListener('click', () => keep(true));
     cancel.addEventListener('click', () => {
-        form.hidden = true;
-        row.hidden = false;
+        box.hidden = true;
     });
     buttons.append(save, saveLock, cancel);
     form.appendChild(buttons);
-    edit.addEventListener('click', () => {
-        form.hidden = false;
-        row.hidden = true;
-    });
-    row.append(edit, lock, lockAll);
-    box.append(row, form);
+    row.append(lock, lockAll);
+    box.append(form, row);
     return box;
 }
 
@@ -14706,17 +14700,24 @@ async function openPicker(initialTags = null, focus = null) {
             return box;
         };
         const itemName = `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1}`;
+        let roleBox = null;
         const desc = section('desc', itemized ? `${itemName}${current.role ? ` · ${roleText(current.role)}` : ''}` : 'Description', true);
         if (itemized) {
             desc.appendChild(el('div', 'stis-entry-text', current.description));
             if (itemStory(entry, current, index)) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
             }
+            if (sequence && current.role) {
+                if (current.roleLock) {
+                    const locked = el('div', 'stis-entry-text stis-role-locked', ' Role and intensity locked by you');
+                    locked.prepend(el('i', 'fa-solid fa-lock'));
+                    desc.appendChild(locked);
+                }
+                roleBox = roleEditor(entry, current, () => showEntry(entry, current));
+                desc.appendChild(roleBox);
+            }
             if (current.deduced.length) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-deduced', `Deduced, not seen: ${current.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}`));
-            }
-            if (sequence && current.role) {
-                desc.appendChild(roleEditor(entry, current, () => showEntry(entry, current)));
             }
         } else {
             desc.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
@@ -15059,6 +15060,18 @@ async function openPicker(initialTags = null, focus = null) {
         use.addEventListener('click', () => pickEntry(entry, use, current));
         const actions = [...bar.children].slice(navCount);
         const main = [use, fixButton, redo];
+        if (roleBox) {
+            const roleButton = el('div', 'menu_button stis-role-open', 'Edit role');
+            roleButton.title = 'Change, lock or unlock the role, intensity and story line of this item';
+            roleButton.addEventListener('click', () => {
+                desc.open = true;
+                roleBox.hidden = !roleBox.hidden;
+                if (!roleBox.hidden) {
+                    roleBox.scrollIntoView?.({ block: 'nearest' });
+                }
+            });
+            main.splice(2, 0, roleButton);
+        }
         if (s.roleCheck && sequence && groupDescribed(entry)) {
             const check = el('div', 'menu_button stis-role-check', 'Check intensity');
             check.title = 'Run only the story step (intensity, then roles) on the descriptions this sequence already has, and stop there';

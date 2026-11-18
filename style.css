@@ -1686,6 +1686,68 @@ video.stis-preview-img {
     text-decoration: underline;
 }
 
+.stis-tagpick.stis-tagpick-removed {
+    color: #e57373;
+    border-color: #e57373;
+    text-decoration: line-through;
+}
+
+.stis-tagpick-gone-info {
+    margin: 4px 2px;
+    font-size: 0.9em;
+}
+
+.stis-tagpick-gone-info[hidden],
+.stis-tagfix-shared[hidden] {
+    display: none;
+}
+
+.stis-tagpick-restore {
+    text-decoration: underline;
+}
+
+.stis-lib-kinds {
+    display: inline-flex;
+    gap: 4px;
+    margin-right: 8px;
+}
+
+.stis-tag-browse {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.stis-tag-browse-count {
+    opacity: 0.7;
+}
+
+.stis-tag-card {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 6px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stis-tag-card-title {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+}
+
+.stis-tag-card-head {
+    margin-top: 6px;
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.stis-tag-note-kind {
+    opacity: 0.8;
+}
+
 .stis-tagfix-summary {
     cursor: pointer;
     font-size: 0.9em;

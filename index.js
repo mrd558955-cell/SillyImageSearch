@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.46.0';
+const VERSION = '2.47.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -89,6 +89,7 @@ const DEFAULTS = {
     tagNotes: {},
     fixLog: [],
     tagDefinitions: {},
+    removalNotes: {},
     groupBlind: true,
     groupReview: true,
     groupImportance: true,
@@ -104,6 +105,7 @@ const DEFAULTS = {
     pickShortlist: 30,
     openSections: ['setup'],
     libOrder: 'fit',
+    libKind: 'all',
     videoMin: 0,
     videoMax: 0,
     libSmall: false,
@@ -224,6 +226,9 @@ function settings() {
         if (typeof s[key] === 'string' && s[key].includes(OLD_NAMES_RULE)) {
             s[key] = s[key].replace(OLD_NAMES_RULE, 'Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange).');
         }
+    }
+    if (!s.removalNotes || typeof s.removalNotes !== 'object' || Array.isArray(s.removalNotes)) {
+        s.removalNotes = {};
     }
     if (!s.tagDefinitions || typeof s.tagDefinitions !== 'object' || Array.isArray(s.tagDefinitions)) {
         s.tagDefinitions = {};
@@ -4604,6 +4609,7 @@ function cleanEntry(entry) {
         report: cleanReport(entry.report),
         attention: entry.attention && typeof entry.attention === 'object' ? { tags: cleanStrings(entry.attention.tags, 20), at: Number(entry.attention.at) || Date.now() } : null,
         arc: grouped ? String(entry.arc || '').slice(0, 300) : '',
+        removedTags: grouped && entry.removedTags && typeof entry.removedTags === 'object' ? Object.fromEntries(Object.entries(entry.removedTags).slice(0, 40).map(([tag, info]) => [String(tag), { reason: String(info?.reason || '').slice(0, 400), by: info?.by === 'ai' ? 'ai' : 'you', ...(info?.confirmed ? { confirmed: true } : {}), at: Number(info?.at) || Date.now() }])) : {},
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
         characters: Array.isArray(entry.characters) ? entry.characters.map(String) : [],
@@ -5055,7 +5061,7 @@ function tagHints(tags) {
     const lines = tags.map(tag => {
         const notes = tagNotesFor(tag);
         const seen = notes.filter(note => !note.wrong && note.note).slice(-3).map(note => note.note);
-        const wrong = notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note);
+        const wrong = [...notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note), ...removalNotesFor(tag).filter(note => !note.wrong && note.reason).slice(-2).map(note => note.reason)];
         const parts = [definitionLine(tag), seen.length || wrong.length ? `The user's notes: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : ''].filter(Boolean);
         return parts.length ? `- ${tag.replace(/_/g, ' ')}: ${parts.join(' ')}` : '';
     }).filter(Boolean);
@@ -5242,6 +5248,47 @@ function tagNotesFor(tag) {
     return Array.isArray(notes) ? notes.filter(note => note && (note.note || note.wrong)) : [];
 }
 
+function removalNotesFor(tag) {
+    const notes = settings().removalNotes?.[tag];
+    return Array.isArray(notes) ? notes.filter(note => note && (note.reason || note.wrong)) : [];
+}
+
+function saveRemovalNote(tag, note) {
+    const s = settings();
+    const all = s.removalNotes && typeof s.removalNotes === 'object' ? s.removalNotes : {};
+    all[tag] = [...(Array.isArray(all[tag]) ? all[tag] : []), { ...note, at: Date.now() }].slice(-12);
+    s.removalNotes = all;
+    save();
+    renderTagNotes();
+}
+
+function removeTag(entry, tag, info) {
+    const keep = list => list.filter(other => normalizeTag(other) !== tag);
+    entry.tags = keep(entry.tags);
+    entry.variants.forEach(item => {
+        item.tags = keep(item.tags);
+        item.shows = keep(item.shows);
+        item.added = keep(item.added);
+    });
+    if (entry.report) {
+        entry.report.notShown = entry.report.notShown.filter(other => other !== tag);
+    }
+    entry.removedTags = { ...(entry.removedTags || {}), [tag]: { ...info, at: Date.now() } };
+}
+
+function restoreTag(entry, tag) {
+    if (!entry.tags.includes(tag)) {
+        entry.tags = [...entry.tags, tag];
+    }
+    if (entry.report && !entry.report.notShown.includes(tag)) {
+        entry.report.notShown = [...entry.report.notShown, tag];
+        delete entry.report.decided[tag];
+    }
+    const removed = { ...(entry.removedTags || {}) };
+    delete removed[tag];
+    entry.removedTags = removed;
+}
+
 function plainNote(text, entry) {
     return String(text || '').replace(/\b(?:item|part|picture|pic|version|gif)s?\s*#?(\d+)\b/gi, (all, number) => {
         const role = roleText(entry.variants[Number(number) - 1]?.role);
@@ -5258,6 +5305,45 @@ function saveTagNote(tag, note) {
     renderTagNotes();
 }
 
+let browsedTag = '';
+
+function noteRow(note, onChange, onRemove, extra = '') {
+    const row = el('div', 'stis-tag-note');
+    const head = el('div', 'stis-tag-note-head');
+    head.appendChild(el('small', 'stis-tag-note-kind', extra));
+    if ('lasts' in note && !note.wrong) {
+        const lasts = el('span', 'stis-fchip stis-tag-note-lasts', 'Lasts after');
+        lasts.classList.toggle('stis-fchip-on', Boolean(note.lasts));
+        lasts.addEventListener('click', () => {
+            note.lasts = !note.lasts;
+            lasts.classList.toggle('stis-fchip-on', note.lasts);
+            onChange();
+        });
+        head.appendChild(lasts);
+    }
+    const remove = el('a', 'stis-tag-note-remove', '×');
+    remove.href = '#';
+    remove.title = 'Forget this';
+    remove.addEventListener('click', event => {
+        event.preventDefault();
+        onRemove();
+    });
+    head.appendChild(remove);
+    const key = 'reason' in note && !('note' in note) ? 'reason' : 'note';
+    const text = el('input', 'text_pole stis-tag-note-text');
+    text.type = 'text';
+    text.value = note[key] || '';
+    text.addEventListener('input', () => {
+        note[key] = text.value;
+        onChange();
+    });
+    row.append(head, text);
+    if (note.story) {
+        row.appendChild(el('small', 'stis-help', `That item's story line: ${note.story}`));
+    }
+    return row;
+}
+
 function renderTagNotes() {
     const box = document.getElementById('st_imagesearch_tag_notes');
     if (!box) {
@@ -5265,82 +5351,104 @@ function renderTagNotes() {
     }
     box.innerHTML = '';
     const s = settings();
-    const keep = () => {
-        save();
-    };
-    const tags = Object.keys(s.tagNotes || {}).filter(tag => tagNotesFor(tag).length).sort();
+    const tags = [...new Set([...normalizeTagList(s.tagsMatter), ...Object.keys(s.tagNotes || {}).filter(tag => tagNotesFor(tag).length), ...Object.keys(s.removalNotes || {}).filter(tag => removalNotesFor(tag).length)])].sort();
     if (!tags.length) {
-        box.appendChild(el('small', 'stis-help', 'None yet. Notes you write on tags in the library are kept here.'));
+        box.appendChild(el('small', 'stis-help', 'None yet. Tags you mark as important in the library are listed here.'));
+        return;
     }
-    for (const tag of tags) {
-        tagNotesFor(tag).forEach(note => {
-            const row = el('div', 'stis-tag-note');
-            const head = el('div', 'stis-tag-note-head');
-            head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
-            head.append(` ${note.wrong ? 'wrongly deduced' : note.confirmed ? 'deduced and confirmed' : note.fromFix ? 'from a correction' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`);
-            if (!note.wrong) {
-                const lasts = el('span', 'stis-fchip stis-tag-note-lasts', 'Lasts after');
-                lasts.classList.toggle('stis-fchip-on', Boolean(note.lasts));
-                lasts.addEventListener('click', () => {
-                    note.lasts = !note.lasts;
-                    lasts.classList.toggle('stis-fchip-on', note.lasts);
-                    keep();
-                });
-                head.appendChild(lasts);
+    const list = el('div', 'stis-tag-browse');
+    tags.forEach(tag => {
+        const chip = el('span', 'stis-fchip stis-tag-browse-chip', tag.replace(/_/g, ' '));
+        chip.dataset.tag = tag;
+        const count = tagNotesFor(tag).length + removalNotesFor(tag).length;
+        if (count) {
+            chip.appendChild(el('small', 'stis-tag-browse-count', ` ${count}`));
+        }
+        chip.classList.toggle('stis-fchip-on', tag === browsedTag);
+        chip.addEventListener('click', () => {
+            browsedTag = browsedTag === tag ? '' : tag;
+            renderTagNotes();
+        });
+        list.appendChild(chip);
+    });
+    box.appendChild(list);
+    if (!browsedTag || !tags.includes(browsedTag)) {
+        box.appendChild(el('small', 'stis-help', 'Tap a tag to see its definition and what you wrote.'));
+        return;
+    }
+    const tag = browsedTag;
+    const card = el('div', 'stis-tag-card');
+    const title = el('div', 'stis-tag-card-title');
+    title.appendChild(el('b', '', tag.replace(/_/g, ' ')));
+    const meaning = s.tagDefinitions?.[tag];
+    if (meaning?.url) {
+        const link = el('a', 'stis-tag-def-source', `${meaning.site} wiki${meaning.title && meaning.title !== tag ? ` (${meaning.title.replace(/_/g, ' ')})` : ''}`);
+        link.href = meaning.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        title.appendChild(link);
+    }
+    const again = el('a', 'stis-tag-note-remove', 'Fetch again');
+    again.href = '#';
+    again.title = 'Copy the definition from the wiki again';
+    again.addEventListener('click', event => {
+        event.preventDefault();
+        again.textContent = 'Fetching…';
+        ensureDefinitions([tag], '', { again: true }).finally(renderTagNotes);
+    });
+    title.appendChild(again);
+    card.appendChild(title);
+    card.appendChild(el('div', meaning?.text ? 'stis-tag-def' : 'stis-help', meaning?.text || (meaning?.none ? `No wiki entry found (${meaning.site}).` : definitionJobs.has(tag) ? 'Fetching the definition…' : 'No definition yet.')));
+    const keep = () => save();
+    const notes = tagNotesFor(tag);
+    card.appendChild(el('div', 'stis-tag-card-head', `What you wrote${notes.length ? '' : ': nothing yet'}`));
+    notes.forEach(note => {
+        const label = `${note.wrong ? 'wrongly deduced' : note.confirmed ? 'deduced and confirmed' : note.fromFix ? 'from a correction' : 'placed'}${note.role ? ` in the ${note.role} item` : ''}${note.kind ? ` of a ${note.kind}` : ''}`;
+        card.appendChild(noteRow(note, keep, () => {
+            s.tagNotes[tag] = tagNotesFor(tag).filter(other => other !== note);
+            if (!s.tagNotes[tag].length) {
+                delete s.tagNotes[tag];
             }
-            const remove = el('a', 'stis-tag-note-remove', '×');
-            remove.href = '#';
-            remove.title = 'Forget this note';
-            remove.addEventListener('click', event => {
-                event.preventDefault();
-                s.tagNotes[tag] = s.tagNotes[tag].filter(other => other !== note);
-                if (!tagNotesFor(tag).length) {
-                    delete s.tagNotes[tag];
+            keep();
+            renderTagNotes();
+        }, label));
+    });
+    const removals = removalNotesFor(tag);
+    if (removals.length) {
+        card.appendChild(el('div', 'stis-tag-card-head', 'When it did not apply'));
+        removals.forEach(note => {
+            card.appendChild(noteRow(note, keep, () => {
+                s.removalNotes[tag] = removalNotesFor(tag).filter(other => other !== note);
+                if (!s.removalNotes[tag].length) {
+                    delete s.removalNotes[tag];
                 }
                 keep();
                 renderTagNotes();
-            });
-            head.appendChild(remove);
-            row.appendChild(head);
-            const text = el('input', 'text_pole stis-tag-note-text');
-            text.type = 'text';
-            text.value = note.note || '';
-            text.placeholder = note.wrong ? 'why it was wrong' : 'what happens, and why';
-            text.addEventListener('input', () => {
-                note.note = text.value;
-                keep();
-            });
-            row.appendChild(text);
-            if (note.story) {
-                row.appendChild(el('small', 'stis-help', `That item's story line: ${note.story}`));
-            }
-            box.appendChild(row);
+            }, `${note.wrong ? 'taken out wrongly' : note.confirmed ? 'taken out by the AI, confirmed' : 'taken out'}${note.kind ? ` of a ${note.kind}` : ''}`));
         });
     }
     const add = el('div', 'stis-tag-note-add');
-    const tagBox = el('input', 'text_pole');
-    tagBox.type = 'text';
-    tagBox.placeholder = 'tag';
     const noteBox = el('input', 'text_pole');
     noteBox.type = 'text';
-    noteBox.placeholder = 'a note of your own: when it happens, and how to tell';
+    noteBox.placeholder = 'Add a note: when it happens, and how to tell';
     const addButton = el('div', 'menu_button', 'Add note');
     addButton.addEventListener('click', () => {
-        const tag = normalizeTag(tagBox.value);
-        if (!tag || !noteBox.value.trim()) {
+        if (!noteBox.value.trim()) {
             return;
         }
         saveTagNote(tag, { note: noteBox.value.trim(), lasts: false, role: '', story: '', kind: '' });
     });
-    add.append(tagBox, noteBox, addButton);
-    box.appendChild(add);
+    add.append(noteBox, addButton);
+    card.appendChild(add);
+    box.appendChild(card);
 }
 
 function deducePrompt(entry, tags) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}${item.role ? ` (${roleText(item.role)})` : ''}: ${[item.diff, item.sections?.action ? `Action: ${item.sections.action}` : ''].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
     const notes = tags.flatMap(tag => tagNotesFor(tag).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once wrongly placed in the ${note.role || 'an'} item${note.story ? ` ("${note.story}")` : ''}; the user said why that was wrong: "${note.note || 'no reason given'}"` : note.fromFix ? `the user corrected a description${note.role ? ` of the ${note.role} item of a ${note.kind || 'group'}` : ''}${note.story ? ` ("${note.story}")` : ''}, saying it shows this tag: "${note.note}"` : `${note.confirmed ? 'it was deduced in' : 'the user placed it in'} the ${note.role || 'an'} item of a ${note.kind || 'group'}${note.story ? ` ("${note.story}")` : ''}${note.lasts ? ', and it lasted for the items after' : ''}, ${note.confirmed ? 'and the user confirmed it: ' : 'saying: '}"${note.note || 'no reason given'}"`}`));
     const definitions = tags.map(tag => (definitionLine(tag) ? `- ${tag.replace(/_/g, ' ')}: ${definitionLine(tag)}` : '')).filter(Boolean);
-    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.${definitions.length ? `\nWhat the tags mean, copied from the site's wiki (read this first):\n${definitions.join('\n')}` : ''}${notes.length ? `\nWhat the user said about such tags before:\n${notes.join('\n')}` : ''}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: none, because ...`;
+    const removals = tags.flatMap(tag => removalNotesFor(tag).slice(-4).map(note => `- ${tag.replace(/_/g, ' ')}: ${note.wrong ? `once taken out wrongly; the user said it did apply: "${note.reason}"` : `the user took it out of a ${note.kind || 'group'} as not applying there${note.confirmed ? ' (confirmed)' : ''}: "${note.reason || 'no reason given'}"`}`));
+    return `These are the items of one ${groupWhat(entry)}, in order, with their roles and what happens:\n${items}\n\nThe group's site tags include ${tags.length === 1 ? 'this tag' : 'these tags'}, but nobody saw ${tags.length === 1 ? 'it' : 'them'} in any item: ${tags.join(', ').replace(/_/g, ' ')}.${definitions.length ? `\nWhat the tags mean, copied from the site's wiki (read this first):\n${definitions.join('\n')}` : ''}${notes.length ? `\nWhat the user said about such tags before:\n${notes.join('\n')}` : ''}${removals.length ? `\nWhen the user said such tags did not apply:\n${removals.join('\n')}` : ''}\n\nFor each tag, decide whether it most likely happens in one of the items, even off screen or only implied, judging from what happens and from the user's notes; or, when this group is like the cases where the user said it did not apply, that it does not apply here. Something that happened does not go away by itself: if it is a lasting state (an injury, torn or wet clothes, a mess), it lasts for the items after. Never place a tag in an item whose description shows something that does not fit it. Only place a tag when you are fairly sure; otherwise answer none.\n\nReply with one line per tag and nothing else, like:\ntag: item 3, lasts, because ...\ntag: item 2, because ...\ntag: remove, because ... (it does not apply to this group)\ntag: none, because ...`;
 }
 
 async function deduceTags(entry, tags, report = null) {
@@ -5352,12 +5460,16 @@ async function deduceTags(entry, tags, report = null) {
     const found = new Map();
     const declined = new Map();
     for (const line of reply.split('\n')) {
-        const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^`?([^:`]+?)`?\s*:\s*(?:(none)\b|(?:item|part|picture|version)?\s*(\d+)\s*(?:[,;]?\s*(lasts?)\b)?)[\s,;:.–—-]*(.*)$/i);
+        const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^`?([^:`]+?)`?\s*:\s*(?:(none|remove)\b|(?:item|part|picture|version)?\s*(\d+)\s*(?:[,;]?\s*(lasts?)\b)?)[\s,;:.–—-]*(.*)$/i);
         if (!match) {
             continue;
         }
         const tag = normalizeTag(match[1].replace(/[*"]/g, ''));
         const number = Number(match[3]);
+        if (wanted.has(tag) && /^remove$/i.test(match[2] || '') && !found.has(tag)) {
+            found.set(tag, { remove: true, why: match[5].replace(/^because\s+/i, '').replace(/\s+/g, ' ').trim().slice(0, 300) || 'it does not apply here' });
+            continue;
+        }
         if (wanted.has(tag) && match[2] && !declined.has(tag)) {
             declined.set(tag, match[5].replace(/^because\s+/i, '').replace(/\s+/g, ' ').trim().slice(0, 300));
         }
@@ -5369,7 +5481,7 @@ async function deduceTags(entry, tags, report = null) {
     if (report) {
         tags.forEach(tag => {
             const place = found.get(tag);
-            report.noteLog.push(place ? `${tag.replace(/_/g, ' ')}: placed from your notes in item ${place.item}${place.lasts ? ' and after' : ''}, because ${place.why}` : declined.has(tag) ? `${tag.replace(/_/g, ' ')}: not placed, ${declined.get(tag) ? `because ${declined.get(tag)}` : 'no reason given'}` : `${tag.replace(/_/g, ' ')}: the answer did not mention it`);
+            report.noteLog.push(place?.remove ? `${tag.replace(/_/g, ' ')}: taken out from your notes as not applying here, because ${place.why}` : place ? `${tag.replace(/_/g, ' ')}: placed from your notes in item ${place.item}${place.lasts ? ' and after' : ''}, because ${place.why}` : declined.has(tag) ? `${tag.replace(/_/g, ' ')}: not placed, ${declined.get(tag) ? `because ${declined.get(tag)}` : 'no reason given'}` : `${tag.replace(/_/g, ' ')}: the answer did not mention it`);
         });
     }
     return found;
@@ -5378,6 +5490,11 @@ async function deduceTags(entry, tags, report = null) {
 async function placeDeduced(entry, report, found) {
     const updates = new Map();
     for (const [tag, place] of found) {
+        if (place.remove) {
+            removeTag(entry, tag, { reason: place.why, by: 'ai' });
+            report.notShown = report.notShown.filter(other => other !== tag);
+            continue;
+        }
         const numbers = (place.lasts ? entry.variants.map((item, index) => index + 1).filter(number => number >= place.item) : [place.item]);
         report.deduced[tag] = { items: numbers, why: place.why, lasts: place.lasts };
         report.notShown = report.notShown.filter(other => other !== tag);
@@ -5559,42 +5676,7 @@ function definitionLine(tag) {
 }
 
 function renderDefinitions() {
-    const box = document.getElementById('st_imagesearch_tag_definitions');
-    if (!box) {
-        return;
-    }
-    box.innerHTML = '';
-    const s = settings();
-    const tags = [...new Set([...normalizeTagList(s.tagsMatter), ...Object.keys(s.tagDefinitions || {})])].sort();
-    if (!tags.length) {
-        box.appendChild(el('small', 'stis-help', 'None yet. A tag gets its definition from the site\'s wiki as soon as it is in "Tags that matter".'));
-        return;
-    }
-    for (const tag of tags) {
-        const found = s.tagDefinitions?.[tag];
-        const row = el('div', 'stis-tag-note');
-        const head = el('div', 'stis-tag-note-head');
-        head.appendChild(el('b', '', tag.replace(/_/g, ' ')));
-        if (found?.url) {
-            const link = el('a', 'stis-tag-def-source', `${found.site} wiki${found.title && found.title !== tag ? ` (${found.title.replace(/_/g, ' ')})` : ''}`);
-            link.href = found.url;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            head.appendChild(link);
-        }
-        const again = el('a', 'stis-tag-note-remove', 'Fetch again');
-        again.href = '#';
-        again.title = 'Copy the definition from the wiki again';
-        again.addEventListener('click', event => {
-            event.preventDefault();
-            again.textContent = 'Fetching…';
-            ensureDefinitions([tag], '', { again: true }).finally(renderDefinitions);
-        });
-        head.appendChild(again);
-        row.appendChild(head);
-        row.appendChild(el('span', found?.text ? 'stis-tag-def' : 'stis-help', found?.text || (found?.none ? `No wiki entry found (${found.site}).` : definitionJobs.has(tag) ? 'Fetching…' : 'Not fetched yet.')));
-        box.appendChild(row);
-    }
+    renderTagNotes();
 }
 
 function rememberedTags() {
@@ -5829,7 +5911,7 @@ async function describeSet(entry, blobs = []) {
         }
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
-        const storyOn = s.groupStory !== false;
+        const storyOn = s.groupStory !== false && entry.kind === 'sequence';
         const story = async (notes = '') => {
             groupStep(entry, 'Writing what each item means in the story…');
             try {
@@ -5848,10 +5930,10 @@ async function describeSet(entry, blobs = []) {
                 item.diff = '';
             });
             entry.arc = '';
-            report.steps.story = storyOn ? 'skipped' : 'off';
+            report.steps.story = entry.kind !== 'sequence' ? 'not for sets' : storyOn ? 'skipped' : 'off';
         }
         const mattering = rememberedTags().matter;
-        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length || (mattering.has(tag) && tagDefinition(tag)));
+        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length || removalNotesFor(tag).length || (mattering.has(tag) && tagDefinition(tag)));
         if (deducible.length && s.groupDeduce !== false && items.every(item => item.description)) {
             groupStep(entry, `Looking where ${deducible.length} tag${deducible.length === 1 ? '' : 's'} nobody saw could happen…`);
             try {
@@ -5964,7 +6046,7 @@ async function redoItem(entry, index) {
 }
 
 async function refreshStory(entry, notes = '') {
-    if (settings().groupStory === false || !groupDescribed(entry) || !entry.variants.some(item => item.role)) {
+    if (settings().groupStory === false || entry.kind !== 'sequence' || !groupDescribed(entry) || !entry.variants.some(item => item.role)) {
         return false;
     }
     groupStep(entry, 'Writing what each item means in the story…');
@@ -5989,6 +6071,21 @@ async function applyTagChoices(entry, choices) {
     const kind = groupWhat(entry);
     for (const [tag, choice] of choices) {
         const note = String(choice.note || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+        if (choice.kind === 'removed') {
+            const removed = entry.removedTags?.[tag];
+            if (!removed) {
+                continue;
+            }
+            if (choice.state === 'wrong') {
+                saveRemovalNote(tag, { wrong: true, reason: note || 'the user put it back', kind });
+                restoreTag(entry, tag);
+                report.noteLog = [...(report.noteLog || []), `${tag.replace(/_/g, ' ')}: the removal was wrong, put back${note ? `: ${note}` : ''}`].slice(-40);
+            } else if (!removed.confirmed) {
+                saveRemovalNote(tag, { confirmed: true, reason: removed.reason, kind });
+                removed.confirmed = true;
+            }
+            continue;
+        }
         if (choice.kind === 'deduced') {
             if (choice.state !== 'wrong') {
                 const place = report.deduced[tag];
@@ -6015,6 +6112,14 @@ async function applyTagChoices(entry, choices) {
             report.notes[tag] = { note: `wrongly deduced${note ? `: ${note}` : ''}`, lasts: false };
             continue;
         }
+        if (choice.state === 'nothere') {
+            report.decided[tag] = 'nothere';
+            judged(tag, true, note ? `not in this picture: ${note}` : 'not in this picture');
+            rememberTag(tag, true, entry.site);
+            removeTag(entry, tag, { reason: note, by: 'you' });
+            saveRemovalNote(tag, { reason: plainNote(note, entry), kind });
+            continue;
+        }
         if (choice.state === 'out') {
             const keep = list => list.filter(other => normalizeTag(other) !== tag);
             entry.tags = keep(entry.tags);
@@ -6030,9 +6135,9 @@ async function applyTagChoices(entry, choices) {
         } else if (choice.state === 'important') {
             report.decided[tag] = 'important';
             const tapped = [...choice.items].filter(number => number >= 1 && number <= entry.variants.length).sort((a, b) => a - b);
-            const said = number => String(choice.itemNotes?.get(number) || (tapped.length === 1 ? note : '')).replace(/\s+/g, ' ').trim().slice(0, 400);
+            const said = number => String((choice.shared ? note : choice.itemNotes?.get(number)) || (tapped.length === 1 ? note : '')).replace(/\s+/g, ' ').trim().slice(0, 400);
             const byItem = Object.fromEntries(tapped.filter(said).map(number => [number, said(number)]));
-            const summary = tapped.length > 1 ? tapped.filter(said).map(number => `item ${number}: ${said(number)}`).join('; ') : tapped.length ? said(tapped[0]) : note;
+            const summary = tapped.length > 1 && !choice.shared ? tapped.filter(said).map(number => `item ${number}: ${said(number)}`).join('; ') : tapped.length ? said(tapped[0]) : note;
             judged(tag, true, summary || (tapped.length ? 'you placed it in the items that show it' : 'you marked it as important'));
             rememberTag(tag, true, entry.site);
             const numbers = tapped.length && choice.lasts ? entry.variants.map((item, index) => index + 1).filter(number => number >= tapped[0]) : tapped;
@@ -6688,7 +6793,8 @@ function paintProgress(node, text) {
 function tagPanel(entry, onChange) {
     const report = entry.report;
     const deduced = Object.entries(report.deduced);
-    const unconfirmed = deduced.filter(([, place]) => !place.confirmed);
+    const aiRemoved = Object.entries(entry.removedTags || {}).filter(([, removed]) => removed.by === 'ai');
+    const unconfirmed = [...deduced, ...aiRemoved].filter(([, place]) => !place.confirmed);
     const box = el('details', `stis-tagfix${entry.attention ? ' stis-attention' : ''}`);
     const drafts = tagDrafts.get(entry.id) || new Map();
     tagDrafts.set(entry.id, drafts);
@@ -6703,13 +6809,13 @@ function tagPanel(entry, onChange) {
     if (entry.attention) {
         summary.appendChild(el('b', '', 'Needs a look · '));
     }
-    summary.append([report.notShown.length ? `${report.notShown.length} tag${report.notShown.length === 1 ? '' : 's'} not found` : '', deduced.length ? `${deduced.length} deduced${unconfirmed.length ? ` (${unconfirmed.length} to check)` : ''}` : ''].filter(Boolean).join(' · '));
+    summary.append([report.notShown.length ? `${report.notShown.length} tag${report.notShown.length === 1 ? '' : 's'} not found` : '', deduced.length ? `${deduced.length} deduced` : '', aiRemoved.length ? `${aiRemoved.length} taken out` : '', unconfirmed.length ? `${unconfirmed.length} to check` : ''].filter(Boolean).join(' · '));
     box.appendChild(summary);
     box.appendChild(el('small', 'stis-help stis-tagfix-help', `Tap a tag to sort it${entry.fromVideo ? ' (a tag not found may have been cut off with the parts)' : ''}. Done saves everything and updates the items.`));
     const done = el('div', 'menu_button stis-tagfix-done', 'Done');
     const startState = tag => (report.decided[tag] === 'important' ? 'important' : '');
     const wrote = choice => Boolean(choice.note.trim() || [...(choice.itemNotes?.values() || [])].some(text => text.trim()));
-    const pending = ([tag, choice]) => (choice.kind === 'deduced' ? Boolean(report.deduced[tag]) && (choice.state === 'wrong' || !report.deduced[tag].confirmed) : report.notShown.includes(tag) && (choice.state !== startState(tag) || choice.items.size || wrote(choice) || choice.lasts));
+    const pending = ([tag, choice]) => (choice.kind === 'removed' ? Boolean(entry.removedTags?.[tag]) && (choice.state === 'wrong' || !entry.removedTags[tag].confirmed) : choice.kind === 'deduced' ? Boolean(report.deduced[tag]) && (choice.state === 'wrong' || !report.deduced[tag].confirmed) : report.notShown.includes(tag) && (choice.state !== startState(tag) || choice.items.size || wrote(choice) || choice.lasts));
     const refresh = () => done.classList.toggle('disabled', ![...drafts].some(pending));
     const rows = [];
     const openRow = tag => {
@@ -6771,8 +6877,13 @@ function tagPanel(entry, onChange) {
             body.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'Matters' : 'Minor'}: ${judged.why}`));
         }
         const chips = el('div', 'stis-tagfix-chips');
-        const out = el('span', 'stis-fchip stis-tagfix-out', 'Throw out');
+        const out = el('span', 'stis-fchip stis-tagfix-out', 'Doesn\'t matter');
+        out.title = 'Unimportant everywhere: remembered on "Tags that do not matter" and left out of this group';
         const keep = el('span', 'stis-fchip stis-tagfix-keep', 'Important');
+        const away = el('span', 'stis-fchip stis-tagfix-away', 'Not here');
+        away.title = 'It matters in general but does not apply to this picture: it stays important, is taken out of this group (shown in red in its tags), and your reason is remembered';
+        const shared = el('span', 'stis-fchip stis-tagfix-shared', 'One note');
+        shared.title = 'Write one note for all the items you tapped instead of one each';
         const lasts = el('span', 'stis-fchip stis-tagfix-lasts', 'Lasts after');
         lasts.title = 'Once it happens it stays: also put it in every item after the first one you tapped';
         const numbers = entry.variants.map((item, index) => {
@@ -6793,7 +6904,7 @@ function tagPanel(entry, onChange) {
         const notes = el('div', 'stis-tagfix-notes');
         const showState = () => {
             const tapped = [...choice.items].sort((a, b) => a - b);
-            const text = choice.state === 'out' ? 'thrown out'
+            const text = choice.state === 'out' ? 'doesn\'t matter' : choice.state === 'nothere' ? `not here${wrote(choice) ? ' · note' : ''}`
                 : tapped.length ? `→ ${tapped.join(', ')}${choice.lasts ? ' and after' : ''}${wrote(choice) ? ' · note' : ''}`
                     : choice.state === 'important' ? `important${wrote(choice) ? ' · note' : ''}`
                         : judged ? (judged.important ? 'matters' : 'minor') : 'not judged';
@@ -6802,10 +6913,19 @@ function tagPanel(entry, onChange) {
         };
         const fillNotes = () => {
             notes.innerHTML = '';
+            if (choice.state === 'nothere') {
+                notes.appendChild(noteBox(choice, 'Why doesn\'t it apply here? (remembered for next time)', 0, showState));
+                return;
+            }
             if (choice.state !== 'important') {
                 return;
             }
             const tapped = [...choice.items].sort((a, b) => a - b);
+            shared.hidden = tapped.length < 2;
+            if (choice.shared && tapped.length > 1) {
+                notes.appendChild(noteBox(choice, `One note for items ${tapped.join(', ')}: what happens there? e.g. off screen, because…`, 0, showState));
+                return;
+            }
             if (!tapped.length) {
                 notes.appendChild(noteBox(choice, 'Why does it matter? (optional)', 0, showState));
                 return;
@@ -6819,17 +6939,33 @@ function tagPanel(entry, onChange) {
         const paint = () => {
             out.classList.toggle('stis-fchip-on', choice.state === 'out');
             keep.classList.toggle('stis-fchip-on', choice.state === 'important');
+            away.classList.toggle('stis-fchip-on', choice.state === 'nothere');
+            shared.classList.toggle('stis-fchip-on', Boolean(choice.shared));
+            shared.hidden = choice.items.size < 2;
             lasts.classList.toggle('stis-fchip-on', choice.lasts);
             const first = Math.min(...choice.items);
             numbers.forEach((chip, index) => {
                 chip.classList.toggle('stis-fchip-on', choice.items.has(index + 1));
                 chip.classList.toggle('stis-tagfix-carried', choice.lasts && choice.items.size > 0 && index + 1 > first && !choice.items.has(index + 1));
             });
-            node.classList.toggle('stis-tagfix-gone', choice.state === 'out');
+            node.classList.toggle('stis-tagfix-gone', choice.state === 'out' || choice.state === 'nothere');
             fillNotes();
             showState();
             refresh();
         };
+        away.addEventListener('click', () => {
+            choice.state = choice.state === 'nothere' ? '' : 'nothere';
+            choice.items.clear();
+            choice.lasts = false;
+            paint();
+        });
+        shared.addEventListener('click', () => {
+            choice.shared = !choice.shared;
+            if (choice.shared && !choice.note.trim()) {
+                choice.note = [...choice.itemNotes.values()].find(text => text.trim()) || '';
+            }
+            paint();
+        });
         out.addEventListener('click', () => {
             choice.state = choice.state === 'out' ? '' : 'out';
             choice.items.clear();
@@ -6851,7 +6987,7 @@ function tagPanel(entry, onChange) {
             }
             paint();
         });
-        chips.append(out, keep, el('small', 'stis-tagfix-in', 'in'), ...numbers, lasts);
+        chips.append(keep, away, out, el('small', 'stis-tagfix-in', 'in'), ...numbers, lasts, shared);
         body.append(chips, notes);
         paint();
     }
@@ -6872,6 +7008,34 @@ function tagPanel(entry, onChange) {
                 note.appendChild(noteBox(choice, 'Why is it wrong? (saved for next time)'));
             }
             state.textContent = choice.state === 'wrong' ? 'wrong' : `deduced → ${place.items.join(', ')}${place.confirmed ? ' ✓' : ''}`;
+            state.classList.toggle('stis-tagfix-chosen', choice.state === 'wrong');
+            refresh();
+        };
+        wrong.addEventListener('click', () => {
+            choice.state = choice.state === 'wrong' ? '' : 'wrong';
+            paint();
+        });
+        const chips = el('div', 'stis-tagfix-chips');
+        chips.appendChild(wrong);
+        body.append(chips, note);
+        paint();
+    }
+    for (const [tag, removed] of aiRemoved) {
+        if (!drafts.has(tag) || drafts.get(tag).kind !== 'removed') {
+            drafts.set(tag, { kind: 'removed', state: '', note: '' });
+        }
+        const choice = drafts.get(tag);
+        const { state, body } = makeRow(tag, ' stis-tagfix-deduced stis-tagfix-removed');
+        body.appendChild(el('small', 'stis-tagfix-why', `Taken out from your notes, as not applying here: ${removed.reason || 'no reason given'}${removed.confirmed ? ' (confirmed)' : ' · Done confirms it unless you tap Wrong'}`));
+        const wrong = el('span', 'stis-fchip stis-tagfix-wrong', 'Wrong');
+        const note = el('div', 'stis-tagfix-notes');
+        const paint = () => {
+            wrong.classList.toggle('stis-fchip-on', choice.state === 'wrong');
+            note.innerHTML = '';
+            if (choice.state === 'wrong') {
+                note.appendChild(noteBox(choice, 'Why does it apply after all? (saved for next time)'));
+            }
+            state.textContent = choice.state === 'wrong' ? 'put back' : `not here${removed.confirmed ? ' ✓' : ''}`;
             state.classList.toggle('stis-tagfix-chosen', choice.state === 'wrong');
             refresh();
         };
@@ -9166,7 +9330,7 @@ function visionHash() {
 }
 
 function describedOld(entry) {
-    return Boolean(entry.description) && (!String(entry.description).trimStart().startsWith('Visual:') || (isMulti(entry) && (!groupDescribed(entry) || (settings().groupStory !== false && !entry.variants.some(item => item.role)))));
+    return Boolean(entry.description) && (!String(entry.description).trimStart().startsWith('Visual:') || (isMulti(entry) && (!groupDescribed(entry) || (settings().groupStory !== false && entry.kind === 'sequence' && !entry.variants.some(item => item.role)))));
 }
 
 function chatCharacters() {
@@ -11740,8 +11904,9 @@ async function openPicker(initialTags = null, focus = null) {
         return strip;
     }
 
-    function tagSection(tagNames, below, folded = false) {
-        const unique = [...new Set((tagNames || []).map(normalizeTag).filter(Boolean))];
+    function tagSection(tagNames, below, folded = false, removed = null, onRestore = null) {
+        const gone = removed && typeof removed === 'object' ? removed : {};
+        const unique = [...new Set([...(tagNames || []).map(normalizeTag).filter(Boolean), ...Object.keys(gone)])];
         const box = el('div', `stis-tagbox${folded ? ' stis-tagbox-folded' : ''}`);
         const head = el('div', 'stis-tagbox-head');
         head.append(el('span', '', `Tags (${unique.length})`), el('i', 'fa-solid fa-chevron-down'));
@@ -11787,10 +11952,36 @@ async function openPicker(initialTags = null, focus = null) {
             out.textContent = `Leave out${count}`;
             [add, fav, out].forEach(button => button.classList.toggle('stis-disabled', !picked.size));
         };
+        const goneInfo = el('div', 'stis-tagpick-gone-info');
+        goneInfo.hidden = true;
         unique.forEach(tag => {
             const chip = el('span', 'stis-tagpick');
             chip.append(el('span', 'stis-tagpick-star', '★'), el('span', '', tag));
             chip.title = tags.includes(tag) ? 'Already in the search' : 'Tap to select';
+            if (gone[tag]) {
+                chip.classList.add('stis-tagpick-removed');
+                chip.title = 'Taken out: it does not apply to this picture. Tap to see why';
+                chip.addEventListener('click', () => {
+                    const open = goneInfo.hidden || goneInfo.dataset.tag !== tag;
+                    goneInfo.innerHTML = '';
+                    goneInfo.hidden = !open;
+                    goneInfo.dataset.tag = tag;
+                    if (!open) {
+                        return;
+                    }
+                    goneInfo.appendChild(el('span', '', `${tag.replace(/_/g, ' ')}: not in this picture${gone[tag].reason ? `, because ${gone[tag].reason}` : ''} (${gone[tag].by === 'ai' ? 'taken out by the AI from your notes' : 'taken out by you'}). It no longer counts for searches. `));
+                    const back = el('a', 'stis-tagpick-restore', 'Put it back');
+                    back.href = '#';
+                    back.addEventListener('click', event => {
+                        event.preventDefault();
+                        onRestore?.(tag);
+                    });
+                    goneInfo.appendChild(back);
+                });
+                chip.querySelector('.stis-tagpick-star').hidden = true;
+                holder.appendChild(chip);
+                return;
+            }
             chip.addEventListener('click', () => {
                 if (picked.has(tag)) {
                     picked.delete(tag);
@@ -11847,7 +12038,7 @@ async function openPicker(initialTags = null, focus = null) {
             }
         });
         actions.append(add, fav, out);
-        box.append(head, holder, actions);
+        box.append(head, holder, goneInfo, actions);
         below.appendChild(box);
         paint();
         return box;
@@ -12821,7 +13012,7 @@ async function openPicker(initialTags = null, focus = null) {
         if (!multi && entry.huntReport?.text) {
             desc.appendChild(huntReportBox(entry));
         }
-        if (multi && entry.report && (entry.report.notShown.length || Object.keys(entry.report.deduced).length)) {
+        if (multi && entry.report && (entry.report.notShown.length || Object.keys(entry.report.deduced).length || Object.values(entry.removedTags || {}).some(removed => removed.by === 'ai'))) {
             info.appendChild(tagPanel(entry, () => {
                 if (!closed && previewState?.target === entry) {
                     showEntry(entry, current);
@@ -13024,6 +13215,34 @@ async function openPicker(initialTags = null, focus = null) {
         if (selecting) {
             bar.append(selectButton(entryPick(entry, current)));
         }
+        if (multi) {
+            const other = sequence ? 'set' : 'sequence';
+            const convert = confirmButton(`Make it a ${other}`, `Tap again: it becomes a ${other} and is described again from scratch`, async button => {
+                if (groupProgress.has(entry.id)) {
+                    return;
+                }
+                button.textContent = 'Describing…';
+                entry.kind = other;
+                entry.variants.forEach(item => {
+                    item.role = null;
+                    item.diff = '';
+                });
+                entry.arc = '';
+                try {
+                    await redoEntry(entry);
+                } catch (error) {
+                    toastr.warning(`Could not describe the ${other}: ${error?.message || error}`, 'Image Search');
+                }
+                await saveLibrary();
+                scheduleLorebookSync();
+                if (!closed && previewState?.target === entry) {
+                    showEntry(entry, current);
+                    renderLibrary();
+                }
+            });
+            convert.title = sequence ? 'Versions to use on their own, with no story order: every item is described again' : 'Pictures that tell a story in order: every item is described again, with roles and story lines';
+            bar.append(convert);
+        }
         const use = el('div', 'menu_button stis-use', 'Use this');
         use.addEventListener('click', () => pickEntry(entry, use, current));
         const actions = [...bar.children].slice(navCount);
@@ -13042,7 +13261,18 @@ async function openPicker(initialTags = null, focus = null) {
         });
         bar.append(...main, moreButton);
         bar.after(moreRow);
-        tagSection(current?.tags?.length ? current.tags : entry.tags, below, true);
+        tagSection(current?.tags?.length ? current.tags : entry.tags, below, true, multi ? entry.removedTags : null, async tag => {
+            const removed = entry.removedTags?.[tag];
+            if (removed?.by === 'ai' && !removed.confirmed) {
+                saveRemovalNote(tag, { wrong: true, reason: 'the user put it back', kind: groupWhat(entry) });
+            }
+            restoreTag(entry, tag);
+            await saveLibrary();
+            if (!closed && previewState?.target === entry) {
+                showEntry(entry, current);
+                renderLibrary();
+            }
+        });
     }
 
     function renderLibFilters() {
@@ -13098,8 +13328,29 @@ async function openPicker(initialTags = null, focus = null) {
 
     const LIB_ORDERS = [['fit', 'Best fit', 'Pictures that fit the chat and the tags first'], ['new', 'Newest', 'Last saved first'], ['used', 'Last used', 'Last sent first']];
 
+    const LIB_KINDS = [['all', 'All'], ['single', 'Singles'], ['set', 'Sets'], ['sequence', 'Sequences']];
+
+    function kindOf(entry) {
+        return isMulti(entry) ? entry.kind : 'single';
+    }
+
     function renderLibBar() {
         ui.libOrder.innerHTML = '';
+        const kind = LIB_KINDS.some(([key]) => key === s.libKind) ? s.libKind : 'all';
+        const kinds = el('span', 'stis-lib-kinds');
+        for (const [key, label] of LIB_KINDS) {
+            const chip = el('span', 'stis-fchip stis-lib-kind', label);
+            chip.dataset.kind = key;
+            chip.classList.toggle('stis-fchip-on', key === kind);
+            chip.addEventListener('click', () => {
+                s.libKind = key;
+                save();
+                ui.libGrid.scrollTop = 0;
+                renderLibrary();
+            });
+            kinds.appendChild(chip);
+        }
+        ui.libOrder.appendChild(kinds);
         ui.libOrder.appendChild(el('small', 'stis-lib-filter-label', 'Order'));
         const order = LIB_ORDERS.some(([key]) => key === s.libOrder) ? s.libOrder : 'fit';
         for (const [key, label, title] of LIB_ORDERS) {
@@ -13114,7 +13365,7 @@ async function openPicker(initialTags = null, focus = null) {
             });
             ui.libOrder.appendChild(chip);
         }
-        ui.libClear.hidden = !libFilter.size && !ui.libSearch.value.trim();
+        ui.libClear.hidden = !libFilter.size && !ui.libSearch.value.trim() && (!s.libKind || s.libKind === 'all');
         ui.libSize.innerHTML = '';
         ui.libSize.appendChild(el('i', s.libSmall ? 'fa-solid fa-table-cells-large' : 'fa-solid fa-table-cells'));
         ui.libSize.title = s.libSmall ? 'Bigger pictures, 2 per row' : 'Smaller pictures, 3 per row';
@@ -13150,6 +13401,9 @@ async function openPicker(initialTags = null, focus = null) {
                 return [...libFilter].every(key => facets.includes(key));
             });
         }
+        if (s.libKind && s.libKind !== 'all') {
+            ranked = ranked.filter(({ entry }) => kindOf(entry) === s.libKind);
+        }
         ranked = orderEntries(ranked);
         libraryOrder = ranked.map(({ entry }) => entry);
         if (!ranked.length) {
@@ -13184,7 +13438,7 @@ async function openPicker(initialTags = null, focus = null) {
                 locked.title = entry.lock ? 'Description locked' : 'Some items have a locked description';
                 cell.appendChild(locked);
             }
-            if (!entry.attention && isMulti(entry) && entry.variants.some(item => item.deduced?.length)) {
+            if (!entry.attention && isMulti(entry) && (entry.variants.some(item => item.deduced?.length) || Object.values(entry.removedTags || {}).some(removed => removed.by === 'ai' && !removed.confirmed))) {
                 const flag = el('span', 'stis-attention-badge stis-deduced-badge');
                 flag.appendChild(el('i', 'fa-solid fa-wand-magic-sparkles'));
                 flag.title = 'Some tags were deduced from your notes; check them in the preview';
@@ -13290,6 +13544,7 @@ async function openPicker(initialTags = null, focus = null) {
         clearTimeout(libTimer);
         ui.libSearch.value = '';
         libFilter.clear();
+        s.libKind = 'all';
         ui.libGrid.scrollTop = 0;
         renderLibrary();
     });
@@ -13821,7 +14076,7 @@ function buildSettings() {
                         </div>
                         <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, then a role and a story line. About 2 requests per item, plus 3.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_blind"> <span>First look without tags</span></label><small class="stis-help">The vision model lists what it sees in each item without the tags, so each tag goes to the items that show it. Tags it misses are looked for again in all items.</small></div>
-                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_story"> <span>Story lines</span></label><small class="stis-help">One text request (tag profile) reads all the descriptions and gives each item a role (main and finer, like main action, climax) and a line on what the moment means: what was happening, what is happening, and so what. Sets of versions get what each version means compared with version 1.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_story"> <span>Story lines</span></label><small class="stis-help">Sequences only. One text request (tag profile) reads all the descriptions and gives each item an intensity, a role (main and finer, like climax, finishing blow) and a line on what the moment means: what was happening, what is happening, and so what. Sets are versions to use on their own, so they get no roles.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_deduce"> <span>Deduce tags nobody saw</span></label><small class="stis-help">When a tag found in no item has notes from you (below), one text request reads the story lines and your notes and places it where it most likely happens, even off screen; a lasting one stays for the items after. Deduced tags are marked in the library so you can tell it when it is wrong.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_review"> <span>Final check</span></label><small class="stis-help">One more request reads all the descriptions together, writes the overview and points out mistakes; items with a mistake are described once more.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_importance"> <span>Judge tags not found</span></label><small class="stis-help">When tags are in no item, the prompt below decides whether they matter. If they do, the group is marked "Needs a look" in the library (filter: Check).</small></div>
@@ -13832,28 +14087,17 @@ function buildSettings() {
                             <div id="st_imagesearch_importance_reset" class="menu_button">Reset this prompt</div>
                         </div>
                         <div class="stis-set">
-                            <div class="stis-label">Story prompt (sequences and video parts)</div>
+                            <div class="stis-label">Story prompt (sequences)</div>
                             <textarea id="st_imagesearch_story_prompt" class="text_pole"></textarea>
                             <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
                             <div id="st_imagesearch_story_reset" class="menu_button">Reset this prompt</div>
-                        </div>
-                        <div class="stis-set">
-                            <div class="stis-label">Story prompt (sets of versions)</div>
-                            <textarea id="st_imagesearch_versions_prompt" class="text_pole"></textarea>
-                            <small class="stis-help">Same as above, for sets of versions of one picture.</small>
-                            <div id="st_imagesearch_versions_reset" class="menu_button">Reset this prompt</div>
                         </div>
                         <div class="stis-set">
                             <div class="stis-label">Tags that matter</div>
                             <textarea id="st_imagesearch_tags_matter" class="text_pole" placeholder="one per line"></textarea>
                             <div class="stis-label">Tags that do not matter</div>
                             <textarea id="st_imagesearch_tags_dont_matter" class="text_pole" placeholder="one per line"></textarea>
-                            <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Throw out). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
-                        </div>
-                        <div class="stis-set">
-                            <div class="stis-label">Tag definitions</div>
-                            <div id="st_imagesearch_tag_definitions" class="stis-tag-notes"></div>
-                            <small class="stis-help">Copied word for word from the wiki of the picture's site (or Danbooru's when that site has none) as soon as a tag is in "Tags that matter", and for tags not found in a group. Read only; they always come first, before your notes, when the AI looks for or judges a tag.</small>
+                            <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Doesn't matter). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
                         </div>
                         <div class="stis-set">
                             <div class="stis-label">Corrections without a tag</div>
@@ -13861,9 +14105,9 @@ function buildSettings() {
                             <small class="stis-help">Kept as a record only: the picture is fixed and keeps your correction for its later redos.</small>
                         </div>
                         <div class="stis-set">
-                            <div class="stis-label">Tag notes</div>
+                            <div class="stis-label">Important tags</div>
                             <div id="st_imagesearch_tag_notes" class="stis-tag-notes"></div>
-                            <small class="stis-help">Corrections with a tag attached land here, with your words. Where you placed a tag nobody saw and why, and deductions you marked wrong and why (the last 12 per tag). Used to deduce those tags in later groups. Edit a note, switch Lasts after, remove one, or add your own.</small>
+                            <small class="stis-help">Each tag that matters, with its definition copied from the site's wiki (read only, first in every check) and what you wrote: where you placed it and why, corrections, deductions you confirmed or marked wrong, and when it did not apply (the last 12 of each). Edit, remove or add notes.</small>
                         </div>
                     </div>
                 </details>
@@ -14037,7 +14281,6 @@ function buildSettings() {
     renderDefinitions();
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
-    bind('st_imagesearch_versions_prompt', 'versionsPrompt');
     bind('st_imagesearch_tags_matter', 'tagsMatter', 'value', () => {
         clearTimeout(definitionTimer);
         definitionTimer = setTimeout(() => {
@@ -14046,7 +14289,7 @@ function buildSettings() {
         }, 1500);
     });
     bind('st_imagesearch_tags_dont_matter', 'tagsDontMatter');
-    for (const [id, key, value] of [['st_imagesearch_story_reset', 'storyPrompt', DEFAULT_STORY_PROMPT], ['st_imagesearch_versions_reset', 'versionsPrompt', DEFAULT_VERSIONS_PROMPT]]) {
+    for (const [id, key, value] of [['st_imagesearch_story_reset', 'storyPrompt', DEFAULT_STORY_PROMPT]]) {
         document.getElementById(id).addEventListener('click', () => {
             s[key] = value;
             document.getElementById(id.replace('_reset', '_prompt')).value = value;

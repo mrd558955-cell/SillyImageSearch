@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.57.1';
+const VERSION = '2.57.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -4630,11 +4630,14 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
         console.warn('[Image Search] could not read the animation frames', error);
     }
     let raw = '';
+    const framesText = set => `${gifNoteText(set, set.sheet
+        ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
+        : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`)}\n\n${prompt}`;
+    if (extra.dryRun) {
+        return frames?.count > 1 ? { dry: true, prompt: framesText(frames), view: sentView(frames) } : { dry: true, prompt, view: { pictures: [await imageDataUrl(url, blob)], moments: 0 } };
+    }
     const askFrames = async set => {
-        const shown = set.sheet
-            ? `You get ${sheetWords(set.count, set.length)}, evenly spread from the start to the end.`
-            : `You get ${set.count} moments from it, in order, evenly spread from the start to the end.`;
-        const text = `${gifNoteText(set, shown)}\n\n${prompt}`;
+        const text = framesText(set);
         const reply = await ask(text, set);
         rememberSent(url, 'describe', { ...sentView(set), prompt: text, tokens: Math.max(32, Number(s.visionMaxTokens) || 300), heat: 0.3 });
         return reply;
@@ -5518,7 +5521,7 @@ async function findMissingTags(entry, pictures, tags, report) {
     return found;
 }
 
-async function describeItem(entry, index, blob, { note = '', fallback = false, missed = [], why = {}, trusted = true, correction = null, roleFix = null } = {}) {
+async function describeItem(entry, index, blob, { note = '', fallback = false, missed = [], why = {}, trusted = true, correction = null, roleFix = null, dry = false } = {}) {
     const item = entry.variants[index];
     const sequence = entry.kind === 'sequence';
     const before = index === 0 ? null : sequence ? entry.variants[index - 1] : entry.variants[0];
@@ -5555,7 +5558,10 @@ async function describeItem(entry, index, blob, { note = '', fallback = false, m
     const tagNote = (fallback || !item.shows.length) && entry.fromVideo ? VIDEO_TAGS_NOTE : '';
     const base = missed.length || correction ? item.lock?.text || item.description : '';
     const wrap = !base ? null : correction ? asked => correctionPrompt(base, correction, asked, entry, item) : asked => missedPrompt(base, missed, item, asked, why);
-    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags });
+    const parsed = await requestDescription(item.url, tags, blob || null, base ? '' : item.lock?.text || '', tagNote, { before: context.join('\n\n'), wrap, peopleTags: entry.tags, dryRun: dry });
+    if (dry) {
+        return parsed;
+    }
     item.description = parsed.text;
     item.sections = parsed.sections || {};
     item.keywords = parsed.keywords || [];
@@ -5579,12 +5585,19 @@ function roleText(role) {
 
 async function rebuildSent(entry, item) {
     const out = { ...(sentPictures.get(item.url) || {}) };
-    if (!out.describe) {
-        const frames = await animationFrames(item.url, null, 0, v3Entry(entry) ? { timed: true } : {}).catch(() => null);
-        out.describe = frames?.count > 1 ? { ...sentView(frames), rebuilt: true } : { pictures: [await imageDataUrl(item.url, null)], moments: 0, rebuilt: true };
+    if (!out.describe?.prompt) {
+        try {
+            const dry = await dryPrompt(entry, item);
+            out.describe = { ...dry.view, prompt: dry.prompt, rebuilt: true, tokens: Math.max(32, Number(settings().visionMaxTokens) || 300), heat: 0.3 };
+        } catch (error) {
+            console.warn('[Image Search] could not build the description prompt again', error);
+            if (!out.describe) {
+                out.describe = { pictures: [await imageDataUrl(item.url, null)], moments: 0, rebuilt: true };
+            }
+        }
     }
     const index = isMulti(entry) ? entry.variants.indexOf(item) : -1;
-    if (!out.board && index >= 0 && v3Entry(entry)) {
+    if (!out.board?.prompt && index >= 0 && v3Entry(entry)) {
         out.board = { ...(await rebuildBoardView(entry, index)), rebuilt: true };
     }
     return out;
@@ -5594,10 +5607,10 @@ function sentPanel(entry, item) {
     const box = el('div', 'stis-sent');
     box.appendChild(el('small', 'stis-card-head', 'What the AI saw'));
     const body = el('div', 'stis-sent-body');
-    body.appendChild(el('small', '', 'Getting the pictures…'));
+    body.appendChild(el('small', '', 'Getting the pictures and the prompt…'));
     box.appendChild(body);
     const clock = at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const part = (title, view) => {
+    const part = (title, view, rebuild = null) => {
         const wrap = el('div', 'stis-sent-part');
         const bits = [`${view.pictures.length} picture${view.pictures.length === 1 ? '' : 's'}`];
         if (view.moments) {
@@ -5606,7 +5619,15 @@ function sentPanel(entry, item) {
         if (view.seconds) {
             bits.push(`from a ${view.seconds} s GIF${view.loop ? ' that loops' : ''}`);
         }
-        wrap.appendChild(el('div', 'stis-sent-title', `${title}: ${bits.join(', ')} · ${view.rebuilt ? 'rebuilt from the GIF with your current settings' : `exactly as sent at ${clock(view.at)}`}`));
+        wrap.appendChild(el('div', 'stis-sent-title', `${title}: ${bits.join(', ')} · ${view.rebuilt ? 'rebuilt with your current settings (what would be sent now)' : `exactly as sent at ${clock(view.at)}`}`));
+        const said = el('details', 'stis-sent-prompt');
+        said.open = true;
+        const label = el('summary', '', view.rebuilt ? 'The prompt, with your current settings' : 'The prompt sent with these pictures');
+        said.appendChild(label);
+        if (view.together > view.pictures.length) {
+            said.appendChild(el('small', 'stis-sent-moments', `It goes with ${view.together} pictures in all: this item's pictures below, and the other items' pictures. Sending it again sends them all.`));
+        }
+        wrap.appendChild(said);
         const marks = view.times?.length ? view.times : view.picks?.length ? view.picks : null;
         if (view.moments && marks) {
             wrap.appendChild(el('small', 'stis-sent-moments', `Moments: ${marks.map((value, at) => `${at + 1} · ${view.times?.length ? `${Number(value).toFixed(1)} s` : `frame ${value + 1}${view.total ? ` of ${view.total}` : ''}`}`).join(', ')}`));
@@ -5619,27 +5640,22 @@ function sentPanel(entry, item) {
             image.alt = title;
             wrap.appendChild(image);
         });
-        const said = el('details', 'stis-sent-prompt');
-        said.appendChild(el('summary', '', 'The prompt sent with these pictures'));
-        if (view.together > view.pictures.length) {
-            said.appendChild(el('small', 'stis-sent-moments', `It was sent with ${view.together} pictures in all: this item's pictures above, and the other items' pictures. Sending it again sends them all.`));
-        }
-        wrap.appendChild(said);
+        const prompted = el('div', 'stis-sent-answer stis-sent-prompted');
         if (view.prompt) {
             const area = el('textarea', 'text_pole stis-sent-prompt-text');
             area.value = view.prompt;
-            area.rows = 8;
+            area.rows = 10;
+            const row = el('div', 'stis-role-buttons');
             const again = el('div', 'menu_button stis-sent-again', 'Send again with this prompt');
             again.title = 'Send the same pictures with the prompt above (edit it to try something else)';
-            said.append(area, again);
-            const prompted = el('div', 'stis-sent-answer stis-sent-prompted');
-            wrap.appendChild(prompted);
+            row.appendChild(again);
+            let sent = view.prompt;
             const run = text => {
                 prompted.innerHTML = '';
                 prompted.appendChild(el('small', 'stis-sent-moments', 'Asking the vision model with the prompt and the pictures…'));
                 visionAsk(text, view.batch || view.pictures, view.tokens || 300, view.heat ?? 0.3).then(reply => {
                     prompted.innerHTML = '';
-                    prompted.appendChild(el('small', 'stis-sent-title', text === view.prompt ? 'What it says now with the same prompt and pictures' : 'What it says with your edited prompt'));
+                    prompted.appendChild(el('small', 'stis-sent-title', text === sent ? (view.rebuilt ? 'What it says now with this prompt and these pictures' : 'What it says now with the same prompt and pictures') : 'What it says with your edited prompt'));
                     prompted.appendChild(el('div', 'stis-entry-text', reply || 'No answer.'));
                 }).catch(error => {
                     prompted.innerHTML = '';
@@ -5647,9 +5663,28 @@ function sentPanel(entry, item) {
                 });
             };
             again.addEventListener('click', () => run(area.value));
+            if (rebuild && !view.rebuilt) {
+                const current = el('div', 'menu_button', 'Show it with my current settings');
+                current.title = 'Build the prompt again from your settings as they are now, without sending it';
+                current.addEventListener('click', async () => {
+                    current.textContent = 'Building…';
+                    try {
+                        sent = await rebuild();
+                        area.value = sent;
+                        label.textContent = 'The prompt, with your current settings';
+                        current.remove();
+                    } catch (error) {
+                        current.textContent = 'Show it with my current settings';
+                        toastr.warning(`Could not build the prompt: ${error?.message || error}`, 'Image Search');
+                    }
+                });
+                row.appendChild(current);
+            }
+            said.append(area, row);
+            wrap.appendChild(prompted);
             run(view.prompt);
         } else {
-            said.appendChild(el('div', 'stis-entry-text stis-sent-prompt-text', 'The prompt is only kept for pictures sent since SillyTavern was opened (the last 12). Describe this item again to see it and send it again.'));
+            said.appendChild(el('div', 'stis-entry-text stis-sent-prompt-text', 'The prompt could not be built for this picture. Describe it again and open this again.'));
         }
         const answer = el('div', 'stis-sent-answer');
         answer.appendChild(el('small', 'stis-sent-moments', 'Asking the vision model with these pictures only…'));
@@ -5669,10 +5704,11 @@ function sentPanel(entry, item) {
             const seen = await rebuildSent(entry, item);
             body.innerHTML = '';
             if (seen.board) {
-                body.appendChild(part('The look at the whole sequence', seen.board));
+                const index = entry.variants.indexOf(item);
+                body.appendChild(part('The look at the whole sequence', seen.board, async () => (await rebuildBoardView(entry, index)).prompt));
             }
             if (seen.describe) {
-                body.appendChild(part(isMulti(entry) ? 'The description of this item' : 'The description', seen.describe));
+                body.appendChild(part(isMulti(entry) ? 'The description of this item' : 'The description', seen.describe, async () => (await dryPrompt(entry, item)).prompt));
             }
         } catch (error) {
             body.innerHTML = '';
@@ -7000,7 +7036,23 @@ async function rebuildBoardView(entry, index) {
     const per = maxPictures();
     const start = Math.floor(index / per) * per;
     const batch = entry.variants.slice(start, start + per).map((item, at) => start + at);
-    return boardView(entry.variants[index], clips[index], boardPlan(batch, clips, per).get(index), null);
+    const sheets = boardPlan(batch, clips, per);
+    const views = [];
+    for (const at of batch) {
+        views.push(await boardView(entry.variants[at], clips[at], sheets.get(at), null));
+    }
+    const earlier = entry.variants.slice(0, start).map((item, at) => (item.cast || item.beat ? `Item ${at + 1}: ${[item.cast, item.beat].filter(Boolean).join('; ')}` : '')).filter(Boolean).join('\n');
+    const tags = checkableTags(entry);
+    const all = views.flatMap(seen => seen.pictures);
+    return { ...views[batch.indexOf(index)], prompt: boardPrompt(entry, batch, views, tags, earlier, entry.report?.facts || ''), together: all.length, batch: all, tokens: 160 + 120 * batch.length + 14 * tags.length, heat: 0.2 };
+}
+
+async function dryPrompt(entry, item) {
+    const index = isMulti(entry) ? entry.variants.indexOf(item) : -1;
+    if (index >= 0 && groupDescribed(entry)) {
+        return v3Entry(entry) ? v3Describe(entry, index, null, { dry: true }, entry.report) : describeItem(entry, index, null, { dry: true });
+    }
+    return requestDescription(item.url || entry.url, entry.tags, null, entry.lock?.text || '', [entry.borrowed?.fromVideo ? VIDEO_TAGS_NOTE : '', fixesNote(entry.fixes)].filter(Boolean).join('\n\n'), { tagInfo: true, dryRun: true });
 }
 
 function boardPrompt(entry, batch, shown, tags, earlier, facts = '', again = '') {
@@ -7316,7 +7368,7 @@ function readChecked(raw, verify) {
     return { kept, left, said: Boolean(line) };
 }
 
-async function v3Describe(entry, index, blob, { problems = [], roleFix = null, verify = [] } = {}, report = null) {
+async function v3Describe(entry, index, blob, { problems = [], roleFix = null, verify = [], dry = false } = {}, report = null) {
     const item = entry.variants[index];
     const before = index > 0 ? entry.variants[index - 1] : null;
     const context = [`This ${itemAnimated(entry, item) ? 'GIF' : 'picture'} is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}${item.roleLock ? ' (set by the user)' : ''}.` : ''}`];
@@ -7348,10 +7400,13 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     const fixing = problems.length || roleFix || verify.length;
     const base = fixing ? item.lock?.text || item.description : '';
     const wrap = base ? asked => v3FixPrompt(item, base, { problems, roleFix, verify }, asked) : null;
-    if (report) {
+    if (report?.cost && !dry) {
         report.cost.vision += 1;
     }
-    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true, timed: true });
+    const parsed = await requestDescription(item.url, item.shows, blob || null, base ? '' : item.lock?.text || '', '', { before: context.join('\n\n'), wrap, peopleTags: entry.tags, tagInfo: true, timed: true, dryRun: dry });
+    if (dry) {
+        return parsed;
+    }
     if (parsed.clip) {
         item.clip = { seconds: parsed.clip.seconds, frames: parsed.clip.frames, loop: parsed.clip.loop };
     }

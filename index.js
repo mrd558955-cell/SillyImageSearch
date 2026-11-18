@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.52.0';
+const VERSION = '2.53.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -84,6 +84,7 @@ const DEFAULTS = {
     maxPictures: 8,
     roleCheck: false,
     groupLink: true,
+    groupInText: true,
     tagLinks: [],
     tagAliasChecked: {},
     groupRoleFit: true,
@@ -4630,6 +4631,8 @@ function cleanReport(report) {
         noteLog: cleanStrings(report.noteLog, 40),
         linked: report.linked && typeof report.linked === 'object' ? Object.fromEntries(Object.entries(report.linked).slice(0, 40).map(([tag, hits]) => [String(tag), cleanStrings(hits, 10)])) : {},
         linkReply: String(report.linkReply || '').slice(0, 2000),
+        inText: report.inText && typeof report.inText === 'object' ? Object.fromEntries(Object.entries(report.inText).slice(0, 40).map(([tag, hits]) => [String(tag), cleanStrings(hits, 10)])) : {},
+        inTextReply: String(report.inTextReply || '').slice(0, 2000),
         fit: Array.isArray(report.fit) ? report.fit.filter(item => item && item.item).slice(0, 20).map(item => ({ item: Number(item.item) || 0, fits: Boolean(item.fits), said: String(item.said || '').slice(0, 300), instead: String(item.instead || '').slice(0, 300), fixed: Boolean(item.fixed) })) : [],
         fitReply: String(report.fitReply || '').slice(0, 3000),
     };
@@ -5128,14 +5131,18 @@ function importantTagInfo(tags) {
 }
 
 function tagHints(tags) {
-    const lines = tags.map(tag => {
+    const lines = tagHintLines(tags);
+    return lines.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints on how they show (count a tag only if this picture shows it or clear signs of it):\n${lines.join('\n')}` : '';
+}
+
+function tagHintLines(tags) {
+    return tags.map(tag => {
         const notes = tagNotesFor(tag);
         const seen = notes.filter(note => !note.wrong && note.note).slice(-3).map(note => note.note);
         const wrong = [...notes.filter(note => note.wrong && note.note).slice(-2).map(note => note.note), ...removalNotesFor(tag).filter(note => !note.wrong && note.reason).slice(-2).map(note => note.reason)];
         const parts = [definitionLine(tag), seen.length || wrong.length ? `The user's notes: ${[...seen, ...wrong.map(text => `not when: ${text}`)].join('; ')}` : ''].filter(Boolean);
         return parts.length ? `- ${tag.replace(/_/g, ' ')}: ${parts.join(' ')}` : '';
     }).filter(Boolean);
-    return lines.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures, as hints on how they show (count a tag only if this picture shows it or clear signs of it):\n${lines.join('\n')}` : '';
 }
 
 async function findMissingTags(entry, pictures, tags, report) {
@@ -5868,6 +5875,48 @@ async function aiTagLinks(entry, tags, report) {
     return found;
 }
 
+function inTextPrompt(entry, tags) {
+    const items = entry.variants.map((item, index) => `Item ${index + 1}: ${String(item.description || '').replace(/\s+/g, ' ').trim().slice(0, 1500) || 'no description'}`).join('\n');
+    const hints = tagHintLines(tags);
+    return `Some image-board tags of a ${groupWhat(entry)} were not found when its items were first looked at, but the descriptions written afterwards may already show them.\n\nTags not found: ${tags.join(', ')}${hints.length ? `\nWhat they mean (copied from the site's wiki) and what the user said about them in earlier pictures:\n${hints.join('\n')}` : ''}\n\nThe descriptions:\n${items}\n\nFor each tag not found, say which items' descriptions show it. Tags and pictures never match word for word: a tag counts when a description shows the same thing or something close to it, in any words, even if a detail differs or it shows only part of what the tag means. Say none only when no description points to it.\n\nReply with one line per tag not found and nothing else, with a few words from each description that shows it, like:\n${tags[0]}: item 1 = "a few words from it"; item 3 = "a few words from it"\n${tags[0]}: none`;
+}
+
+function echoesText(words, text) {
+    const wordsOf = value => String(value).toLowerCase().match(/[a-z\u00c0-\u024f']{4,}/g) || [];
+    const list = wordsOf(words);
+    if (!list.length) {
+        return true;
+    }
+    const known = new Set(wordsOf(text));
+    return list.filter(word => known.has(word)).length * 2 >= list.length;
+}
+
+async function describedTags(entry, tags, report) {
+    const reply = await textAsk(inTextPrompt(entry, tags), 60 + 60 * tags.length);
+    report.inTextReply = String(reply).slice(0, 2000);
+    const found = new Map();
+    for (const line of String(reply).split('\n')) {
+        const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^`?([^:`]+?)`?\s*:\s*(.+)$/);
+        const tag = normalizeTag(match?.[1] || '');
+        if (!match || !tags.includes(tag) || /^none\b/i.test(match[2].trim())) {
+            continue;
+        }
+        for (const part of match[2].split(/;(?=\s*(?:items?|parts?|pictures?)?\s*\d)/i)) {
+            const quoted = part.match(/["“]([^"”]+)["”]/);
+            const words = (quoted?.[1] || part.split('=').slice(1).join('=')).replace(/\s+/g, ' ').trim().slice(0, 160);
+            const numbers = [...new Set((part.split(/[=“"]/)[0].match(/\d+/g) || []).map(Number))].filter(number => entry.variants[number - 1]);
+            if (!numbers.length || !numbers.some(number => echoesText(words, entry.variants[number - 1].description))) {
+                continue;
+            }
+            const hits = found.get(tag) || [];
+            numbers.filter(number => !hits.some(hit => hit.item === number)).forEach(number => hits.push({ item: number, words }));
+            found.set(tag, hits);
+        }
+    }
+    found.forEach(hits => hits.sort((a, b) => a.item - b.item));
+    return found;
+}
+
 function renderTagLinks() {
     const box = document.getElementById('st_imagesearch_tag_links');
     if (!box) {
@@ -6043,7 +6092,7 @@ async function describeSet(entry, blobs = []) {
         item.before = null;
     });
     const count = items.length;
-    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [] };
+    const report = { at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {} };
     const size = count > 3 ? 768 : 1024;
     const pictures = new Array(count);
     const picture = async index => {
@@ -6184,6 +6233,26 @@ async function describeSet(entry, blobs = []) {
         }
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
+        if (s.groupInText !== false && report.notShown.length && items.every(item => item.description)) {
+            groupStep(entry, `Reading the descriptions for ${report.notShown.length} tag${report.notShown.length === 1 ? '' : 's'} not found…`);
+            try {
+                const found = await describedTags(entry, report.notShown, report);
+                found.forEach((hits, tag) => {
+                    hits.forEach(hit => {
+                        const item = items[hit.item - 1];
+                        item.shows = checkable.filter(other => other === tag || item.shows.includes(other));
+                    });
+                    report.inText[tag] = hits.map(hit => `item ${hit.item}${hit.words ? ` ("${hit.words}")` : ''}`);
+                });
+                report.notShown = report.notShown.filter(tag => !found.has(tag));
+                report.steps.inText = found.size ? 'on' : 'none found';
+            } catch (error) {
+                report.errors.push(`Reading the descriptions for tags not found: ${error?.message || error}`);
+                report.steps.inText = 'failed';
+            }
+        } else {
+            report.steps.inText = !report.notShown.length ? 'not needed' : s.groupInText === false ? 'off' : 'skipped';
+        }
         const storyOn = s.groupStory !== false && entry.kind === 'sequence';
         const story = async (notes = '', keep = false) => {
             groupStep(entry, keep ? 'Rewriting the story lines to fit the roles…' : 'Writing what each item means in the story…');
@@ -7120,7 +7189,7 @@ const sectionOpen = new Map();
 let moreOpen = false;
 let libTagsOpen = false;
 
-const GROUP_STEPS = [[/^Looking at each/, 'First look'], [/^Looking for (\d|important)/, 'Looking again for tags'], [/^Describing item/, 'Describing the items'], [/^Writing what each item/, 'Writing the story lines'], [/^(Checking each item fits|Fixing item \d+ to fit|Rewriting the story lines to fit)/, 'Checking the roles fit'], [/^(Looking where|Adding )/, 'Placing tags from your notes'], [/^Checking the descriptions/, 'Final check'], [/^Judging/, 'Judging tags not found']];
+const GROUP_STEPS = [[/^Looking at each/, 'First look'], [/^Looking for (\d|important)/, 'Looking again for tags'], [/^Describing item/, 'Describing the items'], [/^Reading the descriptions/, 'Tags in the descriptions'], [/^Writing what each item/, 'Writing the story lines'], [/^(Checking each item fits|Fixing item \d+ to fit|Rewriting the story lines to fit)/, 'Checking the roles fit'], [/^(Looking where|Adding )/, 'Placing tags from your notes'], [/^Checking the descriptions/, 'Final check'], [/^Judging/, 'Judging tags not found']];
 
 function progressParts(text) {
     const step = GROUP_STEPS.findIndex(([test]) => test.test(text));
@@ -7443,9 +7512,9 @@ function groupReportBox(entry, current) {
     const box = el('details', 'stis-group-report');
     const notShown = report.notShown.length;
     box.appendChild(el('summary', '', `How this was described${notShown ? ` · ${notShown} tag${notShown === 1 ? '' : 's'} not found` : ''}${report.problems.length ? ` · ${report.problems.length} fix${report.problems.length === 1 ? '' : 'es'}` : ''}`));
-    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written' };
+    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
-    const lines = [`First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    const lines = [`First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
     const index = current ? entry.variants.indexOf(current) : -1;
     if (current && index >= 0) {
         lines.push(`${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1} was given ${current.shows.length} tag${current.shows.length === 1 ? '' : 's'}: ${current.shows.join(', ').replace(/_/g, ' ') || 'none (its own or the group\'s tags were used)'}`);
@@ -7456,6 +7525,10 @@ function groupReportBox(entry, current) {
     const found = Object.entries(report.found);
     if (found.length) {
         lines.push(`Found when looking again: ${found.map(([tag, items]) => `${tag.replace(/_/g, ' ')} (item ${items.join(', ')})`).join('; ')}`);
+    }
+    const inText = Object.entries(report.inText || {});
+    if (inText.length) {
+        lines.push(`Already in the descriptions: ${inText.map(([tag, hits]) => `${tag.replace(/_/g, ' ')} (${hits.join(', ')})`).join('; ')}`);
     }
     if (notShown) {
         lines.push(`Not found in any item: ${report.notShown.join(', ').replace(/_/g, ' ')}${entry.fromVideo ? ' (maybe cut off when the parts were made)' : ''}`);
@@ -7476,6 +7549,12 @@ function groupReportBox(entry, current) {
     if (report.noteLog.length) {
         box.appendChild(el('small', 'stis-group-report-line stis-group-report-head', 'Your tag notes at work:'));
         report.noteLog.forEach(line => box.appendChild(el('small', 'stis-group-report-line', `· ${line}`)));
+    }
+    if (report.inTextReply) {
+        const raw = el('details', 'stis-group-report-raw');
+        raw.appendChild(el('summary', '', 'The answer when reading the descriptions for tags'));
+        raw.appendChild(el('small', 'stis-group-report-line stis-entry-text', report.inTextReply));
+        box.appendChild(raw);
     }
     if (report.deduceReply) {
         const raw = el('details', 'stis-group-report-raw');
@@ -14538,6 +14617,7 @@ function buildSettings() {
                         </div>
                         <div class="stis-set"><div class="stis-label">Sets and sequences</div><small class="stis-help">Each item gets its own description, made with the tags it shows and the item before it, then a role and a story line. About 2 requests per item, plus 3.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_blind"> <span>First look without tags</span></label><small class="stis-help">The vision model lists what it sees in each item without the tags, so each tag goes to the items that show it. Tags it misses are looked for again in all items.</small></div>
+                        <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_in_text"> <span>Tags in the descriptions</span></label><small class="stis-help">After the items are described, one text request reads the descriptions for the tags still not found: a tag they already show, in any words and even if a detail differs, goes to those items without changing their descriptions, so it is not judged as missing.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_story"> <span>Story lines</span></label><small class="stis-help">Sequences only. One text request (tag profile) reads all the descriptions and gives each item an intensity, a role (main and finer, like climax, finishing blow) and a line on what the moment means: what was happening, what is happening, and so what. Sets are versions to use on their own, so they get no roles.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_deduce"> <span>Deduce tags nobody saw</span></label><small class="stis-help">When a tag found in no item has notes from you (below), one text request reads the story lines and your notes and places it where it most likely happens, even off screen; a lasting one stays for the items after. Deduced tags are marked in the library so you can tell it when it is wrong.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_review"> <span>Final check</span></label><small class="stis-help">One more request reads all the descriptions together, writes the overview and points out mistakes; items with a mistake are described once more.</small></div>
@@ -14755,6 +14835,7 @@ function buildSettings() {
     renderDefinitions();
     renderTagLinks();
     bind('st_imagesearch_group_link', 'groupLink', 'checked');
+    bind('st_imagesearch_group_in_text', 'groupInText', 'checked');
     bind('st_imagesearch_group_review', 'groupReview', 'checked');
     bind('st_imagesearch_story_prompt', 'storyPrompt');
     bind('st_imagesearch_role_check', 'roleCheck', 'checked');

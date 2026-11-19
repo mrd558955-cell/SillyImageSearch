@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.61.2';
+const VERSION = '2.61.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -15993,6 +15993,11 @@ async function openPicker(initialTags = null, focus = null) {
         }
         const stripHolder = el('div', 'stis-variant-holder');
         bar.before(stripHolder);
+        const actionRow = el('div', 'stis-actions');
+        const use = el('div', 'menu_button stis-use', 'Use this');
+        use.addEventListener('click', () => pick(current, use));
+        actionRow.append(use);
+        bar.after(actionRow);
         if (current.video && s.saveLocal) {
             const tools = videoTools(current, img);
             bar.before(tools.rows);
@@ -16005,7 +16010,7 @@ async function openPicker(initialTags = null, focus = null) {
             }
             setButton.hidden = !family || family.members.length < 2 || !s.saveLocal || !s.keepLibrary;
         };
-        const setButton = el('div', 'menu_button', 'Save set');
+        const setButton = el('div', 'menu_button stis-act-set', 'Save set');
         setButton.title = 'Save all versions of this picture as one library entry';
         setButton.addEventListener('click', async () => {
             if (busy || setButton.textContent !== 'Save set') {
@@ -16042,7 +16047,7 @@ async function openPicker(initialTags = null, focus = null) {
             }, families.has(familyKey(item)) ? 0 : 350);
         }
         if (s.keepLibrary && s.saveLocal) {
-            const keep = el('div', 'menu_button');
+            const keep = el('div', 'menu_button stis-act-keep');
             keep.title = 'Save it in the library without adding it to the chat; you can keep browsing';
             const paintKeep = () => {
                 const state = saveState(current);
@@ -16093,14 +16098,11 @@ async function openPicker(initialTags = null, focus = null) {
                 queueSave(current, [...tags]);
                 paintKeep();
             });
-            bar.append(keep, setButton);
+            actionRow.append(keep, setButton);
         }
         if (selecting) {
-            bar.append(selectButton(itemPick(current)));
+            actionRow.append(selectButton(itemPick(current)));
         }
-        const use = el('div', 'menu_button stis-use', 'Use this');
-        use.addEventListener('click', () => pick(current, use));
-        bar.append(use);
         link.href = current.page || '#';
         img.alt = '';
         tagSection(current.tags, below);

@@ -2364,3 +2364,24 @@ textarea.stis-sent-prompt-text {
     outline: none;
     border-color: var(--SmartThemeQuoteColor);
 }
+
+.stis-actions > [hidden],
+.stis-more-row > [hidden] {
+    display: none !important;
+}
+
+.stis-actions > .stis-act-keep::before,
+.stis-actions > .stis-act-set::before {
+    font-family: 'Font Awesome 6 Free';
+    font-weight: 900;
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+.stis-actions > .stis-act-keep::before {
+    content: '\f0c7';
+}
+
+.stis-actions > .stis-act-set::before {
+    content: '\f5fd';
+}

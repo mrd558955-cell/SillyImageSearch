@@ -2423,3 +2423,12 @@ textarea.stis-sent-prompt-text {
 .stis-sendcard-cell .stis-anim-badge {
     pointer-events: none;
 }
+
+.stis-sendcard-seq {
+    font-weight: bold;
+    color: var(--SmartThemeQuoteColor, orange);
+}
+
+.stis-sendcard-seq[hidden] {
+    display: none;
+}

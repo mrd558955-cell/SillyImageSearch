@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.62.1';
+const VERSION = '2.62.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -34,8 +34,8 @@ const DEFAULT_BOARD_NOTE = 'A first look at all the items together saw in this o
 const DEFAULT_AGAIN_PROMPT = 'This is the description of this picture so far:\n\n{{description}}\n\nLook at the picture again and rewrite it:\n{{asks}}\nKeep every fact that is right, and never contradict what the picture shows.\n\nRewrite it in the format asked below.\n\n{{prompt}}{{#first_tag}}\n\nAfter the last line of that format, add one more line, exactly like "Checked: {{first_tag}} kept" or "Checked: {{first_tag}} left out, because …"{{#several}}, naming every tag above, separated by semicolons{{/several}}.{{/first_tag}}';
 const DEFAULT_LOOP_NOTE = 'This item is a loop: it repeats. Describe the repeating moment as one moment, not as a story.{{#before_loop}} The item before is a loop too.{{/before_loop}}{{#before_not_loop}} The item before is not a loop.{{/before_not_loop}}{{#after_loop}} The item after is a loop too.{{/after_loop}}{{#after_not_loop}} The item after is not a loop.{{/after_not_loop}}';
 const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: if this sequence has a climax, it is most likely there.';
-const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. The people in the picture may not look like the characters (hair, eyes, skin, clothes, build): keep the characters as the story has them and let the picture\'s looks go; what matters is what happens. Do not mention a picture, an image or tags.{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
-const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
+const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. The people in the picture may not look like the characters (hair, eyes, skin, clothes, build): keep the characters as the story has them and let the picture\'s looks go; what matters is what happens. Do not mention a picture, an image or tags.{{#continues}} This picture continues a sequence already shown in this chat ({{continues}}): pick up from that moment, so the story moves on from it to this one.{{/continues}}{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
+const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#continues}}\n- The picture continues a sequence already shown in this chat: each way starts from the moment shown before.{{/continues}}{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#continues}}\n\nWhere it is in the sequence:\n{{continues}}{{/continues}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
 const DEFAULT_SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture. The people in a picture may not look like the characters (hair, eyes, skin, clothes, build): a picture can be shown when what happens in it fits; keep the characters as the story has them and let the picture\'s looks go.';
 const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE };
 
@@ -12776,13 +12776,13 @@ function choiceLine(choice) {
         const looks = view.card ? cardLine(view.card) : `Looks: ${String(view.sections.visual || view.description).replace(/\s+/g, ' ').trim().slice(0, 320)}`;
         const happening = [view.sections.action, itemStory(entry, view.item, index) ? `(${itemStory(entry, view.item, index)})` : ''].filter(Boolean).join(' ');
         const kind = entry.kind === 'sequence' ? ` (picture ${index + 1} of a ${entry.variants.length}-picture story sequence${entry.arc ? `: ${entry.arc}` : ''})` : ` (version ${index + 1} of ${entry.variants.length} of one scene)`;
-        return `${looks} | Happening: ${happening.replace(/\s+/g, ' ').trim().slice(0, 420) || 'not described'}${kind}${itemAnimated(entry, view.item) ? ' (animated)' : ''}`;
+        return `${looks} | Happening: ${happening.replace(/\s+/g, ' ').trim().slice(0, 420) || 'not described'}${kind}${choice.continues ? ' (the next picture of a sequence already shown in this chat)' : ''}${itemAnimated(entry, view.item) ? ' (animated)' : ''}`;
     }
     const index = variant ? Math.max(0, entry.variants.indexOf(variant)) : 0;
     const what = index > 0 && variant.diff ? variant.diff : entry.sections?.action || '';
     const kind = entry.kind === 'sequence' && isMulti(entry) ? ` (picture ${index + 1} of a ${entry.variants.length}-picture story sequence)` : '';
     const looks = entry.card ? cardLine(entry.card) : `Looks: ${String(entry.sections?.visual || shortDescription(entry)).replace(/\s+/g, ' ').trim().slice(0, 320)}`;
-    return `${looks} | Happening: ${what.replace(/\s+/g, ' ').trim().slice(0, 200) || 'not described'}${kind}${entry.animated ? ' (animated)' : ''}`;
+    return `${looks} | Happening: ${what.replace(/\s+/g, ' ').trim().slice(0, 200) || 'not described'}${kind}${choice.continues ? ' (the next picture of a sequence already shown in this chat)' : ''}${entry.animated ? ' (animated)' : ''}`;
 }
 
 function appearanceNotes() {
@@ -12886,6 +12886,7 @@ function forceInstruction(choice, lead = '') {
     return fillTemplate(promptPart('forcePrompt'), {
         picture: described.text || tagsLine(choice.entry.tags),
         lead: String(lead || '').trim(),
+        continues: continuesText(choice),
         marker: settings().inlinePictures !== false ? 'yes' : '',
         user: c.name1 || 'the user',
         char: c.name2 || 'the character',
@@ -12918,6 +12919,29 @@ function forcePicture(choice, send = {}) {
     }
 }
 
+function sequencePlace(choice, shown = shownInChat()) {
+    const entry = choice.entry;
+    if (entry.kind !== 'sequence' || !isMulti(entry) || !choice.variant) {
+        return null;
+    }
+    const index = entry.variants.findIndex(item => item.id === choice.variant.id);
+    const before = index > 0 ? entry.variants[index - 1] : null;
+    if (!before || !shown.has(before.id)) {
+        return null;
+    }
+    return { index, count: entry.variants.length, item: entry.variants[index], before, role: roleText(entry.variants[index].role), beforeRole: roleText(before.role) };
+}
+
+function continuesText(choice) {
+    const place = sequencePlace(choice);
+    if (!place) {
+        return '';
+    }
+    const entry = choice.entry;
+    const before = itemStory(entry, place.before, place.index - 1) || place.before.sections?.action || place.before.diff || (place.index === 1 ? entry.sections?.action : '') || 'the moment before';
+    return `it is picture ${place.index + 1} of ${place.count}${place.role ? `, the ${place.role}` : ''}; picture ${place.index}${place.beforeRole ? `, the ${place.beforeRole}` : ''}, shown before it, was: ${String(before).replace(/\s+/g, ' ').trim()}`;
+}
+
 function nextStep(choice) {
     const entry = choice.entry;
     if (entry.kind !== 'sequence' || !isMulti(entry) || !choice.variant) {
@@ -12944,6 +12968,7 @@ function leadInPrompt(choice, send = {}) {
         wish: String(send.wish || '').trim(),
         picture: describedVariant(choice.entry, choice.variant).text || tagsLine(choice.entry.tags),
         next: nextStep(choice),
+        continues: continuesText(choice),
     }).trim();
 }
 
@@ -13124,6 +13149,7 @@ function showPictureCard(session) {
     img.alt = '';
     const text = el('div', 'stis-sendcard-text');
     const why = el('div', 'stis-sendcard-why');
+    const seq = el('div', 'stis-sendcard-seq');
     const score = el('small', 'stis-sendcard-score');
     score.title = 'Tap to see how this picture was ranked';
     const looksBox = el('div', 'stis-sendcard-looks');
@@ -13153,7 +13179,8 @@ function showPictureCard(session) {
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, browse, search, cancel);
     const sheets = el('div', 'stis-sendcard-sheets');
-    root.append(note, img, why, text, score, looksBox, sheets, browseBox, fix, bar);
+    root.append(note, img, seq, why, text, score, looksBox, sheets, browseBox, fix, bar);
+    const shownNow = shownInChat();
     let media = null;
     const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', {
         animation: 'fast',
@@ -13171,6 +13198,9 @@ function showPictureCard(session) {
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
+        const step = sequencePlace(choice, shownNow);
+        seq.hidden = !step;
+        seq.textContent = step ? `Next of a sequence already shown in this chat: picture ${step.index + 1} of ${step.count}${step.role ? ` · ${step.role}` : ''}` : '';
         text.textContent = choiceLine(choice);
         score.textContent = scoreLine(choice) ? `${scoreLine(choice)} ${showLooks ? '▴' : '▾'}` : '';
         looksBox.textContent = showLooks ? [...(choice.parts?.notes || []), ...(session.timing ? [timingLine(session.timing)] : [])].join('\n') : '';
@@ -17779,11 +17809,11 @@ function buildSettings() {
                             <summary class="stis-label">Picture send prompts</summary>
                             <div class="stis-label">Reply instruction (to the reply's AI)</div>
                             <textarea id="st_imagesearch_force_prompt" class="text_pole" rows="8"></textarea>
-                            <small class="stis-help">Filled in: {{picture}} (the picture's whole description), {{lead}} (the way in you chose), {{user}}, {{char}}. {{#marker}}…{{/marker}}: only when "Pictures between the lines" is on (keep [picture] in it, it is how the place is found); {{#lead}}…{{/lead}}: only when you chose a way in.</small>
+                            <small class="stis-help">Filled in: {{picture}} (the picture's whole description), {{lead}} (the way in you chose), {{continues}} (where the picture is in a sequence already shown in this chat, and what the picture before it was), {{user}}, {{char}}. {{#marker}}…{{/marker}}: only when "Pictures between the lines" is on (keep [picture] in it, it is how the place is found); {{#lead}}…{{/lead}}: only when you chose a way in; {{#continues}}…{{/continues}}: only when the picture continues a sequence.</small>
                             <div id="st_imagesearch_force_prompt_reset" class="menu_button">Reset this prompt</div>
                             <div class="stis-label">Ways in (to the Tag model)</div>
                             <textarea id="st_imagesearch_lead_prompt" class="text_pole" rows="10"></textarea>
-                            <small class="stis-help">Filled in: {{story}}, {{typed}} (the chat box), {{wish}} (what you want), {{picture}}, {{focus}} (the main focus), {{looks}}, {{next}} (the next item of a sequence), {{user}}, {{char}}. {{#typed}}…{{/typed}}, {{#wish}}…{{/wish}}, {{#focus}}…{{/focus}} and {{#next}}…{{/next}}: only when there is one. The answer needs lines like "1. …".</small>
+                            <small class="stis-help">Filled in: {{story}}, {{typed}} (the chat box), {{wish}} (what you want), {{picture}}, {{focus}} (the main focus), {{looks}}, {{next}} (the next item of a sequence), {{continues}} (where the picture is in a sequence already shown in this chat), {{user}}, {{char}}. {{#typed}}…{{/typed}}, {{#wish}}…{{/wish}}, {{#focus}}…{{/focus}}, {{#continues}}…{{/continues}} and {{#next}}…{{/next}}: only when there is one. The answer needs lines like "1. …".</small>
                             <div id="st_imagesearch_lead_prompt_reset" class="menu_button">Reset this prompt</div>
                         </details>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures the AI compares</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div><small class="stis-help">Fewer is faster; a good picture ranked lower is not seen by the AI.</small></div>

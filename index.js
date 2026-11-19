@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.66.1';
+const VERSION = '2.66.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -1265,7 +1265,7 @@ function siteAnswer(result) {
 function siteVerdict(answer, domain) {
     const text = String(answer || '');
     if (/Cloudflare/i.test(text)) {
-        return `stopped by a Cloudflare check (${text.slice(0, 120)}). SillyTavern's server cannot pass it. ${accountFor(domain) ? 'Your account did not get through either, so only the site can let SillyTavern in; leave it out for now.' : 'Add an account for it under Site accounts and check again; if it still stops, only the site can let SillyTavern in.'}`;
+        return `stopped by a Cloudflare check (${text.slice(0, 120)}). SillyTavern's server cannot pass it. ${accountFor(domain) ? 'Your name and key went with it, but Cloudflare stands in front of the site and stopped the request before the site could see them. This site lets no programs through, so only the site can let SillyTavern in; leave it out for now.' : 'Add an account for it under Site accounts and check again; if it still stops, only the site can let SillyTavern in.'}`;
     }
     if (/\b(401|403)\b/.test(text)) {
         return accountFor(domain) ? `refuses your account (${text.slice(0, 120)}). Check the name and the API key from your account settings on the site.` : `refuses SillyTavern's server (${text.slice(0, 120)}). Add an account for it under Site accounts and check again.`;

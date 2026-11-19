@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.62.3';
+const VERSION = '2.63.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -37,7 +37,8 @@ const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: i
 const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. The people in the picture may not look like the characters (hair, eyes, skin, clothes, build): keep the characters as the story has them and let the picture\'s looks go; what matters is what happens. Do not mention a picture, an image or tags.{{#continues}} This picture continues a sequence already shown in this chat ({{continues}}): pick up from that moment, so the story moves on from it to this one.{{/continues}}{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
 const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#continues}}\n- The picture continues a sequence already shown in this chat: each way starts from the moment shown before.{{/continues}}{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#continues}}\n\nWhere it is in the sequence:\n{{continues}}{{/continues}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
 const DEFAULT_SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture. The people in a picture may not look like the characters (hair, eyes, skin, clothes, build): a picture can be shown when what happens in it fits; keep the characters as the story has them and let the picture\'s looks go.';
-const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE };
+const DEFAULT_SPELL_PROMPT = 'On image boards, the same thing is often tagged differently on each site. The tag "{{tag}}"{{#meaning}} ({{meaning}}){{/meaning}} is not used on {{site}}. Which one of these {{site}} tags means the same thing? Pick one only if it really is the same thing, not just something related or a part of it.\n\n{{candidates}}\n\nReply with the one tag exactly as written. If none of them is the same thing, reply with the tag {{site}} most likely uses for it instead, or none if you do not know.';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE, spellPrompt: DEFAULT_SPELL_PROMPT };
 
 function fillTemplate(text, values) {
     let out = String(text);
@@ -118,6 +119,9 @@ const DEFAULTS = {
     oneMoving: '',
     forcePrompt: '',
     showRule: '',
+    spellPrompt: '',
+    spellAi: true,
+    siteSpellings: {},
     leadPrompt: '',
     inlinePictures: true,
     keepLibraryFiles: true,
@@ -1328,12 +1332,189 @@ function rankItems(items, preferred) {
 
 function rerankBrowse(old, tags, required) {
     const next = createBrowse(old.domain, tags, required, old.negatives || []);
-    Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages, siteErrors: old.siteErrors });
+    Object.assign(next, { page: old.page, seen: old.seen, done: old.done, error: old.error, engine: old.engine, pages: old.pages, siteErrors: old.siteErrors, siteNotes: old.siteNotes, skipped: old.skipped });
+    if (old.spelled && sameTags(old.required, next.required)) {
+        next.spelled = { ...old.spelled, preferred: next.preferred.map(tag => knownSpelling(next.domain, tag)?.to || tag) };
+    }
     if (old.subs) {
         next.subs = old.subs.map(sub => rerankBrowse(sub, tags, required));
     }
-    next.items = rankItems(old.items.slice(), next.preferred);
+    next.items = rankItems(old.items.slice(), next.spelled ? next.spelled.preferred : next.preferred);
     return next;
+}
+
+const SPELL_KEEP = 30 * 24 * 3600 * 1000;
+const SPELL_LIMIT = 600;
+const spellJobs = new Map();
+
+function plainTag(tag) {
+    return Boolean(tag) && !tag.startsWith('-') && !/^[a-z_]+:./.test(tag);
+}
+
+function spellingStore() {
+    const s = settings();
+    if (!s.siteSpellings || typeof s.siteSpellings !== 'object' || Array.isArray(s.siteSpellings)) {
+        s.siteSpellings = {};
+    }
+    return s.siteSpellings;
+}
+
+function knownSpelling(domain, tag) {
+    const found = spellingStore()[domain]?.[tag];
+    if (!found || typeof found !== 'object') {
+        return undefined;
+    }
+    if (found.by !== 'you' && !found.to && Date.now() - (Number(found.at) || 0) > SPELL_KEEP) {
+        return undefined;
+    }
+    return found;
+}
+
+function keepSpelling(domain, tag, to, by) {
+    const store = spellingStore();
+    store[domain] = { ...(store[domain] || {}), [tag]: { to: to || '', by, at: Date.now() } };
+    const all = Object.entries(store).flatMap(([site, tags]) => Object.entries(tags || {}).map(([name, value]) => [site, name, value]));
+    if (all.length > SPELL_LIMIT) {
+        all.filter(([, , value]) => value.by !== 'you').sort((a, b) => (a[2].at || 0) - (b[2].at || 0)).slice(0, all.length - SPELL_LIMIT).forEach(([site, name]) => delete store[site][name]);
+    }
+    save();
+    renderSpellings();
+}
+
+async function aliasOnSite(entry, engineName, tag) {
+    const origin = `https://${entry.domain}`;
+    if (engineName === 'danbooru') {
+        const found = (await danbooruList({ origin }, `tags.json?search%5Bname_or_alias_matches%5D=${encodeURIComponent(tag)}&only=name,post_count&limit=1`))[0];
+        return found?.name && Number(found.post_count) > 0 ? normalizeTag(found.name) : '';
+    }
+    if (engineName === 'e621') {
+        const found = (await danbooruList({ origin }, `tag_aliases.json?search%5Bantecedent_name%5D=${encodeURIComponent(tag)}&search%5Bstatus%5D=active&limit=1`))[0];
+        const name = normalizeTag(found?.consequent_name || '');
+        if (!name) {
+            return '';
+        }
+        await lookupTags(entry.domain, engineName, [name]).catch(() => {});
+        return knownCount(entry.domain, name) === 0 ? '' : name;
+    }
+    return '';
+}
+
+async function aiSpelling(entry, tag) {
+    const s = settings();
+    if (s.spellAi === false || (!s.tagProfile && !visionProfileId())) {
+        return undefined;
+    }
+    const words = [...new Set(tag.replace(/\d+/g, '').split('_').filter(word => word.length >= 3))].sort((a, b) => b.length - a.length).slice(0, 2);
+    const lists = await Promise.all((words.length ? words : [tag]).map(word => completeFrom(entry.domain, word).catch(() => [])));
+    const seen = new Map();
+    lists.flat().forEach(item => {
+        if (item?.name && !seen.has(item.name)) {
+            seen.set(item.name, Number(item.count) || 0);
+        }
+    });
+    const candidates = [...seen.entries()].filter(([name, count]) => name !== tag && count !== 0).sort((a, b) => b[1] - a[1]).slice(0, 25);
+    const meaning = tagDefinition(tag)?.text || '';
+    const prompt = fillTemplate(promptPart('spellPrompt'), {
+        tag,
+        meaning: meaning ? meaning.slice(0, 300) : '',
+        site: entry.domain,
+        candidates: candidates.length ? candidates.map(([name, count]) => `- ${name}${count > 0 ? ` (${count} posts)` : ''}`).join('\n') : '(the site has no tag sharing a word with it)',
+    });
+    const reply = String(await textAsk(prompt, 40)).trim().split('\n')[0].replace(/[`*"'.]/g, '').trim();
+    const picked = normalizeTag(reply);
+    if (!picked || /^none\b/i.test(reply)) {
+        return null;
+    }
+    if (seen.has(picked)) {
+        return picked;
+    }
+    if (picked === tag || !/^[\w()'!?.:;&+-]+$/.test(picked)) {
+        return null;
+    }
+    const engineName = settings().engines[entry.domain];
+    await lookupTags(entry.domain, engineName, [picked]).catch(() => {});
+    return knownCount(entry.domain, picked) > 0 ? picked : null;
+}
+
+async function spellTag(entry, engineName, tag, ask = true) {
+    const domain = entry.domain;
+    if (!plainTag(tag)) {
+        return tag;
+    }
+    const known = knownSpelling(domain, tag);
+    if (known) {
+        return known.to || null;
+    }
+    const links = tagLinksFor(tag);
+    const variants = [...new Set([tag, ...bothOrders(tag), ...links])];
+    await lookupTags(domain, engineName, [tag]).catch(() => {});
+    const own = knownCount(domain, tag);
+    for (let start = 1; own === 0 && start < variants.length; start += 2) {
+        await lookupTags(domain, engineName, variants.slice(start, start + 2)).catch(() => {});
+    }
+    if (own === null || own > 0) {
+        return tag;
+    }
+    const other = variants.slice(1).find(variant => knownCount(domain, variant) > 0);
+    if (other) {
+        keepSpelling(domain, tag, other, links.includes(other) ? 'link' : 'order');
+        return other;
+    }
+    if (!ask) {
+        return tag;
+    }
+    const job = `${domain}|${tag}`;
+    if (!spellJobs.has(job)) {
+        spellJobs.set(job, (async () => {
+            const alias = await aliasOnSite(entry, engineName, tag).catch(() => '');
+            if (alias && alias !== tag) {
+                keepSpelling(domain, tag, alias, 'alias');
+                return alias;
+            }
+            const guess = await aiSpelling(entry, tag).catch(error => {
+                console.warn(`[Image Search] could not find ${tag} on ${domain}`, error);
+                return undefined;
+            });
+            if (guess) {
+                keepSpelling(domain, tag, guess, 'ai');
+                return guess;
+            }
+            if (guess === null) {
+                keepSpelling(domain, tag, '', 'ai');
+            }
+            return null;
+        })().finally(() => spellJobs.delete(job)));
+    }
+    return spellJobs.get(job);
+}
+
+async function siteSpelled(entry, engineName, browse) {
+    const notes = [];
+    const missing = [];
+    const required = [];
+    for (const tag of browse.required) {
+        const to = await spellTag(entry, engineName, tag, true);
+        if (to === null) {
+            missing.push(tag);
+            required.push(tag);
+        } else {
+            if (to !== tag) {
+                notes.push(`${tag} → ${to}`);
+            }
+            required.push(to);
+        }
+    }
+    const cheap = async list => {
+        const out = [];
+        for (const tag of list) {
+            const to = await spellTag(entry, engineName, tag, false);
+            if (to) {
+                out.push(to);
+            }
+        }
+        return out;
+    };
+    return { required, preferred: await cheap(browse.preferred), negatives: await cheap(browse.negatives || []), notes, missing };
 }
 
 async function loadMoreAll(browse) {
@@ -1359,6 +1540,8 @@ async function loadMoreAll(browse) {
     browse.pages = browse.subs.flatMap(sub => sub.pages);
     browse.done = browse.subs.every(sub => sub.done);
     browse.siteErrors = browse.subs.filter(sub => sub.error).map(sub => `${sub.domain}: ${sub.error}`);
+    browse.siteNotes = browse.subs.flatMap(sub => (sub.siteNotes || []).map(note => `${sub.domain}: ${note}`));
+    browse.skipped = browse.subs.filter(sub => sub.skipped).map(sub => `${sub.domain}: ${sub.skipped}`);
     if (browse.subs.length && browse.siteErrors.length === browse.subs.length) {
         throw new Error(browse.siteErrors.join(' | '));
     }
@@ -1388,12 +1571,18 @@ async function loadMore(browse) {
         if (NOT_BOARD.has(engineName) || !ENGINES[engineName]) {
             throw new Error(`${browse.domain} is not an image board this extension can search${siteAnswers[browse.domain] ? ` (it answered ${siteAnswers[browse.domain]})` : ''}.`);
         }
+        if (!browse.spelled) {
+            browse.spelled = await siteSpelled(entry, engineName, browse);
+            browse.siteNotes = browse.spelled.notes;
+        }
+        const spelled = browse.spelled;
+        browse.skipped = spelled.missing.length ? `no tag for ${spelled.missing.join(', ')}` : '';
         const batch = [];
         let received = 0;
         let calls = 0;
         while (!browse.done && received < RANK_WINDOW && calls < MAX_PAGE_CALLS) {
             calls++;
-            const { items, done, debug } = await fetchPage(entry, engineName, browse.required, browse.page, [...browse.required, ...browse.preferred], browse.negatives || []);
+            const { items, done, debug } = await fetchPage(entry, engineName, spelled.required, browse.page, [...spelled.required, ...spelled.preferred], spelled.negatives);
             if (debug) {
                 browse.pages.push(debug);
                 received += debug.received;
@@ -1407,7 +1596,7 @@ async function loadMore(browse) {
                 }
             }
         }
-        const ranked = rankItems(batch, browse.preferred);
+        const ranked = rankItems(batch, spelled.preferred);
         browse.items.push(...ranked);
         return ranked;
     })();
@@ -7230,6 +7419,58 @@ async function describedTags(entry, tags, report) {
     }
     found.forEach(hits => hits.sort((a, b) => a.item - b.item));
     return found;
+}
+
+function renderSpellings() {
+    const box = document.getElementById('st_imagesearch_spellings');
+    if (!box) {
+        return;
+    }
+    box.innerHTML = '';
+    const store = spellingStore();
+    const rows = Object.entries(store).flatMap(([domain, tags]) => Object.entries(tags || {}).map(([tag, value]) => ({ domain, tag, value })));
+    if (!rows.length) {
+        box.appendChild(el('small', 'stis-help', 'None yet. They are found as you search.'));
+    }
+    const words = { order: 'other order', link: 'your links', alias: 'site alias', ai: 'Tag model', you: 'by you' };
+    rows.sort((a, b) => a.domain.localeCompare(b.domain) || a.tag.localeCompare(b.tag)).forEach(({ domain, tag, value }) => {
+        const row = el('div', 'stis-tag-link');
+        row.appendChild(el('span', '', `${domain}: ${tag.replace(/_/g, ' ')} → ${value.to ? value.to.replace(/_/g, ' ') : 'none'}`));
+        row.appendChild(el('small', 'stis-tag-note-kind', ` ${words[value.by] || ''}`));
+        const remove = el('a', 'stis-tag-note-remove', '×');
+        remove.href = '#';
+        remove.title = 'Forget this; it is looked for again at the next search';
+        remove.addEventListener('click', event => {
+            event.preventDefault();
+            delete store[domain][tag];
+            if (!Object.keys(store[domain]).length) {
+                delete store[domain];
+            }
+            save();
+            renderSpellings();
+        });
+        row.appendChild(remove);
+        box.appendChild(row);
+    });
+    const add = el('div', 'stis-tag-note-add');
+    const site = el('select', 'text_pole');
+    siteEntries().forEach(entry => site.appendChild(el('option', '', entry.domain)));
+    const one = el('input', 'text_pole');
+    one.type = 'text';
+    one.placeholder = 'tag';
+    const two = el('input', 'text_pole');
+    two.type = 'text';
+    two.placeholder = "the site's own word (empty: none)";
+    const button = el('div', 'menu_button', 'Add');
+    button.addEventListener('click', () => {
+        const tag = normalizeTag(one.value);
+        if (!tag || !site.value) {
+            return;
+        }
+        keepSpelling(site.value, tag, normalizeTag(two.value), 'you');
+    });
+    add.append(site, one, two, button);
+    box.appendChild(add);
 }
 
 function renderTagLinks() {
@@ -14702,6 +14943,8 @@ async function openPicker(initialTags = null, focus = null) {
             }
             browse.pages.forEach(p => line(`${p.domain} page ${p.page + 1}:`, `site sent ${p.received}, kept ${p.kept} (removed: rating ${p.rating}, excluded tags ${p.excluded}, missing required tags ${p.local}, not a picture ${p.notImage})`));
             browse.siteErrors?.forEach(error => line('Site error:', error));
+            (browse.siteNotes || []).forEach(note => line('Site word:', note));
+            [browse.skipped || []].flat().filter(Boolean).forEach(note => line('No site word:', note));
         }
         if (browse?.error) {
             line('Error:', browse.error);
@@ -15010,11 +15253,13 @@ async function openPicker(initialTags = null, focus = null) {
         if (browse.error) {
             setStatus(browse.error, 'stis-error');
         } else if (!browse.items.length && browse.done) {
-            setStatus(browse.required.length ? 'No pictures with the required tags. Make one preferred or remove it.' : 'No pictures found.');
+            const left = [browse.skipped || []].flat().filter(Boolean).length ? ` (${[browse.skipped].flat().filter(Boolean).join('; ')}: make it preferred, or give the site's own word under Settings → Tags across sites.)` : '';
+            setStatus(`${browse.required.length ? 'No pictures with the required tags. Make one preferred or remove it.' : 'No pictures found.'}${left}`);
         } else {
             const sorted = browse.preferred.length ? ', best matches first' : '';
             const failed = browse.siteErrors?.length ? ` (${browse.siteErrors.length} site(s) failed, see debug)` : '';
-            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${siteLabel(browse.domain)}${sorted}${failed}`);
+            const notes = [...(browse.siteNotes || []), ...[browse.skipped || []].flat().filter(Boolean)];
+            setStatus(`${browse.items.length}${browse.done ? '' : '+'} picture(s) on ${siteLabel(browse.domain)}${sorted}${failed}${notes.length ? ` · ${notes.slice(0, 3).join(' · ')}${notes.length > 3 ? ' …' : ''}` : ''}`);
         }
     };
 
@@ -17637,6 +17882,16 @@ function buildSettings() {
                             <small class="stis-help">One per line. Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (such as rule34.paheal.net). A login key goes after the domain: <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
                             <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
                         </div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">Tags across sites</summary>
+                            <small class="stis-help">Each site has its own words: uzumaki_naruto on one, naruto_uzumaki on another, female instead of 1girl on e621. Before a search, each required tag is checked on each site; when the site does not use it, its own word is found from the other order of a two-part name, your links ("Same tag, written differently"), the site's aliases, and last the Tag model choosing among the site's real tags. What is found is remembered here; when a site has no word for a required tag, the search there goes on with the tag as typed and the status line says so. Preferred and left-out tags only use what is already known.</small>
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_spell_ai"> <span>Ask the Tag model when a site has no such tag</span></label>
+                            <div id="st_imagesearch_spellings" class="stis-tag-notes"></div>
+                            <div class="stis-label">Prompt (to the Tag model)</div>
+                            <textarea id="st_imagesearch_spell_prompt" class="text_pole" rows="6"></textarea>
+                            <small class="stis-help">Filled in: {{tag}}, {{meaning}} (the tag's wiki definition, when known), {{site}}, {{candidates}} (the site's real tags that share a word with it). {{#meaning}}…{{/meaning}}: only when there is one. The answer is one tag from the list, or none.</small>
+                            <div id="st_imagesearch_spell_prompt_reset" class="menu_button">Reset this prompt</div>
+                        </details>
                         <div class="stis-set">
                             <div class="st-imagesearch-row"><span>Danbooru account</span><input type="text" id="st_imagesearch_danbooru_account" class="text_pole" placeholder="name or user ID"></div>
                             <small class="stis-help">Danbooru asks programs to say whose they are, and puts programs that pretend to be a browser through a check. With your account, SillyTavern's server tells Danbooru it is SillyImageSearch for your account number, as Danbooru asks. Your name is enough; no API key is needed. Works in Firefox; Chrome does not let pages say this.</small>
@@ -18047,6 +18302,7 @@ function buildSettings() {
         drawBackups();
     });
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
+    bind('st_imagesearch_spell_ai', 'spellAi', 'checked');
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');
     bind('st_imagesearch_group_story', 'groupStory', 'checked');
@@ -18055,6 +18311,7 @@ function buildSettings() {
     renderFixLog();
     renderDefinitions();
     renderTagLinks();
+    renderSpellings();
     bind('st_imagesearch_group_link', 'groupLink', 'checked');
     bind('st_imagesearch_group_in_text', 'groupInText', 'checked');
     bind('st_imagesearch_sequence_v3', 'sequenceV3', 'checked');
@@ -18132,7 +18389,7 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
-    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt'], ['st_imagesearch_show_rule', 'showRule']].forEach(([id, key]) => {
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt'], ['st_imagesearch_show_rule', 'showRule'], ['st_imagesearch_spell_prompt', 'spellPrompt']].forEach(([id, key]) => {
         const area = document.getElementById(id);
         area.value = promptPart(key);
         const changed = () => {

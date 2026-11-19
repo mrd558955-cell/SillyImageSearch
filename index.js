@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.61.3';
+const VERSION = '2.62.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2797,6 +2797,73 @@ function showThumb(img, url) {
             img.src = url;
         }
     });
+}
+
+function gridMedia(root, animate) {
+    const watching = typeof IntersectionObserver === 'function';
+    const lazy = watching ? new IntersectionObserver(seen => {
+        seen.forEach(item => {
+            if (item.isIntersecting) {
+                lazy.unobserve(item.target);
+                showThumb(item.target, item.target.dataset.full);
+            }
+        });
+    }, { root, rootMargin: '600px 0px' }) : null;
+    const playing = new Set();
+    const waiting = new Set();
+    const play = img => {
+        img.dataset.playing = '1';
+        img.src = img.dataset.full;
+        playing.add(img);
+    };
+    const stop = img => {
+        delete img.dataset.playing;
+        if (img.dataset.thumb) {
+            img.src = img.dataset.thumb;
+        }
+    };
+    const player = animate && watching ? new IntersectionObserver(seen => {
+        seen.forEach(item => {
+            const img = item.target;
+            if (item.isIntersecting) {
+                if (playing.size < LIB_PLAYING) {
+                    play(img);
+                } else {
+                    waiting.add(img);
+                }
+                return;
+            }
+            waiting.delete(img);
+            if (playing.delete(img)) {
+                stop(img);
+                const next = waiting.values().next().value;
+                if (next) {
+                    waiting.delete(next);
+                    play(next);
+                }
+            }
+        });
+    }, { root, threshold: 0.4 }) : null;
+    return {
+        animates: Boolean(player),
+        add(img, moves) {
+            if (lazy) {
+                lazy.observe(img);
+            } else {
+                showThumb(img, img.dataset.full);
+            }
+            if (moves && player) {
+                player.observe(img);
+            }
+        },
+        close() {
+            lazy?.disconnect();
+            player?.disconnect();
+            playing.forEach(stop);
+            playing.clear();
+            waiting.clear();
+        },
+    };
 }
 
 function releaseMedia(root) {
@@ -13060,8 +13127,9 @@ function showPictureCard(session) {
         showLooks = !showLooks;
         draw();
     });
+    const browseBox = el('div', 'stis-sendcard-browse');
+    browseBox.hidden = true;
     const grid = el('div', 'stis-sendcard-grid');
-    grid.hidden = true;
     const fix = el('a', 'stis-sendcard-fix', 'Something wrong? Cancel and open this picture in the library');
     fix.href = '#';
     fix.title = 'Cancel this send and open the picture in the library, to fix its description, filing card or tags';
@@ -13080,8 +13148,21 @@ function showPictureCard(session) {
     const cancel = el('div', 'menu_button', 'Cancel');
     bar.append(send, another, browse, search, cancel);
     const sheets = el('div', 'stis-sendcard-sheets');
-    root.append(note, img, why, text, score, looksBox, sheets, grid, fix, bar);
-    const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', allowVerticalScrolling: true });
+    root.append(note, img, why, text, score, looksBox, sheets, browseBox, fix, bar);
+    let media = null;
+    const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', {
+        animation: 'fast',
+        allowVerticalScrolling: true,
+        onClose: () => {
+            media?.close();
+            img.removeAttribute('src');
+            grid.querySelectorAll('img').forEach(cellImg => cellImg.removeAttribute('src'));
+            releaseMedia(root);
+            if (!state.pickerOpen) {
+                dropThumbJobs();
+            }
+        },
+    });
     const draw = () => {
         const choice = options[index];
         img.src = (choice.variant || choice.entry).url;
@@ -13120,25 +13201,145 @@ function showPictureCard(session) {
             draw();
         }
     });
-    browse.addEventListener('click', () => {
-        grid.hidden = !grid.hidden;
-        if (grid.hidden || grid.childElementCount) {
+    const filter = { words: '', kind: 'all', moving: false, aiOnly: false, facets: new Set() };
+    const facetsOf = choice => (choice.variant?.card ? [...cardFacets(choice.variant), ...(itemAnimated(choice.entry, choice.variant) ? ['file:animated'] : [])] : entryFacets(choice.entry));
+    const movesOf = choice => (choice.variant ? itemAnimated(choice.entry, choice.variant) : entryAnimated(choice.entry));
+    const kindOfChoice = choice => (isMulti(choice.entry) ? choice.entry.kind : 'single');
+    const hayOf = choice => {
+        const { entry, variant } = choice;
+        const card = (variant?.card || entry.card) ? cardToText(variant?.card || entry.card) : '';
+        return `${entry.tags.join(' ')} ${entry.description} ${variant ? `${variant.description || ''} ${variant.diff || ''}` : ''} ${entry.characters.join(' ')} ${card}`.toLowerCase().replace(/_/g, ' ');
+    };
+    const find = el('input', 'text_pole stis-sendcard-find');
+    find.type = 'search';
+    find.placeholder = 'search these pictures';
+    const chips = el('div', 'stis-sendcard-chips');
+    const facetBox = el('details', 'stis-lib-more stis-sendcard-facets');
+    const shown = el('small', 'stis-sendcard-count');
+    browseBox.append(find, chips, facetBox, shown, grid);
+    const chip = (label, on, title, click) => {
+        const item = el('span', 'stis-fchip', label);
+        item.classList.toggle('stis-fchip-on', on);
+        if (title) {
+            item.title = title;
+        }
+        item.addEventListener('click', click);
+        return item;
+    };
+    const drawChips = () => {
+        chips.innerHTML = '';
+        for (const [key, label] of [['all', 'All'], ['single', 'Singles'], ['set', 'Sets'], ['sequence', 'Sequences']]) {
+            chips.appendChild(chip(label, filter.kind === key, '', () => {
+                filter.kind = key;
+                drawGrid();
+            }));
+        }
+        chips.appendChild(chip('Animated', filter.moving, 'Only GIFs and video parts', () => {
+            filter.moving = !filter.moving;
+            drawGrid();
+        }));
+        if (aiOrder.size) {
+            chips.appendChild(chip(`AI's picks ${aiOrder.size}`, filter.aiOnly, 'Only the pictures the AI ranked', () => {
+                filter.aiOnly = !filter.aiOnly;
+                drawGrid();
+            }));
+        }
+        const clear = chip('Clear all', false, 'Show every picture again', () => {
+            filter.words = '';
+            find.value = '';
+            filter.kind = 'all';
+            filter.moving = false;
+            filter.aiOnly = false;
+            filter.facets.clear();
+            drawGrid();
+        });
+        clear.hidden = !filter.words && filter.kind === 'all' && !filter.moving && !filter.aiOnly && !filter.facets.size;
+        chips.appendChild(clear);
+    };
+    const drawFacets = () => {
+        const wasOpen = facetBox.open;
+        facetBox.innerHTML = '';
+        const counts = new Map();
+        options.forEach(choice => facetsOf(choice).forEach(key => counts.set(key, (counts.get(key) || 0) + 1)));
+        facetBox.appendChild(el('summary', '', filter.facets.size ? `Filters (${filter.facets.size} on)` : 'Filters: who, pose, mood'));
+        const groups = [['pose', 'Pose'], ['mood', 'Mood'], ...categories().map(category => [category.id, category.label])];
+        for (const [group, label] of groups) {
+            const keys = [...counts.keys()].filter(key => key.startsWith(`${group}:`)).sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
+            if (!keys.length) {
+                continue;
+            }
+            const row = el('div', 'stis-lib-filter-row');
+            row.appendChild(el('small', 'stis-lib-filter-label', label));
+            for (const key of keys) {
+                row.appendChild(chip(`${key.slice(group.length + 1)} ${counts.get(key)}`, filter.facets.has(key), '', () => {
+                    filter.facets[filter.facets.has(key) ? 'delete' : 'add'](key);
+                    drawGrid();
+                }));
+            }
+            facetBox.appendChild(row);
+        }
+        facetBox.hidden = facetBox.childElementCount < 2;
+        facetBox.open = wasOpen;
+    };
+    const drawGrid = () => {
+        drawChips();
+        drawFacets();
+        media?.close();
+        grid.querySelectorAll('img').forEach(cellImg => cellImg.removeAttribute('src'));
+        grid.innerHTML = '';
+        media = gridMedia(grid, settings().libAnimate !== false);
+        const words = [...wordsOf(filter.words)];
+        const list = options.filter(choice => (filter.kind === 'all' || kindOfChoice(choice) === filter.kind)
+            && (!filter.moving || movesOf(choice))
+            && (!filter.aiOnly || aiOrder.has(choice))
+            && (!filter.facets.size || [...filter.facets].every(key => facetsOf(choice).includes(key)))
+            && (!words.length || words.every(word => hayOf(choice).includes(word))));
+        shown.textContent = list.length === options.length ? `${options.length} pictures, in the order of this send` : `${list.length} of ${options.length} pictures`;
+        if (!list.length) {
+            grid.appendChild(el('div', 'stis-status', 'Nothing matches. Clear all shows every picture.'));
             return;
         }
-        options.forEach((choice, position) => {
+        for (const choice of list) {
+            const position = options.indexOf(choice);
             const cell = el('div', 'stis-sendcard-cell');
+            cell.classList.toggle('stis-sendcard-current', position === index);
             const thumb = el('img');
             thumb.alt = '';
-            showThumb(thumb, (choice.variant || choice.entry).url);
+            thumb.draggable = false;
+            thumb.dataset.full = (choice.variant || choice.entry).url;
             cell.title = shortDescription(choice.entry);
             cell.append(thumb, el('span', 'stis-sendcard-num', String(position + 1)));
+            const moves = movesOf(choice);
+            media.add(thumb, moves);
+            if (moves && !media.animates) {
+                const moving = el('span', 'stis-anim-badge');
+                moving.appendChild(el('i', 'fa-solid fa-play'));
+                cell.appendChild(moving);
+            }
             cell.addEventListener('click', () => {
                 index = position;
-                grid.hidden = true;
+                browseBox.hidden = true;
+                media?.close();
                 draw();
             });
             grid.appendChild(cell);
-        });
+        }
+    };
+    let findTimer = null;
+    find.addEventListener('input', () => {
+        clearTimeout(findTimer);
+        findTimer = setTimeout(() => {
+            filter.words = find.value;
+            drawGrid();
+        }, 250);
+    });
+    browse.addEventListener('click', () => {
+        browseBox.hidden = !browseBox.hidden;
+        if (browseBox.hidden) {
+            media?.close();
+            return;
+        }
+        drawGrid();
     });
     search.addEventListener('click', async () => {
         await popup.completeCancelled();
@@ -14109,8 +14310,7 @@ async function openPicker(initialTags = null, focus = null) {
     let selectedWho = '';
     let previewState = null;
     let libraryOrder = [];
-    let libLazy = null;
-    let libPlay = null;
+    let libMedia = null;
     const libFilter = new Set();
     let libMoreOpen = false;
     let reps = [];
@@ -16805,51 +17005,8 @@ async function openPicker(initialTags = null, focus = null) {
             ui.libGrid.appendChild(el('div', 'stis-status', message));
             return;
         }
-        libLazy?.disconnect();
-        libLazy = typeof IntersectionObserver === 'function' ? new IntersectionObserver(seen => {
-            seen.forEach(item => {
-                if (item.isIntersecting) {
-                    libLazy?.unobserve(item.target);
-                    showThumb(item.target, item.target.dataset.full);
-                }
-            });
-        }, { root: ui.libGrid, rootMargin: '600px 0px' }) : null;
-        libPlay?.disconnect();
-        const playing = new Set();
-        const waiting = new Set();
-        const play = img => {
-            img.dataset.playing = '1';
-            img.src = img.dataset.full;
-            playing.add(img);
-        };
-        const stop = img => {
-            delete img.dataset.playing;
-            if (img.dataset.thumb) {
-                img.src = img.dataset.thumb;
-            }
-        };
-        libPlay = s.libAnimate !== false && typeof IntersectionObserver === 'function' ? new IntersectionObserver(seen => {
-            seen.forEach(item => {
-                const img = item.target;
-                if (item.isIntersecting) {
-                    if (playing.size < LIB_PLAYING) {
-                        play(img);
-                    } else {
-                        waiting.add(img);
-                    }
-                    return;
-                }
-                waiting.delete(img);
-                if (playing.delete(img)) {
-                    stop(img);
-                    const next = waiting.values().next().value;
-                    if (next) {
-                        waiting.delete(next);
-                        play(next);
-                    }
-                }
-            });
-        }, { root: ui.libGrid, threshold: 0.4 }) : null;
+        libMedia?.close();
+        libMedia = gridMedia(ui.libGrid, s.libAnimate !== false);
         for (const entry of libraryOrder) {
             const cell = el('div', 'stis-cell');
             const img = el('img');
@@ -16857,19 +17014,12 @@ async function openPicker(initialTags = null, focus = null) {
             img.draggable = false;
             img.dataset.full = entry.url;
             img.onerror = () => cell.classList.add('stis-broken');
-            if (libLazy) {
-                libLazy.observe(img);
-            } else {
-                showThumb(img, entry.url);
-            }
             cell.title = shortDescription(entry);
             cell.dataset.entry = entry.id;
             cell.appendChild(img);
             const moves = entry.animated || itemAnimated(entry, entry);
-            if (moves && libPlay) {
-                libPlay.observe(img);
-            }
-            if (!libPlay && (moves || entry.variants.some(item => itemAnimated(entry, item)))) {
+            libMedia.add(img, moves);
+            if (!libMedia.animates && (moves || entry.variants.some(item => itemAnimated(entry, item)))) {
                 const moving = el('span', 'stis-anim-badge');
                 moving.appendChild(el('i', 'fa-solid fa-play'));
                 moving.title = 'Animated (GIF): it plays in the preview';
@@ -17234,8 +17384,7 @@ async function openPicker(initialTags = null, focus = null) {
         onClose: () => {
             closed = true;
             state.pickerOpen = false;
-            libLazy?.disconnect();
-            libPlay?.disconnect();
+            libMedia?.close();
             dropThumbJobs();
             lengthWatch.disconnect();
             lengthQueue.length = 0;

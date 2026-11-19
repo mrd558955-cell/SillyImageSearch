@@ -2385,3 +2385,41 @@ textarea.stis-sent-prompt-text {
 .stis-actions > .stis-act-set::before {
     content: '\f5fd';
 }
+
+.stis-sendcard-browse {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+}
+
+.stis-sendcard-browse[hidden] {
+    display: none;
+}
+
+.stis-sendcard-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.stis-sendcard-chips > [hidden] {
+    display: none;
+}
+
+.stis-sendcard-count {
+    opacity: 0.75;
+}
+
+.stis-sendcard-browse .stis-sendcard-grid {
+    max-height: 50vh;
+}
+
+.stis-sendcard-cell.stis-sendcard-current img {
+    outline: 2px solid var(--SmartThemeQuoteColor, orange);
+    outline-offset: -2px;
+}
+
+.stis-sendcard-cell .stis-anim-badge {
+    pointer-events: none;
+}

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.62.0';
+const VERSION = '2.62.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -36,7 +36,8 @@ const DEFAULT_LOOP_NOTE = 'This item is a loop: it repeats. Describe the repeati
 const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: if this sequence has a climax, it is most likely there.';
 const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. The people in the picture may not look like the characters (hair, eyes, skin, clothes, build): keep the characters as the story has them and let the picture\'s looks go; what matters is what happens. Do not mention a picture, an image or tags.{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
 const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
-const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT };
+const DEFAULT_SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture. The people in a picture may not look like the characters (hair, eyes, skin, clothes, build): a picture can be shown when what happens in it fits; keep the characters as the story has them and let the picture\'s looks go.';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE };
 
 function fillTemplate(text, values) {
     let out = String(text);
@@ -116,6 +117,7 @@ const DEFAULTS = {
     loopNote: '',
     oneMoving: '',
     forcePrompt: '',
+    showRule: '',
     leadPrompt: '',
     inlinePictures: true,
     keepLibraryFiles: true,
@@ -10584,7 +10586,10 @@ function entryKeywords(entry) {
     return [...new Set([...plain.filter(word => !forms.includes(word)).slice(0, 12), ...forms])];
 }
 
-const SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture.';
+
+function showRule() {
+    return promptPart('showRule').replace(/\s+/g, ' ').trim();
+}
 
 function catalogLine(entry) {
     const summary = shortDescription(entry) || entry.tags.slice(0, 8).join(', ').replace(/_/g, ' ');
@@ -10608,7 +10613,7 @@ function pictureCatalog(size) {
     if (!recent.length) {
         return '';
     }
-    return [`${SHOW_RULE} Use only the tags listed here or in other saved-picture notes, never invent one, never mention the tag in your text, and show at most one picture per reply. Prefer a picture that has not been shown yet in this chat. Saved pictures:`, ...recent.map(catalogLine)].join('\n');
+    return [`${showRule()} Use only the tags listed here or in other saved-picture notes, never invent one, never mention the tag in your text, and show at most one picture per reply. Prefer a picture that has not been shown yet in this chat. Saved pictures:`, ...recent.map(catalogLine)].join('\n');
 }
 
 function catalogWiEntry(uid, depth) {
@@ -10622,7 +10627,7 @@ function pictureOffer(entry) {
     if (groupDescribed(entry)) {
         const sequence = entry.kind === 'sequence';
         const lines = entry.variants.map((item, index) => `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1} [pic:${item.id}]: ${[item.sections.action || shortDescription({ ...entry, sections: item.sections, description: item.description }), itemStory(entry, item, index)].filter(Boolean).join(' ')}`.replace(/\s+/g, ' ').trim());
-        const intro = sequence ? `Saved ${entry.fromVideo ? 'video in parts' : 'picture sequence'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'} that tell a story in this order. ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead.` : `Saved ${entry.fromVideo ? 'video moments' : 'picture set'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'}, versions of one scene. ${SHOW_RULE} If one fits the moment or the user asks for it, show that one.`;
+        const intro = sequence ? `Saved ${entry.fromVideo ? 'video in parts' : 'picture sequence'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'} that tell a story in this order. ${showRule()} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead.` : `Saved ${entry.fromVideo ? 'video moments' : 'picture set'}: ${entry.variants.length} real ${entry.fromVideo ? 'animated pictures (GIFs)' : 'pictures'}, versions of one scene. ${showRule()} If one fits the moment or the user asks for it, show that one.`;
         return [`${intro} Write the tag on its own line where the picture belongs; ${rule}`, entry.description ? `Overview: ${entry.description}` : '', entry.arc ? `Shape: ${entry.arc}` : '', ...lines, tags].filter(Boolean).join('\n');
     }
     if (entry.kind === 'sequence' && isMulti(entry)) {
@@ -10630,16 +10635,16 @@ function pictureOffer(entry) {
             ? `Picture 1 [pic:${variant.id}]: as described above.`
             : `Picture ${index + 1} [pic:${variant.id}]: ${variant.diff || 'the next picture of the sequence.'}`);
         const intro = entry.fromVideo ? `Saved video in parts: ${entry.variants.length} real animated pictures (GIFs) cut from one video, in this order.` : `Saved picture sequence: ${entry.variants.length} real pictures that tell a story in this order.`;
-        return [`${intro} ${SHOW_RULE} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Write the tag on its own line where the picture belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
+        return [`${intro} ${showRule()} When the scene matches picture 1, you may show it; show the next ones in later replies, in order, as the story moves on. Never skip ahead. Write the tag on its own line where the picture belongs; ${rule}`, body, ...steps, tags].filter(Boolean).join('\n');
     }
     if (entry.kind === 'set' && entry.variants.length > 1) {
         const versions = entry.variants.map((variant, index) => index === 0
             ? `${entry.fromVideo ? 'Part' : 'Version'} 1 [pic:${variant.id}]: as described above.`
             : `${entry.fromVideo ? 'Part' : 'Version'} ${index + 1} [pic:${variant.id}]: ${variant.diff || (entry.fromVideo ? 'another moment of the same video.' : 'another version of the same picture.')}`);
         const intro = entry.fromVideo ? `Saved video moments: ${entry.variants.length} real animated pictures (GIFs), separate moments cut from one video.` : `Saved picture set: ${entry.variants.length} real pictures, versions of the same scene.`;
-        return [`${intro} ${SHOW_RULE} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
+        return [`${intro} ${showRule()} If one fits the moment or the user asks for it, write its tag on its own line where it belongs; ${rule}`, body, ...versions, tags].filter(Boolean).join('\n');
     }
-    return [`Saved picture [pic:${entry.id}], a real ${entry.animated ? 'animated picture (GIF)' : 'picture'}. ${SHOW_RULE} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
+    return [`Saved picture [pic:${entry.id}], a real ${entry.animated ? 'animated picture (GIF)' : 'picture'}. ${showRule()} If it fits the moment or the user asks for it, write [pic:${entry.id}] on its own line where it belongs; ${rule}`, body, tags].filter(Boolean).join('\n');
 }
 
 function newWiEntry(uid, depth) {
@@ -17787,6 +17792,12 @@ function buildSettings() {
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Kept before meaning ranking</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div><small class="stis-help">The best pictures by looks and keywords that go on to be ranked by meaning.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>AI may show pictures</span></label><small class="stis-help">Saved pictures are offered through the lorebook "${LOREBOOK}": one entry per picture, triggered by its keywords, at most one per reply. Keep that lorebook on; your keyword edits are kept.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_groups_lore"> <span>Also offer sets and sequences</span></label><small class="stis-help">Off: only single pictures are in the lorebook, and sets and sequences come only through the picture send. On: each set or sequence gets one entry with a line per item.</small></div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">Lorebook rule</summary>
+                            <textarea id="st_imagesearch_show_rule" class="text_pole" rows="7"></textarea>
+                            <small class="stis-help">Starts every picture entry in the lorebook "${LOREBOOK}" and the list of pictures always listed: it tells the AI how to show a picture. Keep [pic:…] in it. Changes reach the lorebook a moment after you stop typing.</small>
+                            <div id="st_imagesearch_show_rule_reset" class="menu_button">Reset this prompt</div>
+                        </details>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures always listed</span><input type="number" min="0" max="200" id="st_imagesearch_catalog_size" class="text_pole"></div><small class="stis-help">The ones that fit the chat best. 0 = only when keywords match.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Offer depth in the prompt</span><input type="number" min="0" max="50" id="st_imagesearch_aishow_depth" class="text_pole"></div></div>
                     </div>
@@ -18064,17 +18075,23 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
-    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt']].forEach(([id, key]) => {
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt'], ['st_imagesearch_show_rule', 'showRule']].forEach(([id, key]) => {
         const area = document.getElementById(id);
         area.value = promptPart(key);
+        const changed = () => {
+            save();
+            if (key === 'showRule') {
+                scheduleLorebookSync();
+            }
+        };
         area.addEventListener('input', () => {
             s[key] = area.value.trim() === PROMPT_PARTS[key].trim() ? '' : area.value;
-            save();
+            changed();
         });
         document.getElementById(`${id}_reset`).addEventListener('click', () => {
             s[key] = '';
             area.value = PROMPT_PARTS[key];
-            save();
+            changed();
         });
     });
     document.getElementById('st_imagesearch_vision_reset').addEventListener('click', () => {

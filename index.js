@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.61.1';
+const VERSION = '2.61.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -850,7 +850,7 @@ const ENGINES = {
     e621: {
         cap: 6,
         pageSize: 100,
-        url: (origin, tags, extra, page) => `${origin}/posts.json?limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
+        url: (origin, tags, extra, page) => `${origin}/posts.json?v1=true&limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
         tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, 'order:score', ...exclude.slice(0, 10).map(tag => `-${tag}`), ...ratingNegatives(ratings, { general: ['s'], questionable: ['q'], explicit: ['e'] })],
         parse: result => (result.ok && result.data && Array.isArray(result.data.posts) ? result.data.posts : null),
         image: (post, origin) => absolute(post.sample?.url, origin) || absolute(post.file?.url, origin),
@@ -992,6 +992,10 @@ function siteAnswer(result) {
 
 function engineFor(name, result) {
     if (name === 'danbooru' && result?.ok && result.data && !Array.isArray(result.data) && Array.isArray(result.data.posts)) {
+        return 'e621';
+    }
+    const first = name === 'danbooru' && result?.ok && Array.isArray(result.data) ? result.data[0] : null;
+    if (first && typeof first === 'object' && first.files && typeof first.files === 'object' && 'change_seq' in first) {
         return 'e621';
     }
     return name;

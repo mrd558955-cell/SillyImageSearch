@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.65.1';
+const VERSION = '2.66.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -128,6 +128,7 @@ const DEFAULTS = {
     sendRatings: { general: true, sensitive: true, questionable: true, explicit: true },
     spellAi: true,
     siteSpellings: {},
+    siteAccounts: {},
     pixiv: { enabled: false, kind: 'all', order: 'date_d', match: 's_tag', hideAi: false, limit: 400 },
     leadPrompt: '',
     inlinePictures: true,
@@ -512,14 +513,68 @@ function siteEntries() {
         .filter(Boolean)
         .map(line => {
             const [first, ...rest] = line.split(/\s+/);
-            const domain = first.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
-            const extra = rest.join('&').replace(/^[?&]+/, '');
-            return { domain, extra: extra ? `&${extra}` : '' };
+            const query = first.includes('?') ? first.slice(first.indexOf('?') + 1) : '';
+            const domain = first.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[/?].*$/, '');
+            const typed = [query, ...rest].filter(Boolean).join('&').replace(/^[?&]+/, '');
+            const extra = typed ? `&${typed}` : '';
+            return { domain, extra: `${extra}${accountExtra(domain, settings().engines?.[domain], extra)}` };
         })
         .filter(entry => entry.domain);
 }
 
 const ALL_SITES = '*';
+const SITE_HOME = 'https://github.com/mrd558955-cell/SillyImageSearch';
+
+function siteAccounts() {
+    const s = settings();
+    if (!s.siteAccounts || typeof s.siteAccounts !== 'object' || Array.isArray(s.siteAccounts)) {
+        s.siteAccounts = {};
+    }
+    return s.siteAccounts;
+}
+
+function accountFor(domain) {
+    const found = siteAccounts()[domain];
+    return found && (String(found.login || '').trim() || String(found.key || '').trim()) ? found : null;
+}
+
+function accountForHost(host) {
+    const name = String(host || '').toLowerCase().replace(/^www\./, '');
+    const domain = Object.keys(siteAccounts()).find(site => name === site || name.endsWith(`.${site}`));
+    return domain ? accountFor(domain) : null;
+}
+
+function accountExtra(domain, engineName, extra = '') {
+    const account = accountFor(domain);
+    if (!account || /(?:^|&)(?:api_key|key|password_hash)=/.test(extra)) {
+        return '';
+    }
+    const login = encodeURIComponent(String(account.login || '').trim());
+    const key = encodeURIComponent(String(account.key || '').trim());
+    const pair = (who, secret) => `${login ? `&${who}=${login}` : ''}${key ? `&${secret}=${key}` : ''}`;
+    switch (engineName) {
+        case 'danbooru':
+        case 'e621':
+            return pair('login', 'api_key');
+        case 'gelbooru':
+            return pair('user_id', 'api_key');
+        case 'moebooru':
+            return pair('login', 'password_hash');
+        case 'philomena':
+            return key ? `&key=${key}` : '';
+        default:
+            return '';
+    }
+}
+
+function accountAgent(url) {
+    const account = accountForHost(hostOf(url));
+    if (!account || DONMAI.test(hostOf(url))) {
+        return {};
+    }
+    const login = String(account.login || '').trim();
+    return { 'User-Agent': `SillyImageSearch/${VERSION} (${login ? `user ${login}` : 'with an API key'}; +${SITE_HOME})` };
+}
 const PIXIV = 'pixiv.net';
 const BRIDGE = '/api/plugins/pixiv-bridge';
 
@@ -829,7 +884,10 @@ function canSetAgent() {
 }
 
 function agentFor(url) {
-    return DONMAI.test(hostOf(url)) && danbooruIdentity.id && danbooruIdentity.account === danbooruAccount() ? { 'User-Agent': danbooruAgent() } : {};
+    if (!DONMAI.test(hostOf(url))) {
+        return canSetAgent() ? accountAgent(url) : {};
+    }
+    return danbooruIdentity.id && danbooruIdentity.account === danbooruAccount() ? { 'User-Agent': danbooruAgent() } : {};
 }
 
 function resolveDanbooruId({ again = false } = {}) {
@@ -878,7 +936,10 @@ function resolveDanbooruId({ again = false } = {}) {
 }
 
 async function agentHeaders(url) {
-    if (!DONMAI.test(hostOf(url)) || !danbooruAccount()) {
+    if (!DONMAI.test(hostOf(url))) {
+        return canSetAgent() ? accountAgent(url) : {};
+    }
+    if (!danbooruAccount()) {
         return {};
     }
     await resolveDanbooruId();
@@ -1201,6 +1262,20 @@ function siteAnswer(result) {
     return `${result?.status ?? '?'}${plain ? ` "${plain.slice(0, 70)}"` : ''}${cloudflare ? ' (a Cloudflare check, which stops SillyTavern\'s server)' : ''}`;
 }
 
+function siteVerdict(answer, domain) {
+    const text = String(answer || '');
+    if (/Cloudflare/i.test(text)) {
+        return `stopped by a Cloudflare check (${text.slice(0, 120)}). SillyTavern's server cannot pass it. ${accountFor(domain) ? 'Your account did not get through either, so only the site can let SillyTavern in; leave it out for now.' : 'Add an account for it under Site accounts and check again; if it still stops, only the site can let SillyTavern in.'}`;
+    }
+    if (/\b(401|403)\b/.test(text)) {
+        return accountFor(domain) ? `refuses your account (${text.slice(0, 120)}). Check the name and the API key from your account settings on the site.` : `refuses SillyTavern's server (${text.slice(0, 120)}). Add an account for it under Site accounts and check again.`;
+    }
+    if (/\b(429)\b/.test(text)) {
+        return `asks to slow down (${text.slice(0, 120)}). Try again later.`;
+    }
+    return text.slice(0, 200);
+}
+
 function e621Post(post) {
     if (!post || typeof post !== 'object' || !post.files || typeof post.files !== 'object') {
         return post;
@@ -1326,7 +1401,7 @@ async function detectEngine(entry, probeTags) {
         const engine = ENGINES[name];
         let result;
         try {
-            result = await request(engine.url(origin, engine.tags(probe, false), entry.extra, 0));
+            result = await request(engine.url(origin, engine.tags(probe, false), `${entry.extra}${accountExtra(entry.domain, name, entry.extra)}`, 0));
         } catch (error) {
             if (error instanceof BlockedError) {
                 throw new BlockedError(`${entry.domain}: the browser blocked the check. If it is an image board, set enableCorsProxy: true in SillyTavern's config.yaml and restart.`);
@@ -18325,6 +18400,14 @@ function buildSettings() {
                             <small id="st_imagesearch_danbooru_status" class="stis-help"></small>
                         </div>
                         <div class="stis-set">
+                            <div class="stis-label">Site accounts</div>
+                            <small class="stis-help">For a site that refuses SillyTavern's server (403) or asks for a key: make an account there, copy the API key from your account settings on the site, and put it here with your name (on Gelbooru, your user ID). It stays in your settings. It is sent the way that kind of site expects (Danbooru and e621: login and api_key; Gelbooru: user_id and api_key; Moebooru: login and password_hash; Philomena: key), and SillyTavern's server tells the site honestly that it is SillyImageSearch for your account. A key already written on a site's line in the list above is used as it is.</small>
+                            <div id="st_imagesearch_accounts" class="stis-accounts"></div>
+                            <div id="st_imagesearch_check_sites" class="menu_button">Check every site</div>
+                            <small class="stis-help">Tries one small search on each site in the list and says what each one needs. A site behind a Cloudflare check cannot be reached by SillyTavern's server; an account sometimes lets it through, otherwise only the site can.</small>
+                            <div id="st_imagesearch_site_report" class="stis-site-report"></div>
+                        </div>
+                        <div class="stis-set">
                             <div class="stis-label">Tag model</div>
                             <select id="st_imagesearch_profile" class="text_pole"></select>
                             <small id="st_imagesearch_profile_note" class="stis-help"></small>
@@ -18686,6 +18769,75 @@ function buildSettings() {
         s.engines = {};
         s.termLimits = {};
         clearTagCache();
+        showEngines();
+    });
+    const renderAccounts = () => {
+        const box = document.getElementById('st_imagesearch_accounts');
+        box.innerHTML = '';
+        const entries = siteEntries();
+        if (!entries.length) {
+            box.appendChild(el('small', 'stis-help', 'Add sites to the list above first.'));
+            return;
+        }
+        for (const entry of entries) {
+            const saved = siteAccounts()[entry.domain] || {};
+            const row = el('div', 'st-imagesearch-row stis-account');
+            row.appendChild(el('span', 'stis-account-site', entry.domain));
+            const login = el('input', 'text_pole');
+            login.type = 'text';
+            login.placeholder = 'name or user ID';
+            login.value = saved.login || '';
+            login.autocomplete = 'off';
+            const key = el('input', 'text_pole');
+            key.type = 'password';
+            key.placeholder = 'API key';
+            key.value = saved.key || '';
+            key.autocomplete = 'off';
+            const keep = () => {
+                const name = login.value.trim();
+                const secret = key.value.trim().replace(/^.*[?&](?:api_key|key|password_hash)=([^&\s]+).*$/, '$1');
+                if (secret !== key.value.trim()) {
+                    key.value = secret;
+                }
+                if (name || secret) {
+                    siteAccounts()[entry.domain] = { login: name, key: secret };
+                } else {
+                    delete siteAccounts()[entry.domain];
+                }
+                delete s.engines[entry.domain];
+                delete s.termLimits?.[entry.domain];
+                clearTagCache();
+                save();
+            };
+            login.addEventListener('change', keep);
+            key.addEventListener('change', keep);
+            row.append(login, key);
+            box.appendChild(row);
+        }
+    };
+    renderAccounts();
+    document.getElementById('st_imagesearch_sites').addEventListener('change', renderAccounts);
+    document.getElementById('st_imagesearch_check_sites').addEventListener('click', async () => {
+        const report = document.getElementById('st_imagesearch_site_report');
+        report.innerHTML = '';
+        for (const entry of siteEntries()) {
+            const line = el('div', 'stis-site-line', `${entry.domain}: checking…`);
+            report.appendChild(line);
+            delete s.engines[entry.domain];
+            try {
+                const engineName = await engineOf(entry, []);
+                if (!engineName || engineName === 'none') {
+                    line.textContent = `${entry.domain}: ${siteVerdict(siteAnswers[entry.domain] || 'not a kind of image board the extension knows', entry.domain)}`;
+                    continue;
+                }
+                const fresh = siteEntries().find(item => item.domain === entry.domain) || entry;
+                const { items } = await fetchPage(fresh, engineName, [], 0, [], []);
+                line.textContent = `${entry.domain}: works (${engineName}${accountFor(entry.domain) ? ', with your account' : ''}), ${items.length} pictures on a first page.`;
+            } catch (error) {
+                line.textContent = `${entry.domain}: ${siteVerdict(String(error?.message || error), entry.domain)}`;
+            }
+        }
+        save();
         showEngines();
     });
     bind('st_imagesearch_prefetch', 'prefetch', 'checked');

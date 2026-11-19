@@ -2456,3 +2456,25 @@ textarea.stis-sent-prompt-text {
     flex-basis: 100%;
     opacity: 0.7;
 }
+
+.stis-account {
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.stis-account-site {
+    flex-basis: 100%;
+    font-weight: bold;
+}
+
+.stis-account input {
+    flex: 1 1 8em;
+    min-width: 0;
+}
+
+.stis-site-report {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.9em;
+}

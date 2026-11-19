@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.64.0';
+const VERSION = '2.65.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -38,7 +38,9 @@ const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your ne
 const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#continues}}\n- The picture continues a sequence already shown in this chat: each way starts from the moment shown before.{{/continues}}{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#continues}}\n\nWhere it is in the sequence:\n{{continues}}{{/continues}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
 const DEFAULT_SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture. The people in a picture may not look like the characters (hair, eyes, skin, clothes, build): a picture can be shown when what happens in it fits; keep the characters as the story has them and let the picture\'s looks go.';
 const DEFAULT_SPELL_PROMPT = 'On image boards, the same thing is often tagged differently on each site. The tag "{{tag}}"{{#meaning}} ({{meaning}}){{/meaning}} is not used on {{site}}. Which one of these {{site}} tags means the same thing? Pick one only if it really is the same thing, not just something related or a part of it.\n\n{{candidates}}\n\nReply with the one tag exactly as written. If none of them is the same thing, reply with the tag {{site}} most likely uses for it instead, or none if you do not know.';
-const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE, spellPrompt: DEFAULT_SPELL_PROMPT };
+const DEFAULT_CARD_PROMPT = 'You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): {{poses}}\nMoods (pick one or two, only from this list): {{moods}}\n\ncount: how many people the description counts, including anyone only partly in view (an arm from the shadows, someone behind her).\nrating: how strong the picture is, judging everything it shows: nudity and sex, but also violence, blood, gore, cruelty and anything disturbing. \"general\": fine for anyone. \"sensitive\": mild (suggestive clothes or poses, a fight without injuries, a little blood). \"questionable\": strong (partial nudity, sexual suggestion, wounds, real violence). \"explicit\": R-18 (sex, exposed private parts, gore, graphic violence or cruelty). Take the strongest thing in the picture.\n\npeople: everyone the description counts, at most 6, the main person first. Each person has:\n  \"role\": \"main\" for the one person the description spends the most on, \"side\" for the other people, \"background\" for bystanders, crowds and anyone small or blurry far behind\n  \"view\": \"full\", or \"partly\" when only part of them is in view\n  \"seen\": for someone partly in view, a few words for what is seen (\"only a muscular arm\", \"a shadow behind her\"), else \"\"\nFor the main person, fill:\n{{fields}}\nFor side people and people partly in view, fill only these, from the little the description says about them, and leave the rest out:\n{{sidefields}}\n{{#scene}}Each picture also has \"scene\" with these fields:\n{{scene}}\n{{/scene}}\nRules:\n- Take every field only from what the description or the tags say; never guess. Use \"\" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them (\"after being shoved\", \"first meeting\", \"winning a fight\").\n- place and framing: a few words each.\n\nPictures:\n{{pictures}}';
+const DEFAULT_CARD_UPDATE_PROMPT = 'You are updating the filing cards of a roleplay picture library. For each picture below you get its description, its tags and the people already on its card. Fill only these fields.\n{{#fields}}For each of those people, in the same order (for side people and people partly in view, only the fields marked side, from what the description says about them):\n{{fields}}\n{{/fields}}{{#scene}}For the picture, under \"scene\":\n{{scene}}\n{{/scene}}Take every field only from what the description or the tags say; never guess. Use \"\" for what is not shown.\n\nPictures:\n{{pictures}}';
+const PROMPT_PARTS = { gifNote: DEFAULT_GIF_NOTE, describeRules: DEFAULT_DESCRIBE_RULES, boardNote: DEFAULT_BOARD_NOTE, againPrompt: DEFAULT_AGAIN_PROMPT, loopNote: DEFAULT_LOOP_NOTE, oneMoving: DEFAULT_ONE_MOVING, forcePrompt: DEFAULT_FORCE_PROMPT, leadPrompt: DEFAULT_LEAD_PROMPT, showRule: DEFAULT_SHOW_RULE, spellPrompt: DEFAULT_SPELL_PROMPT, cardPrompt: DEFAULT_CARD_PROMPT, cardUpdatePrompt: DEFAULT_CARD_UPDATE_PROMPT };
 
 function fillTemplate(text, values) {
     let out = String(text);
@@ -120,6 +122,10 @@ const DEFAULTS = {
     forcePrompt: '',
     showRule: '',
     spellPrompt: '',
+    cardPrompt: '',
+    cardUpdatePrompt: '',
+    looksWeight: 100,
+    sendRatings: { general: true, sensitive: true, questionable: true, explicit: true },
     spellAi: true,
     siteSpellings: {},
     pixiv: { enabled: false, kind: 'all', order: 'date_d', match: 's_tag', hideAi: false, limit: 400 },
@@ -11077,7 +11083,7 @@ function catalogLine(entry) {
 }
 
 function inLore(entry) {
-    return !isMulti(entry) || Boolean(settings().groupsInLore);
+    return (!isMulti(entry) || Boolean(settings().groupsInLore)) && groupAllowed(entry);
 }
 
 function pictureCatalog(size) {
@@ -11326,7 +11332,9 @@ function onWorldInfoActivated(entries) {
 }
 
 const CARD_BATCH = 8;
-const CARD_VERSION = 5;
+const CARD_VERSION = 6;
+const RATING_LEVELS = ['general', 'sensitive', 'questionable', 'explicit'];
+const RATING_NAMES = { general: 'General (SFW)', sensitive: 'Sensitive', questionable: 'Questionable', explicit: 'Explicit (R-18)' };
 const SHEET_VERSION = 4;
 const VECTOR_COLLECTION = 'imagesearch_pictures';
 const MEANING_MODELS = { nanogpt: 'text-embedding-3-small', openai: 'text-embedding-3-small' };
@@ -11369,14 +11377,35 @@ function isBackground(person) {
     return person.background === true || /^(background|crowd|extra|minor|bystander)$/i.test(String(person.role || '').trim());
 }
 
+function isSide(person) {
+    return /^(side|secondary|other)$/i.test(String(person.role || '').trim());
+}
+
+function isPartly(person) {
+    return /^(partly|partial|part)$/i.test(String(person.view || '').trim());
+}
+
+function isMainPerson(person) {
+    return !isBackground(person) && !isSide(person) && !isPartly(person);
+}
+
 const EMPTY_VALUE = /^(none|n\/a|unknown|unclear|-|not shown|not visible|not stated|"")$/;
 
 function cleanPerson(person) {
-    const out = isBackground(person) ? { role: 'background' } : {};
+    const out = isBackground(person) ? { role: 'background' } : isSide(person) ? { role: 'side' } : /^main$/i.test(String(person.role || '').trim()) ? { role: 'main' } : {};
+    if (isPartly(person)) {
+        out.view = 'partly';
+        out.seen = String(person.seen ?? '').replace(/\s+/g, ' ').trim().slice(0, 80).toLowerCase();
+    }
+    const minor = !isMainPerson(person);
+    const sideFields = minor ? new Set(personCategories().filter(category => category.side).flatMap(category => category.from)) : null;
     const suffixes = categorySuffixes();
     for (const [key, raw] of Object.entries(person).slice(0, 24)) {
         const field = slug(key);
-        if (!field || field === 'role' || field === 'background' || field === 'name' || typeof raw === 'object') {
+        if (!field || field === 'role' || field === 'background' || field === 'name' || field === 'view' || field === 'seen' || typeof raw === 'object') {
+            continue;
+        }
+        if (sideFields && !sideFields.has(field) && personCategories().some(category => category.from.includes(field))) {
             continue;
         }
         let value = String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, 80).toLowerCase();
@@ -11401,7 +11430,7 @@ function cleanCard(card) {
         .filter(person => person && typeof person === 'object')
         .slice(0, 6)
         .map(cleanPerson)
-        .filter(person => Object.entries(person).some(([key, value]) => key !== 'role' && value));
+        .filter(person => Object.entries(person).some(([key, value]) => key !== 'role' && key !== 'view' && value));
     const scene = {};
     for (const [key, value] of Object.entries(card.scene && typeof card.scene === 'object' ? card.scene : {}).slice(0, 16)) {
         const field = slug(key);
@@ -11415,9 +11444,13 @@ function cleanCard(card) {
     if (!cats && v >= 5) {
         cats = builtinHashes();
     }
+    const count = Number.parseInt(card.count, 10);
+    const rating = String(card.rating || '').trim().toLowerCase().replace(/^safe$|^sfw$/, 'general').replace(/^r-?18$|^nsfw$/, 'explicit');
     return {
         people,
         scene,
+        ...(Number.isFinite(count) && count >= 0 && count <= 30 ? { count } : {}),
+        ...(RATING_LEVELS.includes(rating) ? { rating } : {}),
         pose: asList(card.pose, ',').map(item => item.toLowerCase().slice(0, 40)).slice(0, 3),
         mood: asList(card.mood, ',').map(item => item.toLowerCase().slice(0, 40)).slice(0, 3),
         place: text(card.place).toLowerCase(),
@@ -11469,13 +11502,14 @@ function cardLine(card) {
 }
 
 function personLine(person) {
-    const keys = [...personCategories().map(category => category.id), ...Object.keys(person).filter(key => key !== 'role')];
+    const keys = [...personCategories().map(category => category.id), ...Object.keys(person).filter(key => key !== 'role' && key !== 'view' && key !== 'seen')];
     const fields = [...new Set(keys)].filter(key => person[key]).map(key => `${key}: ${person[key]}`);
-    return `Person: ${[...(person.role === 'background' ? ['role: background'] : []), ...fields].join('; ')}`;
+    const head = [...(person.role ? [`role: ${person.role}`] : []), ...(person.view === 'partly' ? ['view: partly', ...(person.seen ? [`seen: ${person.seen}`] : [])] : [])];
+    return `Person: ${[...head, ...fields].join('; ')}`;
 }
 
 function cardToText(card) {
-    const lines = card.people.map(personLine);
+    const lines = [...(card.count !== undefined ? [`Count: ${card.count}`] : []), ...(card.rating ? [`Rating: ${card.rating}`] : []), ...card.people.map(personLine)];
     const scene = Object.entries(card.scene || {}).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`);
     if (scene.length || sceneCategories().length) {
         lines.push(`Scene: ${scene.join('; ')}`);
@@ -11498,7 +11532,7 @@ function readPairs(value) {
 function textToCard(text) {
     const card = { people: [], scene: {}, pose: [], mood: [], place: '', framing: '', moments: [] };
     for (const line of String(text || '').split('\n')) {
-        const match = line.match(/^\s*(person|scene|pose|mood|place|framing|moments?)\s*\d*\s*:\s*(.*)$/i);
+        const match = line.match(/^\s*(person|scene|pose|mood|place|framing|moments?|count|rating)\s*\d*\s*:\s*(.*)$/i);
         if (!match) {
             continue;
         }
@@ -11537,16 +11571,32 @@ function cardFieldRules(list) {
     return list.map(category => `  "${category.id}": ${categoryHint(category)}`).join('\n');
 }
 
+function intensityWords(level) {
+    return level >= 9 ? 'a peak moment' : level >= 7 ? 'an intense moment' : level >= 4 ? 'a moment of rising or falling tension' : level > 0 ? 'a calm moment' : '';
+}
+
+function itemPlace(entry) {
+    const item = entry.item;
+    if (!item || entry.kind !== 'sequence') {
+        return '';
+    }
+    const index = entry.variants.indexOf(item);
+    const role = roleText(item.role);
+    const level = Number(item.role?.intensity) || 0;
+    const loop = loopState(entry, item, index) === 'loop';
+    return [`Picture ${index + 1} of ${entry.variants.length} of a sequence${role ? `, the ${role}` : ''}${level ? `, intensity ${level} of 10 (${intensityWords(level)})` : ''}${loop ? ', a loop' : ''}.`, item.diff ? `Story: ${String(item.diff).replace(/\s+/g, ' ').trim()}` : ''].filter(Boolean).join(' ');
+}
+
 function meaningText(entry) {
     const card = entry.card;
     const action = String(entry.sections?.action || '').replace(/\s+/g, ' ').trim();
-    return [`${cardWho(card)}.`, card.pose.length ? `Pose: ${card.pose.join(', ')}.` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}.` : '', card.place ? `Place: ${card.place}.` : '', card.moments.length ? `Story moments: ${card.moments.join('; ')}.` : '', action].filter(Boolean).join(' ').slice(0, 1200);
+    return [itemPlace(entry), `${cardWho(card)}.`, card.pose.length ? `Pose: ${card.pose.join(', ')}.` : '', card.mood.length ? `Mood: ${card.mood.join(', ')}.` : '', card.place ? `Place: ${card.place}.` : '', card.moments.length ? `Story moments: ${card.moments.join('; ')}.` : '', action].filter(Boolean).join(' ').slice(0, 1200);
 }
 
 function cardSource(entry) {
     if (entry.item) {
         const index = entry.variants.indexOf(entry.item);
-        return `Item ${index + 1} of a ${groupWhat(entry)}. ${entry.item.description.replace(/\s+/g, ' ').trim().slice(0, 900)}${itemStory(entry, entry.item, index) ? ` ${itemStory(entry, entry.item, index).replace(/\s+/g, ' ').slice(0, 260)}` : ''}`;
+        return `Item ${index + 1} of a ${groupWhat(entry)}. ${entry.item.description.replace(/\s+/g, ' ').trim().slice(0, 900)}${itemStory(entry, entry.item, index) ? ` ${itemStory(entry, entry.item, index).replace(/\s+/g, ' ').slice(0, 600)}` : ''}`;
     }
     const parts = [String(entry.description || '').replace(/\s+/g, ' ').trim().slice(0, 900)];
     if (isMulti(entry)) {
@@ -11625,8 +11675,16 @@ async function requestCards(batch) {
     const moods = listSetting(s.moodList || DEFAULT_MOODS);
     const people = personCategories();
     const scene = sceneCategories();
-    const example = { n: 1, people: [{ role: 'main', ...Object.fromEntries(people.map(category => [category.id, categoryExample(category)])) }], ...(scene.length ? { scene: Object.fromEntries(scene.map(category => [category.id, categoryExample(category)])) } : {}), pose: [poses[0] || 'standing'], mood: [moods[0] || 'calm'], place: 'forest at night', framing: 'full body', moments: ['after being shoved', 'losing a fight', 'an ambush'] };
-    const prompt = `You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): ${poses.join(', ')}\nMoods (pick one or two, only from this list): ${moods.join(', ')}\n\nEach person has these fields:\n  "role": "main", or "background" for bystanders, crowds and anyone small or blurry behind the main people\n${cardFieldRules(people)}${scene.length ? `\nEach picture also has "scene" with these fields:\n${cardFieldRules(scene)}` : ''}\n\nRules:\n- people: the main people of the picture first, at most 6.\n- Take every field only from what the description or the tags say; never guess. Use "" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them ("after being shoved", "first meeting", "winning a fight").\n- place and framing: a few words each.\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}\n\nPictures:\n${picturesBlock(batch)}`;
+    const sidePeople = people.filter(category => category.side);
+    const example = { n: 1, count: 2, rating: 'general', people: [{ role: 'main', view: 'full', seen: '', ...Object.fromEntries(people.map(category => [category.id, categoryExample(category)])) }, { role: 'side', view: 'partly', seen: 'only an arm', ...Object.fromEntries(sidePeople.map(category => [category.id, categoryExample(category)])) }], ...(scene.length ? { scene: Object.fromEntries(scene.map(category => [category.id, categoryExample(category)])) } : {}), pose: [poses[0] || 'standing'], mood: [moods[0] || 'calm'], place: 'forest at night', framing: 'full body', moments: ['after being shoved', 'losing a fight', 'an ambush'] };
+    const prompt = `${fillTemplate(promptPart('cardPrompt'), {
+        poses: poses.join(', '),
+        moods: moods.join(', '),
+        fields: cardFieldRules(people),
+        sidefields: sidePeople.length ? cardFieldRules(sidePeople) : '  (none)',
+        scene: scene.length ? cardFieldRules(scene) : '',
+        pictures: picturesBlock(batch),
+    })}\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}`;
     const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 150 + 300 * batch.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = replyText(result);
     return { cards: parseCards(text, batch.length, poses, moods), cut: looksCut(text) };
@@ -11641,7 +11699,11 @@ async function requestCategoryUpdate(batch, list) {
     const people = list.filter(category => category.scope === 'person');
     const scene = list.filter(category => category.scope === 'picture');
     const example = { n: 1, ...(people.length ? { people: [Object.fromEntries(people.map(category => [category.id, categoryExample(category)]))] } : {}), ...(scene.length ? { scene: Object.fromEntries(scene.map(category => [category.id, categoryExample(category)])) } : {}) };
-    const prompt = `You are updating the filing cards of a roleplay picture library. For each picture below you get its description, its tags and the people already on its card. Fill only these fields.${people.length ? `\nFor each of those people, in the same order:\n${cardFieldRules(people)}` : ''}${scene.length ? `\nFor the picture, under "scene":\n${cardFieldRules(scene)}` : ''}\nTake every field only from what the description or the tags say; never guess. Use "" for what is not shown.\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}\n\nPictures:\n${picturesBlock(batch, true)}`;
+    const prompt = `${fillTemplate(promptPart('cardUpdatePrompt'), {
+        fields: people.length ? people.map(category => `  "${category.id}"${category.side ? ' (side)' : ''}: ${categoryHint(category)}`).join('\n') : '',
+        scene: scene.length ? cardFieldRules(scene) : '',
+        pictures: picturesBlock(batch, true),
+    })}\n\nReply with only a JSON array, one object per picture, like this:\n${JSON.stringify([example])}`;
     const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 100 + batch.length * (30 + 25 * list.length * 2), { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = replyText(result);
     const cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
@@ -11677,7 +11739,7 @@ function applyCategoryUpdate(entry, update, list) {
     card.people.forEach((person, index) => {
         const fresh = people[index] && typeof people[index] === 'object' ? cleanPerson(people[index]) : {};
         list.filter(category => category.scope === 'person').forEach(category => {
-            person[category.id] = fresh[category.id] || '';
+            person[category.id] = isMainPerson(person) || category.side ? fresh[category.id] || '' : '';
         });
     });
     const scene = update.scene && typeof update.scene === 'object' ? update.scene : {};
@@ -11772,7 +11834,7 @@ async function fileCards({ only = null, loud = false } = {}) {
         if (loud) {
             filing.failed.clear();
         }
-        const full = only || (s.cards ? cardUnits().filter(entry => needsCard(entry) && (filing.failed.get(entry.unitKey || entry.id) || 0) < 2) : []);
+        const full = only || (s.cards ? cardUnits().filter(entry => needsCard(entry) && (filing.failed.get(entry.unitKey || entry.id) || 0) < 2).sort((a, b) => (b.kind === 'sequence') - (a.kind === 'sequence') || (b.added || 0) - (a.added || 0)) : []);
         const light = only || !loud ? [] : cardUnits().filter(entry => !full.includes(entry) && staleCategories(entry).length);
         if ((full.length || light.length) && !s.tagProfile) {
             filing.error = 'Choose a tag profile to make filing cards.';
@@ -12102,6 +12164,7 @@ function cleanCategory(raw) {
         against: ['character', 'message', 'both'].includes(raw?.against) ? raw.against : raw?.scope === 'picture' ? 'message' : 'character',
         type: ['match', 'scale', 'each'].includes(raw?.type) ? raw.type : 'match',
         must: Boolean(raw?.must),
+        side: raw?.side === undefined ? SIDE_DEFAULT.includes(slug(raw?.id || raw?.label)) : Boolean(raw.side),
         judge: raw?.judge !== false,
         enabled: raw?.enabled !== false,
         builtin: Boolean(raw?.builtin),
@@ -12112,6 +12175,8 @@ function cleanCategory(raw) {
         points: { match: number(points.match, 3), close: number(points.close, 0), different: number(points.different, -3), missing: number(points.missing, -1) },
     };
 }
+
+const SIDE_DEFAULT = ['gender', 'species', 'build'];
 
 function defaultCategories() {
     return BUILTIN_CATEGORIES.map(category => ({ ...JSON.parse(JSON.stringify(category)), builtin: true, enabled: true, scope: 'person', against: 'character' }));
@@ -12156,7 +12221,7 @@ function categories() {
                 const [low, high] = word.slice(1).split('-').map(Number);
                 return { tag: tag.name, low, high };
             }));
-            category.hash = String(hashText(JSON.stringify([category.id, category.question, category.scope, category.type, category.tags])));
+            category.hash = String(hashText(JSON.stringify([category.id, category.question, category.scope, category.type, category.tags, ...(category.side !== SIDE_DEFAULT.includes(category.id) ? [category.side] : [])])));
             list.push(category);
         }
         const enabled = list.filter(category => category.enabled);
@@ -12337,6 +12402,23 @@ function sceneDetail(entry, fromMessage) {
     return out;
 }
 
+function sideLooks(person, member, fromMessage = new Map()) {
+    const out = { score: 0, parts: [] };
+    for (const category of personCategories().filter(item => item.side)) {
+        const result = compareValues(category, personValues(category, person), wantedValues(category, member, fromMessage));
+        if (result.score > 0) {
+            out.score += result.score;
+            out.parts.push(...result.parts);
+        }
+    }
+    return out;
+}
+
+function looksWeight() {
+    const weight = Number(settings().looksWeight);
+    return Number.isFinite(weight) ? Math.max(0, Math.min(100, weight)) / 100 : 1;
+}
+
 function looksDetail(entry, cast, fromMessage = new Map()) {
     const all = entry.card?.people || [];
     const people = all.filter(person => person.role !== 'background');
@@ -12352,30 +12434,50 @@ function looksDetail(entry, cast, fromMessage = new Map()) {
     if (!people.length) {
         return { score: scene.score, notes: [`Nobody in the picture${tail}, so looks do not count.`, ...scene.notes] };
     }
+    const layered = (entry.card.v || 1) >= 6;
+    const mains = layered ? people.filter(isMainPerson) : people;
+    const minors = layered ? people.filter(person => !isMainPerson(person)) : [];
     const notes = [];
     const matched = [];
     let score = 0;
+    let minorPoints = 0;
+    const cap = lookRules().extraCap;
     const roled = cast.some(member => member.role) ? cast : cast.map((member, index) => ({ ...member, role: index === 0 ? 'main' : 'extra' }));
     const needMain = roled.some(member => member.role === 'main');
     let mainFound = false;
+    const describe = item => `person ${item.index + 1} (${personHead(item.person) || item.person.seen || 'person'}${isPartly(item.person) ? ', partly in view' : isSide(item.person) ? ', side' : ''})`;
     for (const member of roled) {
         const main = member.role === 'main';
         notes.push(`${knownLine(member, fromMessage)}${main ? ' (main focus)' : ' (may also be in it)'}`);
-        const tried = people.map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member, fromMessage) }));
+        const tried = (mains.length || !main ? mains : people).map(person => ({ index: all.indexOf(person), person, ...compareLooks(person, member, fromMessage) }));
         const fits = tried.filter(item => !item.wrong && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
-        const describe = item => `person ${item.index + 1} (${personHead(item.person) || 'person'})`;
-        if (fits.length) {
-            const best = fits[0];
-            const points = main ? best.score : Math.min(best.score, lookRules().extraCap);
+        const others = main ? [] : minors.map(person => ({ index: all.indexOf(person), person, ...sideLooks(person, member, fromMessage) })).filter(item => item.score > 0 && !matched.includes(item.index)).sort((x, y) => y.score - x.score);
+        const room = Math.max(0, cap - minorPoints);
+        const best = fits[0];
+        const bestOther = others[0];
+        const fullPoints = best ? (main ? best.score : Math.min(best.score, cap)) : null;
+        const otherPoints = bestOther ? Math.min(bestOther.score, room) : 0;
+        if (best && (main || fullPoints >= otherPoints)) {
             matched.push(best.index);
             mainFound ||= main;
-            score += points;
-            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(points)}${main ? '' : ` (may also be in it, at most ${signed(lookRules().extraCap)})`}`);
+            score += fullPoints;
+            notes.push(`${member.name} ↔ ${describe(best)}: ${best.parts.join(', ') || 'nothing to compare'} → ${signed(fullPoints)}${main ? '' : ` (may also be in it, at most ${signed(cap)})`}`);
+        } else if (bestOther && otherPoints > 0) {
+            matched.push(bestOther.index);
+            minorPoints += otherPoints;
+            score += otherPoints;
+            notes.push(`${member.name} ↔ ${describe(bestOther)}: ${bestOther.parts.join(', ')} → ${signed(otherPoints)} (side people only add points; all of them together at most ${signed(cap)})`);
         } else if (main) {
-            notes.push(`Nobody looks like ${member.name}: ${tried.map(item => `${describe(item)} ${item.wrong}`).join('; ')}`);
+            notes.push(`Nobody looks like ${member.name}: ${tried.map(item => `${describe(item)} ${item.wrong}`).join('; ') || 'no main person on the card'}`);
         } else {
             notes.push(`${member.name} is not in the picture: that is fine → 0`);
         }
+    }
+    const weight = looksWeight();
+    if (weight !== 1 && score) {
+        const weighed = Math.round(score * weight * 10) / 10;
+        notes.push(`Looks weight ${Math.round(weight * 100)}%: ${signed(score)} → ${signed(weighed)}`);
+        score = weighed;
     }
     if (needMain && !mainFound) {
         score = lookRules().noMatch;
@@ -12405,7 +12507,7 @@ function personText(person, { judged = false } = {}) {
             parts.push(category.phrase.replace('{value}', raw));
         }
     }
-    const text = parts.join(', ') || 'person';
+    const text = `${parts.join(', ') || 'person'}${isPartly(person) ? `, partly in view${person.seen ? ` (${person.seen})` : ''}` : ''}`;
     return person.role === 'background' ? `${text}, in the background` : text;
 }
 
@@ -12543,6 +12645,7 @@ function categoryEditor(raw, onChange, onDelete) {
     choice('against', 'Compared with', { character: 'the character (look sheet)', message: 'your message', both: 'your message when it says, else the character' }, 'character');
     choice('type', 'Type', { match: 'same tag counts', scale: 'ordered scale (one step apart is close)', each: 'each tag of the character counts' }, 'match');
     check('must', 'Must match: a different tag means the person is not the character', false);
+    check('side', 'Also for side people and people only partly in view (they can only add points)', SIDE_DEFAULT.includes(slug(raw.id || raw.label)));
     check('judge', 'Show it to the AI that picks', true);
     text('phrase', 'Reads as', '{value} is replaced by the tag, for example "{value} hair".', '{value}');
     text('from', 'Read from fields', 'Card fields to read, separated by commas. Empty means its own field.', '');
@@ -12997,11 +13100,13 @@ function cardBox(entry, onChange) {
     const draw = () => {
         box.innerHTML = '';
         const card = entry.card;
-        box.appendChild(el('small', 'stis-card-head', card ? `Filing card${card.edited ? ' (edited by you)' : ''}${!card.edited && needsCard(entry) ? ' (out of date)' : ''}` : entry.description ? 'No filing card yet.' : 'A filing card is made once the picture is described.'));
+        const told = card ? headCount(entry.sections?.visual || entry.description || '') : null;
+        const differs = card && told !== null && card.count !== undefined && told !== card.count ? ` (count differs: the description says ${told})` : '';
+        box.appendChild(el('small', 'stis-card-head', card ? `Filing card${card.edited ? ' (edited by you)' : ''}${!card.edited && needsCard(entry) ? ' (out of date)' : ''}${card.rating ? ` · ${RATING_NAMES[card.rating]}${ratingAllowed(entry) ? '' : ', not sent'}` : ''}${differs}` : entry.description ? 'No filing card yet.' : 'A filing card is made once the picture is described.'));
         if (editing) {
             const area = el('textarea', 'text_pole stis-card-edit');
-            area.value = card ? cardToText(card) : 'Person: gender: ; species: ; skin: ; hair: ; build: ; outfit: ; features: \nPose: \nMood: \nPlace: \nFraming: \nMoments: ';
-            const hint = el('small', 'stis-card-hint', `One Person line per person, fields: ${personCategories().map(category => category.id).join(', ')} (separated by ;). Add "role: background" to people who should not count for looks. Moments are separated by ;. Poses: ${listSetting(settings().poseList || DEFAULT_POSES).slice(0, 12).join(', ')}…`);
+            area.value = card ? cardToText(card) : 'Count: 1\nRating: general\nPerson: role: main; gender: ; species: ; skin: ; hair: ; build: ; outfit: ; features: \nPose: \nMood: \nPlace: \nFraming: \nMoments: ';
+            const hint = el('small', 'stis-card-hint', `Count: everyone in the picture. Rating: ${RATING_LEVELS.join(', ')}. One Person line per person, fields: ${personCategories().map(category => category.id).join(', ')} (separated by ;). "role: main" for the main person, "role: side" for others (they only add points, with the fields marked for side people), "role: background" for people who do not count; "view: partly; seen: only an arm" for someone partly in view. Moments are separated by ;. Poses: ${listSetting(settings().poseList || DEFAULT_POSES).slice(0, 12).join(', ')}…`);
             const save = el('div', 'menu_button', 'Save card');
             const cancel = el('div', 'menu_button', 'Cancel');
             save.addEventListener('click', async () => {
@@ -13070,6 +13175,18 @@ function entryFacets(entry) {
     return [...cards, ...(entryAnimated(entry) ? ['file:animated'] : []), ...(entry.attention ? ['check:needs a look'] : []), ...(isMulti(entry) && entry.variants.some(item => item.deduced?.length) ? ['check:deduced'] : [])];
 }
 
+const COUNT_WORDS = { one: 1, a: 1, an: 1, single: 1, lone: 1, solo: 1, two: 2, both: 2, pair: 2, couple: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+function headCount(text) {
+    const head = String(text || '').replace(/^\s*visual\s*:\s*/i, '').slice(0, 160).toLowerCase().replace(/^(?:a|an)\s+(?:single|lone)\s+/, 'one ');
+    const match = head.match(/^(?:there (?:are|is) )?(\d+|one|a|an|single|lone|solo|two|both|pair|couple|three|four|five|six|seven|eight|nine|ten)\b(?: of)?\s+(?:people|persons?|characters?|figures?|men|women|man|woman|girls?|boys?|individuals?)\b/);
+    if (!match) {
+        return null;
+    }
+    const word = match[1];
+    return /^\d+$/.test(word) ? Number(word) : COUNT_WORDS[word] ?? null;
+}
+
 function cardFacets(entry) {
     if (!entry.card) {
         return entry.description ? ['card:none'] : [];
@@ -13088,6 +13205,9 @@ function readFacets(entry) {
     }
     entry.card.pose.forEach(value => keys.push(`pose:${value}`));
     entry.card.mood.forEach(value => keys.push(`mood:${value}`));
+    if (entry.card.rating) {
+        keys.push(`rating:${entry.card.rating}`);
+    }
     return [...new Set(keys)];
 }
 
@@ -13213,6 +13333,23 @@ function nextPicture(entry, shown) {
 const ITEMS_PER_SET = 3;
 const SEQUENCE_NEXT_POINTS = 100;
 
+function ratingOf(view) {
+    return view?.card?.rating || '';
+}
+
+function ratingAllowed(view) {
+    const rating = ratingOf(view);
+    const allowed = settings().sendRatings || {};
+    return !rating || allowed[rating] !== false;
+}
+
+function groupAllowed(entry) {
+    if (!isMulti(entry) || !groupDescribed(entry)) {
+        return ratingAllowed(entry);
+    }
+    return entry.variants.every(variant => ratingAllowed(unitView(entry, variant)));
+}
+
 function pictureCandidates(text) {
     const shown = shownInChat();
     const words = wordsOf(text);
@@ -13229,6 +13366,12 @@ function pictureCandidates(text) {
     units.forEach(choice => {
         choice.view = unitView(choice.entry, choice.variant);
         choice.key = unitKey(choice.entry, choice.variant);
+    });
+    const kept = units.filter(choice => ratingAllowed(choice.view));
+    sendState.ratedOut = units.length - kept.length;
+    units.length = 0;
+    units.push(...kept);
+    units.forEach(choice => {
         choice.score = scoreEntry(choice.view, words, new Set(), character);
     });
     units.sort((a, b) => b.score - a.score || (b.entry.lastUsed || b.entry.added) - (a.entry.lastUsed || a.entry.added));
@@ -13974,7 +14117,7 @@ async function sendWithPicture() {
         await loadLibrary();
         const candidates = await rankedCandidates(message);
         if (!candidates.length) {
-            toastr.info('The library has no described pictures yet. Save some from the picker first.', 'Image Search');
+            toastr.info(sendState.ratedOut ? `All ${sendState.ratedOut} described pictures are left out by "Ratings it may send" in the settings.` : 'The library has no described pictures yet. Save some from the picker first.', 'Image Search');
             return;
         }
         let picked = null;
@@ -18412,7 +18555,9 @@ function buildSettings() {
                             </div>
                             <small id="st_imagesearch_cat_status"></small>
                             <div class="st-imagesearch-row"><span>Points when nobody looks like the main focus</span><input type="number" id="st_imagesearch_rule_nomatch" class="text_pole"></div>
-                            <div class="st-imagesearch-row"><span>Most another person can add</span><input type="number" id="st_imagesearch_rule_extra" class="text_pole"></div>
+                            <div class="st-imagesearch-row"><span>Most another person can add (side people and people partly in view together, too)</span><input type="number" id="st_imagesearch_rule_extra" class="text_pole"></div>
+                            <div class="st-imagesearch-row"><span>Looks weight, % (100 = as is; lower lets what happens count more than looks)</span><input type="number" min="0" max="100" id="st_imagesearch_looks_weight" class="text_pole"></div>
+                            <small class="stis-help">Only the main person of a picture can lower its score. Side people and people only partly in view are filled with the categories ticked "Also for side people" and can only add points.</small>
                             <details>
                                 <summary>Export, import, reset</summary>
                                 <textarea id="st_imagesearch_cat_json" class="text_pole" placeholder="Export fills this box; paste categories here and Import"></textarea>
@@ -18422,6 +18567,22 @@ function buildSettings() {
                                     <div id="st_imagesearch_cat_reset" class="menu_button">Reset to the built-in categories</div>
                                 </div>
                             </details>
+                        </details>
+                        <div class="stis-set">
+                            <div class="stis-label">Ratings it may send</div>
+                            <div class="st-imagesearch-row stis-wrap" id="st_imagesearch_send_ratings"></div>
+                            <small class="stis-help">Every filing card gets a rating, judged on everything the picture shows: nudity and sex, but also violence, blood, gore and anything disturbing. A picture or item whose rating is not ticked is never sent, offered in the lorebook or shown to the AI that picks. Pictures without a card yet are not held back.</small>
+                        </div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">Filing prompts</summary>
+                            <div class="stis-label">Making cards</div>
+                            <textarea id="st_imagesearch_card_prompt" class="text_pole" rows="10"></textarea>
+                            <small class="stis-help">Filled in: {{poses}}, {{moods}}, {{fields}} (the person categories), {{sidefields}} (those ticked for side people), {{scene}} (the picture categories), {{pictures}} (the batch). {{#scene}}…{{/scene}}: only when there are picture categories. The JSON shape of the answer is added after your text.</small>
+                            <div id="st_imagesearch_card_prompt_reset" class="menu_button">Reset this prompt</div>
+                            <div class="stis-label">Updating cards (after a category changes)</div>
+                            <textarea id="st_imagesearch_card_update_prompt" class="text_pole" rows="6"></textarea>
+                            <small class="stis-help">Filled in: {{fields}}, {{scene}}, {{pictures}}. {{#fields}}…{{/fields}} and {{#scene}}…{{/scene}}: only when there are some.</small>
+                            <div id="st_imagesearch_card_update_prompt_reset" class="menu_button">Reset this prompt</div>
                         </details>
                         <details class="stis-set">
                             <summary>Pose and mood lists</summary>
@@ -18719,7 +18880,7 @@ function buildSettings() {
     bind('st_imagesearch_hunt', 'huntTags', 'checked');
     bind('st_imagesearch_hunt_iqdb', 'huntIqdb', 'checked');
     bind('st_imagesearch_vision_prompt', 'visionPrompt');
-    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt'], ['st_imagesearch_show_rule', 'showRule'], ['st_imagesearch_spell_prompt', 'spellPrompt']].forEach(([id, key]) => {
+    [['st_imagesearch_gif_note', 'gifNote'], ['st_imagesearch_describe_rules', 'describeRules'], ['st_imagesearch_board_note', 'boardNote'], ['st_imagesearch_again_prompt', 'againPrompt'], ['st_imagesearch_loop_note', 'loopNote'], ['st_imagesearch_one_moving', 'oneMoving'], ['st_imagesearch_force_prompt', 'forcePrompt'], ['st_imagesearch_lead_prompt', 'leadPrompt'], ['st_imagesearch_show_rule', 'showRule'], ['st_imagesearch_spell_prompt', 'spellPrompt'], ['st_imagesearch_card_prompt', 'cardPrompt'], ['st_imagesearch_card_update_prompt', 'cardUpdatePrompt']].forEach(([id, key]) => {
         const area = document.getElementById(id);
         area.value = promptPart(key);
         const changed = () => {
@@ -18852,6 +19013,28 @@ function buildSettings() {
     };
     ruleNoMatch.addEventListener('input', rulesChanged);
     ruleExtra.addEventListener('input', rulesChanged);
+    const weightBox = document.getElementById('st_imagesearch_looks_weight');
+    weightBox.value = String(Math.round(looksWeight() * 100));
+    weightBox.addEventListener('input', () => {
+        const value = Number(weightBox.value);
+        s.looksWeight = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 100;
+        save();
+    });
+    const ratingsRow = document.getElementById('st_imagesearch_send_ratings');
+    s.sendRatings = { general: true, sensitive: true, questionable: true, explicit: true, ...(s.sendRatings || {}) };
+    for (const level of RATING_LEVELS) {
+        const label = el('label', 'checkbox_label');
+        const box = el('input');
+        box.type = 'checkbox';
+        box.checked = s.sendRatings[level] !== false;
+        box.addEventListener('change', () => {
+            s.sendRatings[level] = box.checked;
+            save();
+            scheduleLorebookSync();
+        });
+        label.append(box, el('span', '', ` ${RATING_NAMES[level]}`));
+        ratingsRow.appendChild(label);
+    }
     const catJson = document.getElementById('st_imagesearch_cat_json');
     document.getElementById('st_imagesearch_cat_export').addEventListener('click', () => {
         catJson.value = JSON.stringify(storedCategories(), null, 2);

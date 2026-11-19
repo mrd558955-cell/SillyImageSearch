@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.63.0';
+const VERSION = '2.64.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -122,6 +122,7 @@ const DEFAULTS = {
     spellPrompt: '',
     spellAi: true,
     siteSpellings: {},
+    pixiv: { enabled: false, kind: 'all', order: 'date_d', match: 's_tag', hideAi: false, limit: 400 },
     leadPrompt: '',
     inlinePictures: true,
     keepLibraryFiles: true,
@@ -513,6 +514,170 @@ function siteEntries() {
 }
 
 const ALL_SITES = '*';
+const PIXIV = 'pixiv.net';
+const BRIDGE = '/api/plugins/pixiv-bridge';
+
+function pixivSettings() {
+    const s = settings();
+    if (!s.pixiv || typeof s.pixiv !== 'object') {
+        s.pixiv = { enabled: false };
+    }
+    return s.pixiv;
+}
+
+function pixivOn() {
+    return Boolean(pixivSettings().enabled);
+}
+
+function siteEntry(domain) {
+    if (domain === PIXIV) {
+        return pixivOn() ? { domain: PIXIV, extra: '' } : null;
+    }
+    return siteEntries().find(entry => entry.domain === domain) || null;
+}
+
+function pixivTags(list) {
+    const out = [];
+    for (const entry of Array.isArray(list) ? list : []) {
+        const tag = normalizeTag(typeof entry === 'string' ? entry : entry?.tag);
+        const en = normalizeTag(typeof entry === 'object' ? entry?.en : '');
+        if (tag) {
+            out.push(tag);
+        }
+        if (en && en !== tag) {
+            out.push(en);
+        }
+    }
+    return [...new Set(out)];
+}
+
+function pixivError(result) {
+    if (result?.data?.error) {
+        return `Pixiv: ${result.data.error}`;
+    }
+    if (result?.status === 404 || /Cannot GET|not found/i.test(String(result?.text || '').slice(0, 300))) {
+        return 'The Pixiv bridge is not running on SillyTavern\'s server. See Setup → Pixiv in the Image Search settings.';
+    }
+    return `The Pixiv bridge answered ${result?.status ?? '?'}.`;
+}
+
+async function bridgeCall(path, body = null) {
+    const options = body ? { method: 'POST', headers: { ...ctx().getRequestHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { headers: ctx().getRequestHeaders() };
+    const result = await rawFetch(`${BRIDGE}${path}`, options);
+    if (!result.ok || !result.data || result.data.error) {
+        throw new Error(pixivError(result));
+    }
+    return result.data;
+}
+
+async function pixivFamily(item) {
+    const { item: work, pages } = await bridgeCall(`/work/${item.pixivId}`);
+    const tags = pixivTags(work?.tags);
+    if (tags.length) {
+        item.tags = [...new Set([...tags, ...item.tags])];
+    }
+    const list = Array.isArray(pages) && pages.length ? pages : [{ regular: '', thumb: '' }];
+    return list.map((page, index) => {
+        if (index === 0) {
+            return item;
+        }
+        return {
+            ...item,
+            img: `${BRIDGE}${page.regular}`,
+            thumb: `${BRIDGE}${page.thumb || page.regular}`,
+            alts: [],
+            anim: '',
+            page: `${item.page}#${index + 1}`,
+            pageIndex: index,
+            tags: item.tags,
+        };
+    });
+}
+
+function readZip(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    let end = -1;
+    for (let at = bytes.length - 22; at >= Math.max(0, bytes.length - 65557); at--) {
+        if (view.getUint32(at, true) === 0x06054b50) {
+            end = at;
+            break;
+        }
+    }
+    if (end < 0) {
+        throw new Error('The animation file is not a zip.');
+    }
+    const count = view.getUint16(end + 10, true);
+    let at = view.getUint32(end + 16, true);
+    const files = new Map();
+    for (let n = 0; n < count && view.getUint32(at, true) === 0x02014b50; n++) {
+        const method = view.getUint16(at + 10, true);
+        const size = view.getUint32(at + 20, true);
+        const nameLength = view.getUint16(at + 28, true);
+        const extraLength = view.getUint16(at + 30, true);
+        const commentLength = view.getUint16(at + 32, true);
+        const local = view.getUint32(at + 42, true);
+        const name = new TextDecoder().decode(bytes.subarray(at + 46, at + 46 + nameLength));
+        const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
+        files.set(name, { method, data: bytes.subarray(start, start + size) });
+        at += 46 + nameLength + extraLength + commentLength;
+    }
+    return files;
+}
+
+async function zipFile(file) {
+    if (file.method === 0) {
+        return file.data;
+    }
+    if (file.method === 8 && typeof DecompressionStream === 'function') {
+        return new Uint8Array(await new Response(new Blob([file.data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    }
+    throw new Error('The animation file is packed in a way this browser cannot open.');
+}
+
+async function frameData(bytes, width, height) {
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+    const w = width || bitmap.width;
+    const h = height || Math.round(bitmap.height * (w / bitmap.width));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const draw = canvas.getContext('2d', { willReadFrequently: true });
+    draw.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    return { data: draw.getImageData(0, 0, w, h).data, width: w, height: h };
+}
+
+async function ugoiraGif(id) {
+    const meta = await bridgeCall(`/ugoira/${id}`);
+    const response = await fetch(`${BRIDGE}${meta.zip}`, { headers: ctx().getRequestHeaders() });
+    if (!response.ok) {
+        throw new Error(`Could not get the animation's frames (${response.status}).`);
+    }
+    const files = readZip(await response.arrayBuffer());
+    const frames = (meta.frames || []).filter(frame => files.has(frame.file));
+    if (!frames.length) {
+        throw new Error('The animation has no frames.');
+    }
+    const first = await frameData(await zipFile(files.get(frames[0].file)));
+    const scale = Math.min(1, 600 / Math.max(first.width, first.height));
+    const width = Math.max(1, Math.round(first.width * scale));
+    const height = Math.max(1, Math.round(first.height * scale));
+    const picks = frames.length <= 6 ? frames : Array.from({ length: 6 }, (_, i) => frames[Math.round(i * (frames.length - 1) / 5)]);
+    const samples = [];
+    for (const frame of picks) {
+        samples.push((await frameData(await zipFile(files.get(frame.file)), width, height)).data);
+    }
+    const encoder = gifEncoder(width, height, buildPalette(samples));
+    samples.length = 0;
+    for (const frame of frames) {
+        const { data } = await frameData(await zipFile(files.get(frame.file)), width, height);
+        encoder.addFrame(data, Math.max(20, Number(frame.delay) || 100));
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    const { bytes } = encoder.finish();
+    return new Blob([bytes], { type: 'image/gif' });
+}
 
 function activeDomain() {
     const s = settings();
@@ -553,7 +718,7 @@ function hostOf(url) {
 }
 
 function proxyUrl(url) {
-    return `/proxy/${encodeURIComponent(url)}`;
+    return String(url).startsWith('/') ? url : `/proxy/${encodeURIComponent(url)}`;
 }
 
 async function fetchWithin(url, options = {}, ms = 60000) {
@@ -880,6 +1045,31 @@ const ENGINES = {
         rating: post => ({ s: 'general', q: 'questionable', e: 'explicit' }[String(post.rating || '').toLowerCase()] || ''),
         postTags: post => tagList(post.tags),
     },
+    pixiv: {
+        cap: 8,
+        pageSize: 60,
+        quiet: true,
+        url: (origin, tags, extra, page) => `${BRIDGE}/search?word=${encodeURIComponent(tags.join(' '))}&p=${page + 1}`,
+        tags: (userTags, ratings) => {
+            const p = pixivSettings();
+            const mode = ratings.general && !ratings.questionable && !ratings.explicit ? 'safe' : !ratings.general && !ratings.sensitive ? 'r18' : 'all';
+            return [...userTags.map(tag => tag.replace(/_/g, ' ')), `pixiv-mode:${mode}`, `pixiv-kind:${p.kind || 'all'}`, `pixiv-order:${p.order || 'date_d'}`, `pixiv-match:${p.match || 's_tag'}`, ...(p.hideAi ? ['pixiv-ai:hide'] : [])];
+        },
+        parse: result => (result.ok && result.data && Array.isArray(result.data.items) ? result.data.items : null),
+        image: post => (post.regular ? `${BRIDGE}${post.regular}` : ''),
+        full: post => (post.regular ? `${BRIDGE}${post.regular}` : ''),
+        thumb: post => (post.thumb ? `${BRIDGE}${post.thumb}` : ''),
+        postUrl: post => `https://www.pixiv.net/artworks/${post.id}`,
+        siteUrl: (origin, tags) => `https://www.pixiv.net/tags/${encodeURIComponent(tags.filter(tag => !tag.startsWith('pixiv-') && !tag.startsWith('-')).join(' '))}/artworks`,
+        parentId: () => '',
+        hasChildren: post => Number(post.pages) > 1,
+        md5: () => '',
+        family: () => [['pages']],
+        rating: post => (Number(post.restrict) > 0 ? 'explicit' : 'general'),
+        postTags: post => pixivTags(post.tags),
+        more: post => ({ pixivId: String(post.id), pageCount: Number(post.pages) || 1, title: String(post.title || ''), artist: String(post.userName || ''), ai: Boolean(post.ai), ...(post.kind === 'ugoira' ? { anim: `${BRIDGE}/ugoira-gif/${post.id}` } : {}) }),
+        familyItems: item => pixivFamily(item),
+    },
     moebooru: {
         cap: 4,
         pageSize: 100,
@@ -963,7 +1153,7 @@ function withFileHint(url, name) {
 }
 
 function filePath(url) {
-    const parsed = new URL(url);
+    const parsed = new URL(url, 'https://local.invalid');
     return /\.\w{2,5}$/.test(parsed.pathname) ? parsed.pathname : parsed.hash || parsed.pathname;
 }
 
@@ -1102,6 +1292,7 @@ function postsToItems(engineName, posts, origin, ratings, localTags, stats, excl
             md5: engine.md5(post),
             root: parentId || postId,
             siteFiles: engineName === 'danbooru' ? { thumb: siteCopy(thumb, origin), img: siteCopy(img, origin), full: siteCopy(original, origin) } : null,
+            ...(engine.more ? engine.more(post) : {}),
         });
     }
     return items;
@@ -1152,6 +1343,9 @@ async function detectEngine(entry, probeTags) {
 }
 
 async function engineOf(entry, tags) {
+    if (entry.domain === PIXIV) {
+        return 'pixiv';
+    }
     const known = settings().engines[entry.domain];
     if (known) {
         return known;
@@ -1197,6 +1391,9 @@ async function fetchPage(entry, engineName, required, page, wanted = required, n
             noOrderSites.add(entry.domain);
             continue;
         }
+        if (posts === null && engineName === 'pixiv') {
+            throw new Error(pixivError(result));
+        }
         if (posts === null) {
             if (engineName === 'danbooru' && !noOrder) {
                 noOrder = true;
@@ -1237,7 +1434,7 @@ function mayHaveFamily(item) {
 }
 
 function supportsFamily(item) {
-    const engine = ENGINES[settings().engines[item.domain]];
+    const engine = ENGINES[item.domain === PIXIV ? 'pixiv' : settings().engines[item.domain]];
     return Boolean(engine && (item.root || item.postId) && engine.family(item.root || item.postId).length);
 }
 
@@ -1248,11 +1445,14 @@ async function fetchFamily(item) {
     }
     const promise = (async () => {
         const s = settings();
-        const entry = siteEntries().find(e => e.domain === item.domain);
-        const engineName = s.engines[item.domain];
+        const entry = siteEntry(item.domain);
+        const engineName = item.domain === PIXIV ? 'pixiv' : s.engines[item.domain];
         const engine = ENGINES[engineName];
         if (!entry || !engine || !item.root) {
             return [item];
+        }
+        if (engine.familyItems) {
+            return engine.familyItems(item);
         }
         const origin = `https://${entry.domain}`;
         const noOrder = noOrderSites.has(entry.domain);
@@ -1291,7 +1491,8 @@ function createBrowse(domain, tags, required, negatives = []) {
 }
 
 function searchScope(domain, negatives = []) {
-    return `${domainsFor(domain).join(',')}|${excludedTags().join(',')}|${negatives.join(',')}`;
+    const p = domain === PIXIV ? pixivSettings() : null;
+    return `${domainsFor(domain).join(',')}|${excludedTags().join(',')}|${negatives.join(',')}${p ? `|${p.kind}|${p.order}|${p.match}|${p.hideAi}` : ''}`;
 }
 
 function sameTags(a, b) {
@@ -1559,7 +1760,7 @@ async function loadMore(browse) {
         if (browse.subs) {
             return loadMoreAll(browse);
         }
-        const entry = siteEntries().find(e => e.domain === browse.domain);
+        const entry = siteEntry(browse.domain);
         if (!entry) {
             throw new Error(`${browse.domain} is not in the approved sites.`);
         }
@@ -2454,6 +2655,10 @@ async function fetchImageBlob(downloadUrl, variant, route) {
 }
 
 async function downloadImage(url, variants = ACCEPT_VARIANTS) {
+    const ugoira = String(url).match(/^\/api\/plugins\/pixiv-bridge\/ugoira-gif\/(\d+)$/);
+    if (ugoira) {
+        return { blob: await ugoiraGif(ugoira[1]), format: 'gif' };
+    }
     const errors = [];
     const viaFetcher = fetcherLink(url);
     if (viaFetcher) {
@@ -14409,7 +14614,7 @@ async function openPicker(initialTags = null, focus = null) {
         return;
     }
     const entries = siteEntries();
-    if (!entries.length) {
+    if (!entries.length && !pixivOn()) {
         toastr.warning('Add at least one image board in the Image Search settings.', 'Image Search');
         return;
     }
@@ -14452,6 +14657,7 @@ async function openPicker(initialTags = null, focus = null) {
         libClear: el('div', 'menu_button stis-lib-clear', 'Clear all'),
         selectToggle: el('div', 'menu_button stis-tab stis-select-btn'),
         sites: el('div', 'stis-sites'),
+        pixivBar: el('div', 'stis-pixiv-bar'),
         favs: el('div', 'stis-favs'),
         selectBar: el('div', 'stis-select-bar'),
         selectInfo: el('span', 'stis-select-info'),
@@ -14489,7 +14695,12 @@ async function openPicker(initialTags = null, focus = null) {
         option.value = entry.domain;
         ui.site.appendChild(option);
     }
-    ui.site.value = activeDomain();
+    if (pixivOn()) {
+        const option = el('option', '', 'Pixiv');
+        option.value = PIXIV;
+        ui.site.appendChild(option);
+    }
+    ui.site.value = s.lastSite === PIXIV && pixivOn() ? PIXIV : activeDomain() || (pixivOn() ? PIXIV : '');
     ui.chips.appendChild(ui.input);
     ui.top.append(ui.site, ui.chips, ui.suggest, ui.search);
     ui.chipMenu.hidden = true;
@@ -14503,7 +14714,7 @@ async function openPicker(initialTags = null, focus = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.check, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
+    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.pixivBar, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.check, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
     ui.blocked.hidden = true;
     ui.check.hidden = true;
     thumbTrouble.clear();
@@ -14843,7 +15054,55 @@ async function openPicker(initialTags = null, focus = null) {
         });
     }
 
+    function renderPixivBar() {
+        ui.pixivBar.innerHTML = '';
+        ui.pixivBar.hidden = ui.site.value !== PIXIV || !ui.libraryView.hidden;
+        if (ui.pixivBar.hidden) {
+            return;
+        }
+        const p = pixivSettings();
+        const group = (label, key, choices) => {
+            const row = el('span', 'stis-pixiv-group');
+            row.appendChild(el('small', 'stis-lib-filter-label', label));
+            for (const [value, text, title] of choices) {
+                const chip = el('span', 'stis-fchip', text);
+                chip.classList.toggle('stis-fchip-on', (p[key] ?? choices[0][0]) === value);
+                if (title) {
+                    chip.title = title;
+                }
+                chip.addEventListener('click', () => {
+                    p[key] = value;
+                    save();
+                    renderPixivBar();
+                    runSearch();
+                });
+                row.appendChild(chip);
+            }
+            ui.pixivBar.appendChild(row);
+        };
+        group('Kind', 'kind', [['all', 'All'], ['illust', 'Illustrations'], ['manga', 'Manga'], ['ugoira', 'Animated', 'Pixiv animations, saved as GIFs']]);
+        group('Order', 'order', [['date_d', 'Newest'], ['date', 'Oldest']]);
+        group('Match', 'match', [['s_tag', 'Part of a tag'], ['s_tag_full', 'Whole tag'], ['s_tc', 'Title and caption']]);
+        group('AI', 'hideAi', [[false, 'Show'], [true, 'Hide', 'Leave out works marked as AI-generated']]);
+        const shortcuts = el('span', 'stis-pixiv-group');
+        shortcuts.appendChild(el('small', 'stis-lib-filter-label', 'Yours'));
+        for (const [word, text, title] of [['pixiv:bookmarks', 'Bookmarks', 'Your public Pixiv bookmarks'], ['pixiv:following', 'Following', 'New works of the artists you follow']]) {
+            const chip = el('span', 'stis-fchip', text);
+            chip.title = title;
+            chip.classList.toggle('stis-fchip-on', tags.length === 1 && tags[0] === word);
+            chip.addEventListener('click', () => {
+                setTags([word], true, [word]);
+                tagsChanged();
+                renderPixivBar();
+            });
+            shortcuts.appendChild(chip);
+        }
+        ui.pixivBar.appendChild(shortcuts);
+        ui.pixivBar.appendChild(el('small', 'stis-help', 'Paste a Pixiv link (a work or an artist) as a tag to open it. Every search here is one request to Pixiv, so nothing is fetched until you ask.'));
+    }
+
     function renderSites() {
+        renderPixivBar();
         ui.sites.innerHTML = '';
         const skip = new Set(s.skipSites || []);
         const on = entries.filter(entry => !skip.has(entry.domain)).length;
@@ -15070,8 +15329,9 @@ async function openPicker(initialTags = null, focus = null) {
     lengthBox.append(el('i', 'fa-solid fa-film'), el('span', '', ' Videos'), lengthInput('videoMin', 'Hide videos shorter than this many seconds (empty: no limit)'), el('span', '', 'to'), lengthInput('videoMax', 'Hide videos longer than this many seconds (empty: no limit)'), el('span', '', 's'));
     lengthBox.title = 'Only show videos whose length is in this range, in seconds; videos whose length is not known yet stay dimmed until it is';
     const familyBadge = family => {
-        const count = family.members.length;
-        const more = groupPending(family) || (family.members.some(mayHaveFamily) && !family.loaded);
+        const pages = family.loaded ? 0 : Number(family.rep.pageCount) || 0;
+        const count = Math.max(family.members.length, pages);
+        const more = !pages && (groupPending(family) || (family.members.some(mayHaveFamily) && !family.loaded));
         const inside = hiddenAnim(family);
         family.badge.innerHTML = '';
         family.badge.hidden = count < 2 && !more;
@@ -15123,7 +15383,7 @@ async function openPicker(initialTags = null, focus = null) {
         }
     };
     const checkGroup = family => {
-        if (family.checking || !groupPending(family)) {
+        if (family.checking || !groupPending(family) || family.rep.domain === PIXIV) {
             return;
         }
         family.checking = true;
@@ -15216,7 +15476,7 @@ async function openPicker(initialTags = null, focus = null) {
             const family = { rep: item, members: [item], badge, loaded: false, cell };
             gridFamilies.set(key, family);
             familyBadge(family);
-            if (groupPending(family)) {
+            if (groupPending(family) && item.domain !== PIXIV) {
                 groupCells.set(cell, family);
                 groupWatch.observe(cell);
             }
@@ -17882,6 +18142,16 @@ function buildSettings() {
                             <small class="stis-help">One per line. Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (such as rule34.paheal.net). A login key goes after the domain: <code>gelbooru.com api_key=XXX&amp;user_id=123</code></small>
                             <div class="st-imagesearch-row"><span id="st_imagesearch_engines"></span><div id="st_imagesearch_redetect" class="menu_button">Re-detect sites</div></div>
                         </div>
+                        <details class="stis-set stis-prompt-parts" id="st_imagesearch_pixiv_box">
+                            <summary class="stis-label">Pixiv</summary>
+                            <small class="stis-help">Pixiv has no public way in for programs, so it goes through the Pixiv bridge: a small plugin in SillyTavern's server that uses your own Pixiv login and says honestly what it is. It asks Pixiv only when you search, open a work or save one, one request at a time and spaced out; searches are kept for 15 minutes, it pauses by itself when Pixiv asks it to slow down, and it stops at the daily limit below. Pixiv is a choice of its own in the picker and never part of All sites. Your login stays on the server, in SillyTavern's data folder.</small>
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_pixiv"> <span>Search Pixiv</span></label>
+                            <small id="st_imagesearch_pixiv_status" class="stis-help"></small>
+                            <div class="st-imagesearch-row"><input type="password" id="st_imagesearch_pixiv_cookie" class="text_pole" placeholder="PHPSESSID" autocomplete="off"><div id="st_imagesearch_pixiv_login" class="menu_button">Log in</div><div id="st_imagesearch_pixiv_logout" class="menu_button">Log out</div></div>
+                            <small class="stis-help">Your login is the PHPSESSID cookie of a browser where you are logged in to Pixiv (on a computer: open pixiv.net, press F12, Storage or Application → Cookies → www.pixiv.net → PHPSESSID, copy its value). It looks like 12345678_AbCdEf…. Without it, Pixiv shows no R-18 works and no bookmarks or follows. For R-18, also turn it on in your Pixiv account settings.</small>
+                            <div class="st-imagesearch-row"><span>Pixiv requests a day, at most</span><input type="number" min="20" max="5000" id="st_imagesearch_pixiv_limit" class="text_pole"></div>
+                            <div id="st_imagesearch_pixiv_check" class="menu_button">Check the bridge</div>
+                        </details>
                         <details class="stis-set stis-prompt-parts">
                             <summary class="stis-label">Tags across sites</summary>
                             <small class="stis-help">Each site has its own words: uzumaki_naruto on one, naruto_uzumaki on another, female instead of 1girl on e621. Before a search, each required tag is checked on each site; when the site does not use it, its own word is found from the other order of a two-part name, your links ("Same tag, written differently"), the site's aliases, and last the Tag model choosing among the site's real tags. What is found is remembered here; when a site has no word for a required tag, the search there goes on with the tag as typed and the status line says so. Preferred and left-out tags only use what is already known.</small>
@@ -18303,6 +18573,66 @@ function buildSettings() {
     });
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_spell_ai', 'spellAi', 'checked');
+    const pixivBox = document.getElementById('st_imagesearch_pixiv');
+    const pixivStatus = document.getElementById('st_imagesearch_pixiv_status');
+    const pixivLimit = document.getElementById('st_imagesearch_pixiv_limit');
+    const showPixiv = async () => {
+        pixivStatus.textContent = 'Checking the bridge…';
+        try {
+            const st = await bridgeCall('/status');
+            const who = st.loggedIn ? `logged in as ${st.userName || 'you'} (#${st.userId})` : 'not logged in (no R-18, bookmarks or follows)';
+            const pause = st.pausedFor ? ` · paused ${Math.ceil(st.pausedFor / 60)} min (Pixiv asked)` : '';
+            pixivStatus.textContent = `Bridge ${st.version} running · ${who} · ${st.today} of ${st.limit} requests today${pause}${st.lastError ? ` · last answer: ${st.lastError}` : ''}`;
+            pixivLimit.value = String(st.limit);
+            pixivSettings().limit = st.limit;
+        } catch (error) {
+            pixivStatus.textContent = `${String(error?.message || error)} It comes with the SillyTavern copy on the "sillytavern-pixiv" branch of github.com/mrd558955-cell/SillyImageSearch (ST-android: Manage ST → install from GitHub), and needs enableServerPlugins: true in SillyTavern's config.yaml.`;
+        }
+    };
+    pixivBox.checked = pixivOn();
+    pixivLimit.value = String(pixivSettings().limit || 400);
+    pixivBox.addEventListener('change', () => {
+        pixivSettings().enabled = pixivBox.checked;
+        save();
+        if (pixivBox.checked) {
+            showPixiv();
+        }
+    });
+    document.getElementById('st_imagesearch_pixiv_check').addEventListener('click', showPixiv);
+    document.getElementById('st_imagesearch_pixiv_login').addEventListener('click', async () => {
+        const field = document.getElementById('st_imagesearch_pixiv_cookie');
+        if (!field.value.trim()) {
+            return;
+        }
+        pixivStatus.textContent = 'Logging in…';
+        try {
+            await bridgeCall('/login', { cookie: field.value.trim() });
+            field.value = '';
+            await showPixiv();
+        } catch (error) {
+            pixivStatus.textContent = String(error?.message || error);
+        }
+    });
+    document.getElementById('st_imagesearch_pixiv_logout').addEventListener('click', async () => {
+        try {
+            await bridgeCall('/logout', {});
+        } catch (error) {
+            pixivStatus.textContent = String(error?.message || error);
+            return;
+        }
+        showPixiv();
+    });
+    pixivLimit.addEventListener('change', async () => {
+        const limit = Math.max(20, Math.min(5000, Number(pixivLimit.value) || 400));
+        pixivSettings().limit = limit;
+        save();
+        try {
+            await bridgeCall('/settings', { limit });
+            showPixiv();
+        } catch (error) {
+            pixivStatus.textContent = String(error?.message || error);
+        }
+    });
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');
     bind('st_imagesearch_group_story', 'groupStory', 'checked');

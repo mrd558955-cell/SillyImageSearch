@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.65.0';
+const VERSION = '2.65.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -35,7 +35,7 @@ const DEFAULT_AGAIN_PROMPT = 'This is the description of this picture so far:\n\
 const DEFAULT_LOOP_NOTE = 'This item is a loop: it repeats. Describe the repeating moment as one moment, not as a story.{{#before_loop}} The item before is a loop too.{{/before_loop}}{{#before_not_loop}} The item before is not a loop.{{/before_not_loop}}{{#after_loop}} The item after is a loop too.{{/after_loop}}{{#after_not_loop}} The item after is not a loop.{{/after_not_loop}}';
 const DEFAULT_ONE_MOVING = 'Item {{item}} is the only item that is not a loop: if this sequence has a climax, it is most likely there.';
 const DEFAULT_FORCE_PROMPT = '[The app will show a picture together with your next reply. Write the reply so the story leads into the moment the picture shows, as the result of or the reaction to the last message, and describe that moment in the story itself. The people in the picture may not look like the characters (hair, eyes, skin, clothes, build): keep the characters as the story has them and let the picture\'s looks go; what matters is what happens. Do not mention a picture, an image or tags.{{#continues}} This picture continues a sequence already shown in this chat ({{continues}}): pick up from that moment, so the story moves on from it to this one.{{/continues}}{{#marker}} The one exception: write [picture] alone on its own line where the picture should appear, right after the lines that describe its moment.{{/marker}}{{#lead}}\nHow the story gets there ({{user}} chose this): {{lead}}{{/lead}}\nThe picture shows:\n{{picture}}]';
-const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- The picture\'s moment should follow from the story, as the result of or the reaction to the newest message.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#continues}}\n- The picture continues a sequence already shown in this chat: each way starts from the moment shown before.{{/continues}}{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#continues}}\n\nWhere it is in the sequence:\n{{continues}}{{/continues}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
+const DEFAULT_LEAD_PROMPT = 'A roleplay continues, and {{char}}\'s next reply will come with a picture. Suggest 3 different ways the story can get to the moment the picture shows.\n\nGuidelines:\n- Blend the story and the picture. It does not have to be perfect: some things can be bent on either side (the place, the time, clothes, a small detail of what happens) so they fit together.\n- Everything in the story so far has already happened. Start after the end of the newest message: never retell or redo what it already shows. The picture\'s moment should follow from it, as its result or a reaction to it.\n- Keep the characters as the story has them. If the picture\'s looks (hair, skin, clothes) do not fit them, let those looks go.\n- Never give names to the people in the picture: use the names the story uses, or a plain description.\n- Each way is 1 to 3 sentences: what happens to get there, and what the picture\'s moment means in the story.\n- Make the 3 ways really different from each other.{{#continues}}\n- The picture continues a sequence already shown in this chat: each way starts from the moment shown before.{{/continues}}{{#next}}\n- The picture is one step of a sequence and the next step comes later: leave room for it.{{/next}}\n\nHow the characters look:\n{{looks}}\n\nStory so far:\n{{story}}{{#typed}}\n\n{{user}}\'s newest message, sent with the picture:\n{{typed}}{{/typed}}{{#wish}}\n\nWhat {{user}} wants:\n{{wish}}{{/wish}}\n\nThe picture{{#focus}} (about {{focus}}){{/focus}}:\n{{picture}}{{#continues}}\n\nWhere it is in the sequence:\n{{continues}}{{/continues}}{{#next}}\n\nThe next step of the sequence:\n{{next}}{{/next}}\n\nAnswer with exactly 3 lines and nothing else:\n1. …\n2. …\n3. …';
 const DEFAULT_SHOW_RULE = 'This chat app can show real pictures to the user: when a reply contains a picture tag such as [pic:abc123] on its own line, the app removes the tag and displays that picture in the chat. You can do this whenever a picture fits the scene, and always when the user asks you to show or bring in a picture. The people in a picture may not look like the characters (hair, eyes, skin, clothes, build): a picture can be shown when what happens in it fits; keep the characters as the story has them and let the picture\'s looks go.';
 const DEFAULT_SPELL_PROMPT = 'On image boards, the same thing is often tagged differently on each site. The tag "{{tag}}"{{#meaning}} ({{meaning}}){{/meaning}} is not used on {{site}}. Which one of these {{site}} tags means the same thing? Pick one only if it really is the same thing, not just something related or a part of it.\n\n{{candidates}}\n\nReply with the one tag exactly as written. If none of them is the same thing, reply with the tag {{site}} most likely uses for it instead, or none if you do not know.';
 const DEFAULT_CARD_PROMPT = 'You are filing the pictures of a roleplay picture library, so the right picture can be found quickly later. For each picture below you get its description and tags. Fill one filing card per picture.\n\nPoses (pick one or two, only from this list): {{poses}}\nMoods (pick one or two, only from this list): {{moods}}\n\ncount: how many people the description counts, including anyone only partly in view (an arm from the shadows, someone behind her).\nrating: how strong the picture is, judging everything it shows: nudity and sex, but also violence, blood, gore, cruelty and anything disturbing. \"general\": fine for anyone. \"sensitive\": mild (suggestive clothes or poses, a fight without injuries, a little blood). \"questionable\": strong (partial nudity, sexual suggestion, wounds, real violence). \"explicit\": R-18 (sex, exposed private parts, gore, graphic violence or cruelty). Take the strongest thing in the picture.\n\npeople: everyone the description counts, at most 6, the main person first. Each person has:\n  \"role\": \"main\" for the one person the description spends the most on, \"side\" for the other people, \"background\" for bystanders, crowds and anyone small or blurry far behind\n  \"view\": \"full\", or \"partly\" when only part of them is in view\n  \"seen\": for someone partly in view, a few words for what is seen (\"only a muscular arm\", \"a shadow behind her\"), else \"\"\nFor the main person, fill:\n{{fields}}\nFor side people and people partly in view, fill only these, from the little the description says about them, and leave the rest out:\n{{sidefields}}\n{{#scene}}Each picture also has \"scene\" with these fields:\n{{scene}}\n{{/scene}}\nRules:\n- Take every field only from what the description or the tags say; never guess. Use \"\" for what is not shown.\n- moments: 3 to 5 short story moments this picture could illustrate, written the way a story would say them (\"after being shoved\", \"first meeting\", \"winning a fight\").\n- place and framing: a few words each.\n\nPictures:\n{{pictures}}';
@@ -13411,12 +13411,26 @@ function appearanceNotes() {
     return lines;
 }
 
+const STORY_NEWEST = 3000;
+const STORY_OLDER = 600;
+
+function storyText(text, limit) {
+    const clean = cleanForPrompt(text);
+    if (clean.length <= limit) {
+        return clean;
+    }
+    const head = Math.round(limit * 0.4);
+    return `${clean.slice(0, head).trim()} … ${clean.slice(-(limit - head)).trim()}`;
+}
+
 function storyLines(count = 4) {
-    return (ctx().chat || [])
+    const list = (ctx().chat || [])
         .filter(message => message && !message.is_system && typeof message.mes === 'string')
-        .slice(-count)
-        .map(message => `${message.name || (message.is_user ? 'User' : 'Character')}: ${cleanForPrompt(message.mes).slice(-500)}`)
-        .join('\n');
+        .slice(-count);
+    return list.map((message, index) => {
+        const newest = index === list.length - 1;
+        return `${message.name || (message.is_user ? 'User' : 'Character')}${newest ? ' (newest message, already happened)' : ''}: ${storyText(message.mes, newest ? STORY_NEWEST : STORY_OLDER)}`;
+    }).join('\n');
 }
 
 function judgedNotes() {

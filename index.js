@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.60.1';
+const VERSION = '2.61.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -119,6 +119,7 @@ const DEFAULTS = {
     leadPrompt: '',
     inlinePictures: true,
     keepLibraryFiles: true,
+    libraryBackups: [],
     libAnimate: true,
     pickMix: true,
     describeRules: '',
@@ -319,6 +320,49 @@ function settings() {
 
 function save() {
     ctx().saveSettingsDebounced();
+}
+
+const DEVICE_CACHES = ['tagImplied', 'characterGender', 'tagAliasChecked'];
+const deviceCaches = new Map();
+
+function deviceStore() {
+    try {
+        return typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+        return null;
+    }
+}
+
+function deviceCache(name) {
+    if (!deviceCaches.has(name)) {
+        let value = {};
+        try {
+            const parsed = JSON.parse(deviceStore()?.getItem(`${MODULE}_${name}`) || 'null');
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                value = parsed;
+            }
+        } catch {
+        }
+        const s = settings();
+        const old = s[name];
+        if (old && typeof old === 'object' && !Array.isArray(old) && Object.keys(old).length) {
+            value = { ...old, ...value };
+            s[name] = {};
+            save();
+            deviceCaches.set(name, value);
+            keepDeviceCache(name, value);
+        }
+        deviceCaches.set(name, value);
+    }
+    return deviceCaches.get(name);
+}
+
+function keepDeviceCache(name, value) {
+    deviceCaches.set(name, value);
+    try {
+        deviceStore()?.setItem(`${MODULE}_${name}`, JSON.stringify(value));
+    } catch {
+    }
 }
 
 function normalizeTag(tag) {
@@ -5049,7 +5093,7 @@ function pictureNote(entry, who = 'the user shared') {
     return '';
 }
 
-const library = { entries: [], loaded: false, broken: false, loading: null, saving: Promise.resolve(), queued: null, tag: '', deleted: new Set() };
+const library = { entries: [], loaded: false, broken: false, loading: null, saving: Promise.resolve(), queued: null, tag: '', deleted: new Set(), details: { loaded: false, loading: null, store: {}, written: new Map(), tag: '' } };
 
 function validEntry(entry) {
     return entry && typeof entry === 'object' && typeof entry.id === 'string' && typeof entry.url === 'string';
@@ -5295,9 +5339,9 @@ function fileTag(response) {
     return tag || (modified ? `${modified}|${headers?.get?.('content-length') || ''}` : '');
 }
 
-async function libraryTag(size = null) {
+async function libraryTag(size = null, name = LIBRARY_FILE) {
     try {
-        const response = await fetchWithin(`/user/files/${LIBRARY_FILE}?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' }, 15000);
+        const response = await fetchWithin(`/user/files/${name}?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' }, 15000);
         if (response.status === 404) {
             return 'missing';
         }
@@ -5326,6 +5370,217 @@ async function readLibraryFile(known = null) {
     return (Array.isArray(data?.entries) ? data.entries : []).filter(entry => validEntry(entry) && !known?.has(entry.id)).map(cleanEntry);
 }
 
+const DETAILS_FILE = 'imagesearch-library-details.json';
+const DETAIL_FIELDS = ['storyAsked', 'storyReply', 'boardReply', 'deduceReply', 'fitReply', 'linkReply', 'inTextReply'];
+
+function reportDetails(report) {
+    if (!report || !DETAIL_FIELDS.some(field => report[field])) {
+        return null;
+    }
+    return Object.fromEntries(DETAIL_FIELDS.filter(field => report[field]).map(field => [field, report[field]]));
+}
+
+function detailsSig(at, fields) {
+    return `${Number(at) || 0}:${DETAIL_FIELDS.map(field => String(fields?.[field] || '').length).join(',')}`;
+}
+
+function strippedEntries() {
+    return library.entries.map(entry => {
+        if (!reportDetails(entry.report)) {
+            return entry;
+        }
+        const report = { ...entry.report };
+        DETAIL_FIELDS.forEach(field => {
+            delete report[field];
+        });
+        return { ...entry, report };
+    });
+}
+
+function attachDetails(entries = library.entries) {
+    const store = library.details.store;
+    for (const entry of entries) {
+        const kept = store[entry.id];
+        if (kept && entry.report && Number(kept.at) === Number(entry.report.at) && !reportDetails(entry.report)) {
+            DETAIL_FIELDS.forEach(field => {
+                if (kept[field]) {
+                    entry.report[field] = kept[field];
+                }
+            });
+        }
+    }
+}
+
+async function readDetailsFile() {
+    const response = await fetchWithin(`/user/files/${DETAILS_FILE}?t=${Date.now()}`, { cache: 'no-store' }, 60000);
+    if (response.status === 404) {
+        return { tag: 'missing', store: {} };
+    }
+    if (!response.ok) {
+        throw new Error(`The description details could not be read (${response.status}).`);
+    }
+    const tag = fileTag(response);
+    let data = null;
+    try {
+        data = JSON.parse(await response.text());
+    } catch {
+        data = null;
+    }
+    const store = {};
+    for (const [id, value] of Object.entries(data?.details && typeof data.details === 'object' ? data.details : {})) {
+        if (value && typeof value === 'object') {
+            store[id] = { at: Number(value.at) || 0, ...Object.fromEntries(DETAIL_FIELDS.filter(field => typeof value[field] === 'string' && value[field]).map(field => [field, value[field].slice(0, 16000)])) };
+        }
+    }
+    return { tag, store };
+}
+
+function loadDetails() {
+    const details = library.details;
+    if (details.loaded) {
+        return Promise.resolve();
+    }
+    if (!details.loading) {
+        details.loading = readDetailsFile().then(({ tag, store }) => {
+            details.store = store;
+            details.tag = tag;
+            details.written = new Map(Object.entries(store).map(([id, value]) => [id, detailsSig(value.at, value)]));
+            details.loaded = true;
+            attachDetails();
+        }).catch(error => {
+            console.warn('[Image Search] description details unavailable', error);
+        }).finally(() => {
+            details.loading = null;
+        });
+    }
+    return details.loading;
+}
+
+async function uploadUserFile(name, data) {
+    const response = await fetchWithin('/api/files/upload', {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: `{"name":${JSON.stringify(name)},"data":"${data}"}`,
+    }, 180000);
+    if (!response.ok) {
+        throw new Error(`${name} could not be saved (${response.status}).`);
+    }
+}
+
+async function saveDetails() {
+    const details = library.details;
+    if (!details.loaded) {
+        await loadDetails();
+        if (!details.loaded) {
+            return;
+        }
+    }
+    const out = {};
+    const sigs = new Map();
+    const keep = (id, at, fields) => {
+        out[id] = { at, ...fields };
+        sigs.set(id, detailsSig(at, fields));
+    };
+    for (const entry of library.entries) {
+        const fields = reportDetails(entry.report);
+        const stored = details.store[entry.id];
+        if (fields) {
+            keep(entry.id, entry.report.at, fields);
+        } else if (entry.report && stored && Number(stored.at) === Number(entry.report.at)) {
+            keep(entry.id, stored.at, stored);
+        }
+    }
+    const dirty = sigs.size !== details.written.size || [...sigs].some(([id, sig]) => details.written.get(id) !== sig);
+    if (!dirty) {
+        return;
+    }
+    const tag = details.tag ? await libraryTag(null, DETAILS_FILE) : '';
+    if (!tag || tag !== details.tag) {
+        try {
+            const remote = await readDetailsFile();
+            const byId = new Map(library.entries.map(entry => [entry.id, entry]));
+            for (const [id, value] of Object.entries(remote.store)) {
+                const entry = byId.get(id);
+                if (!out[id] && entry?.report && Number(entry.report.at) === Number(value.at)) {
+                    keep(id, value.at, value);
+                }
+            }
+        } catch {
+        }
+    }
+    const { data, size } = await textToBase64(JSON.stringify({ version: 1, details: out }));
+    await uploadUserFile(DETAILS_FILE, data);
+    details.store = out;
+    details.written = sigs;
+    details.tag = await libraryTag(size, DETAILS_FILE);
+}
+
+const BACKUP_SLOTS = 3;
+const BACKUP_EVERY = 12 * 3600 * 1000;
+
+function backupName(slot) {
+    return `imagesearch-library-backup-${slot + 1}.json`;
+}
+
+function libraryBackups() {
+    const list = settings().libraryBackups;
+    return Array.isArray(list) ? list.filter(item => item && Number.isInteger(item.slot) && item.slot >= 0 && item.slot < BACKUP_SLOTS).sort((a, b) => b.at - a.at) : [];
+}
+
+async function backUpLibrary(data, count, { now = false } = {}) {
+    const list = libraryBackups();
+    const newest = list[0];
+    if (!now && newest && Date.now() - newest.at < BACKUP_EVERY) {
+        return false;
+    }
+    if (!now && newest && count < newest.count * 0.5 && newest.count - count >= 3) {
+        return false;
+    }
+    const used = new Set(list.map(item => item.slot));
+    const slot = [...Array(BACKUP_SLOTS).keys()].find(index => !used.has(index)) ?? list[list.length - 1].slot;
+    await uploadUserFile(backupName(slot), data);
+    const s = settings();
+    s.libraryBackups = [{ slot, at: Date.now(), count }, ...list.filter(item => item.slot !== slot)];
+    save();
+    return true;
+}
+
+async function backUpNow() {
+    await loadLibrary();
+    if (library.broken) {
+        throw new Error('The picture library could not be read, so there is nothing to back up.');
+    }
+    const { data } = await textToBase64(JSON.stringify({ version: 1, entries: strippedEntries() }));
+    await backUpLibrary(data, library.entries.length, { now: true });
+}
+
+async function restoreBackup(slot) {
+    const response = await fetchWithin(`/user/files/${backupName(slot)}?t=${Date.now()}`, { cache: 'no-store' }, 60000);
+    if (!response.ok) {
+        throw new Error(`The backup could not be read (${response.status}).`);
+    }
+    const data = JSON.parse(await response.text());
+    const restored = (Array.isArray(data?.entries) ? data.entries : []).filter(validEntry).map(cleanEntry);
+    if (!restored.length) {
+        throw new Error('The backup has no pictures.');
+    }
+    await loadLibrary();
+    await library.saving;
+    if (!library.broken && library.entries.length) {
+        const { data: current } = await textToBase64(JSON.stringify({ version: 1, entries: strippedEntries() }));
+        await uploadUserFile('imagesearch-library-before-restore.json', current);
+    }
+    const kept = new Set(restored.map(entry => entry.id));
+    library.entries.filter(entry => !kept.has(entry.id)).forEach(entry => library.deleted.add(entry.id));
+    restored.forEach(entry => library.deleted.delete(entry.id));
+    library.entries = restored;
+    library.broken = false;
+    descriptions.clear();
+    attachDetails();
+    await saveLibrary();
+    return restored.length;
+}
+
 async function loadLibrary(force = false) {
     if (library.loaded && !force && !(library.broken && Date.now() - (library.failedAt || 0) > 15000)) {
         return library.entries;
@@ -5342,6 +5597,8 @@ async function loadLibrary(force = false) {
             }
             library.entries = fresh;
             library.broken = false;
+            attachDetails();
+            loadDetails();
             scheduleFiling(6000);
             if (!library.pruned) {
                 library.pruned = true;
@@ -5400,21 +5657,22 @@ function saveLibrary({ skipSync = false, skipFiling = false } = {}) {
             const tag = library.tag ? await libraryTag() : '';
             if (!tag || tag !== library.tag) {
                 const remote = await readLibraryFile(new Set(library.entries.map(entry => entry.id)));
-                remote.filter(entry => !library.deleted.has(entry.id)).forEach(entry => library.entries.push(entry));
+                const added = remote.filter(entry => !library.deleted.has(entry.id));
+                added.forEach(entry => library.entries.push(entry));
+                attachDetails(added);
             }
         } catch {
         }
-        const { data, size } = await textToBase64(JSON.stringify({ version: 1, entries: library.entries }));
-        const response = await fetchWithin('/api/files/upload', {
-            method: 'POST',
-            headers: ctx().getRequestHeaders(),
-            body: `{"name":${JSON.stringify(LIBRARY_FILE)},"data":"${data}"}`,
-        }, 180000);
-        if (!response.ok) {
+        const { data, size } = await textToBase64(JSON.stringify({ version: 1, entries: strippedEntries() }));
+        try {
+            await uploadUserFile(LIBRARY_FILE, data);
+        } catch (error) {
             library.tag = '';
-            throw new Error(`The picture library could not be saved (${response.status}).`);
+            throw new Error(`The picture library could not be saved (${String(error?.message || error).match(/\((\d+)\)/)?.[1] || 'no answer'}).`);
         }
         library.tag = await libraryTag(size);
+        await saveDetails().catch(error => console.warn('[Image Search] description details not saved', error));
+        await backUpLibrary(data, library.entries.length).catch(error => console.warn('[Image Search] library backup failed', error));
         if (!job.skipSync) {
             scheduleLorebookSync();
         }
@@ -6770,9 +7028,9 @@ function saveTagLink(a, b, by) {
 }
 
 async function siteAliases(tags, site = '') {
-    const s = settings();
     const month = 30 * 24 * 3600 * 1000;
-    const wanted = tags.filter(tag => !s.tagAliasChecked?.[tag] || Date.now() - s.tagAliasChecked[tag] > month).slice(0, 12);
+    const known = deviceCache('tagAliasChecked');
+    const wanted = tags.filter(tag => !known[tag] || Date.now() - known[tag] > month).slice(0, 12);
     if (!wanted.length) {
         return 0;
     }
@@ -6793,16 +7051,15 @@ async function siteAliases(tags, site = '') {
                     made += 1;
                 }
             });
-            s.tagAliasChecked = { ...(s.tagAliasChecked || {}), [tag]: Date.now() };
+            keepDeviceCache('tagAliasChecked', { ...deviceCache('tagAliasChecked'), [tag]: Date.now() });
         } catch (error) {
             console.warn(`[Image Search] could not read the aliases of ${tag}`, error);
         }
     });
-    const checked = Object.entries(s.tagAliasChecked || {});
+    const checked = Object.entries(deviceCache('tagAliasChecked'));
     if (checked.length > 1500) {
-        s.tagAliasChecked = Object.fromEntries(checked.sort((a, b) => b[1] - a[1]).slice(0, 1200));
+        keepDeviceCache('tagAliasChecked', Object.fromEntries(checked.sort((a, b) => b[1] - a[1]).slice(0, 1200)));
     }
-    save();
     return made;
 }
 
@@ -7738,9 +7995,8 @@ function genderProblem(word, facts) {
 }
 
 async function tagImplications(tags, site = '') {
-    const s = settings();
     const day = 24 * 3600 * 1000;
-    const known = s.tagImplied && typeof s.tagImplied === 'object' ? s.tagImplied : {};
+    const known = deviceCache('tagImplied');
     const unknown = tags.filter(tag => !known[tag] || Date.now() - (Number(known[tag].at) || 0) > (known[tag].to?.length ? 90 : 7) * day);
     if (unknown.length) {
         const own = siteEntries().find(entry => entry.domain === site);
@@ -7758,10 +8014,9 @@ async function tagImplications(tags, site = '') {
                 next[tag] = { to: [...new Set(rows.filter(row => normalizeTag(row?.antecedent_name || '') === tag).map(row => normalizeTag(row?.consequent_name || '')).filter(Boolean))], at: Date.now() };
             });
         }
-        s.tagImplied = Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 800));
-        save();
+        keepDeviceCache('tagImplied', Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 800)));
     }
-    const now = s.tagImplied || {};
+    const now = deviceCache('tagImplied');
     return new Map(tags.filter(tag => now[tag]?.to?.length).map(tag => [tag, now[tag].to]));
 }
 
@@ -7800,9 +8055,8 @@ function readItemTags(entry, lacking, reply) {
 }
 
 async function characterGenders(tags, site = '') {
-    const s = settings();
     const day = 24 * 3600 * 1000;
-    const known = s.characterGender && typeof s.characterGender === 'object' ? s.characterGender : {};
+    const known = deviceCache('characterGender');
     const unknown = tags.filter(tag => !known[tag] || Date.now() - (Number(known[tag].at) || 0) > 90 * day).slice(0, 40);
     if (unknown.length) {
         const own = siteEntries().find(entry => entry.domain === site);
@@ -7825,10 +8079,9 @@ async function characterGenders(tags, site = '') {
                 next[tag] = { g: '?', at: Date.now() };
             }
         });
-        s.characterGender = Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 400));
-        save();
+        keepDeviceCache('characterGender', Object.fromEntries(Object.entries(next).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0)).slice(0, 400)));
     }
-    const now = s.characterGender || {};
+    const now = deviceCache('characterGender');
     return { male: tags.filter(tag => now[tag]?.g === 'male').length, female: tags.filter(tag => now[tag]?.g === 'female').length };
 }
 
@@ -16099,7 +16352,7 @@ async function openPicker(initialTags = null, focus = null) {
         bar.after(info);
         const working = multi && groupProgress.has(entry.id);
         const redoLabel = itemized ? (current.lock ? 'Update item' : 'Redo item') : entry.lock ? 'Update' : multi ? 'Redo all' : 'Redo';
-        const redo = el('div', 'menu_button', redoLabel);
+        const redo = el('div', 'menu_button stis-act-redo', redoLabel);
         redo.title = itemized ? (current.lock ? 'Bring this item\'s locked description up to the current format, keeping what it says' : 'Describe only this item again, with its own tags and the item before as context') : entry.lock ? 'Bring the locked description up to the current description format, keeping what it says; unlock to describe from scratch' : multi ? 'Describe every item again, from the first look to the final check' : 'Describe this picture again';
         redo.classList.toggle('disabled', working);
         redo.addEventListener('click', async () => {
@@ -16175,7 +16428,7 @@ async function openPicker(initialTags = null, focus = null) {
             renderLibrary();
         });
         remove.title = sequence ? 'Delete the sequence; pictures also saved on their own are kept' : 'Delete from the library, the lorebook and the disk';
-        const fixButton = el('div', 'menu_button', 'Correct');
+        const fixButton = el('div', 'menu_button stis-act-fix', 'Correct');
         fixButton.title = itemized ? 'Tell the AI what is wrong in this item\'s description; only this item is rewritten, and your correction is kept for later redos' : 'Tell the AI what is wrong in this description; it is rewritten, and your correction is kept for later redos';
         fixButton.classList.toggle('disabled', (multi && !itemized) || !(itemized ? current.description : entry.description));
         fixButton.addEventListener('click', () => {
@@ -16321,7 +16574,7 @@ async function openPicker(initialTags = null, focus = null) {
         const actions = [...bar.children].slice(navCount);
         const main = [use, fixButton, redo];
         if (roleBox) {
-            const roleButton = el('div', 'menu_button stis-role-open', 'Edit role');
+            const roleButton = el('div', 'menu_button stis-role-open stis-act-role', 'Edit role');
             roleButton.title = 'Change, lock or unlock the role, intensity and story line of this item';
             roleButton.addEventListener('click', () => {
                 desc.open = true;
@@ -16392,8 +16645,10 @@ async function openPicker(initialTags = null, focus = null) {
             moreRow.hidden = !moreOpen;
             moreButton.classList.toggle('stis-more-on', moreOpen);
         });
-        bar.append(...main, moreButton);
-        bar.after(moreRow);
+        const actionRow = el('div', 'stis-actions');
+        actionRow.append(...main, moreButton);
+        bar.after(actionRow);
+        actionRow.after(moreRow);
         tagSection(current?.tags?.length ? current.tags : entry.tags, below, true, multi ? entry.removedTags : null, async tag => {
             const removed = entry.removedTags?.[tag];
             if (removed?.by === 'ai' && !removed.confirmed) {
@@ -17237,6 +17492,7 @@ function buildSettings() {
                     <div class="stis-section-body">
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_savelocal"> <span>Save picked pictures</span></label><small class="stis-help">Into SillyTavern. Needs the CORS proxy or the image fetcher.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep"> <span>Keep them in the library</span></label></div>
+                        <div class="stis-set"><div class="stis-label">Library backups</div><div id="st_imagesearch_backups" class="stis-backups"></div><div id="st_imagesearch_backup_now" class="menu_button">Back up now</div><small class="stis-help">The last 3 copies of the library: descriptions, roles, locks and notes, not the picture files. A copy is made at the first save after 12 hours (not when the library suddenly lost most of its pictures). Restore puts one back; the library as it was is kept in imagesearch-library-before-restore.json.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_lib_animate"> <span>Play GIFs in the library</span></label><small class="stis-help">Only the ones on screen play (6 at most); the others show a small still copy, so a big library does not run the phone out of memory. Off: still copies only, with a play badge, the lightest.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_keep_files"> <span>Keep library files when a picture is deleted from a message</span></label><small class="stis-help">SillyTavern's "Delete media from message?" ticks "Also delete files from server" by default. On: it is unticked when the message has a picture from your library, so the library keeps its file (tick it to delete anyway). If a library file is gone, open the picture on its site in the picker and tap "Download again": it comes back with its description.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_attach"> <span>Attach saved pictures to messages</span></label><small class="stis-help">So vision models can see them.</small></div>
@@ -17526,6 +17782,47 @@ function buildSettings() {
     bind('st_imagesearch_keep', 'keepLibrary', 'checked');
     bind('st_imagesearch_keep_files', 'keepLibraryFiles', 'checked');
     bind('st_imagesearch_lib_animate', 'libAnimate', 'checked');
+    const backupBox = document.getElementById('st_imagesearch_backups');
+    const drawBackups = () => {
+        backupBox.textContent = '';
+        const list = libraryBackups();
+        if (!list.length) {
+            backupBox.appendChild(el('small', 'stis-help', 'No copy yet: the first one is made at the next save.'));
+        }
+        list.forEach(item => {
+            const row = el('div', 'stis-backup-row');
+            row.appendChild(el('span', '', `${new Date(item.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · ${item.count} picture${item.count === 1 ? '' : 's'}`));
+            const restore = el('div', 'menu_button', 'Restore');
+            confirmClicks(restore, 'Restore', 'Tap again to restore', async () => {
+                restore.textContent = 'Restoring…';
+                try {
+                    const count = await restoreBackup(item.slot);
+                    toastr.success(`Restored ${count} picture${count === 1 ? '' : 's'} from the copy of ${new Date(item.at).toLocaleString()}.`, 'Image Search');
+                } catch (error) {
+                    toastr.warning(String(error?.message || error), 'Image Search');
+                }
+                drawBackups();
+            });
+            row.appendChild(restore);
+            backupBox.appendChild(row);
+        });
+    };
+    drawBackups();
+    const backupNow = document.getElementById('st_imagesearch_backup_now');
+    backupNow.addEventListener('click', async () => {
+        if (backupNow.textContent !== 'Back up now') {
+            return;
+        }
+        backupNow.textContent = 'Backing up…';
+        try {
+            await backUpNow();
+            toastr.success('The library is backed up.', 'Image Search');
+        } catch (error) {
+            toastr.warning(String(error?.message || error), 'Image Search');
+        }
+        backupNow.textContent = 'Back up now';
+        drawBackups();
+    });
     bind('st_imagesearch_aishow', 'aiShow', 'checked', () => scheduleLorebookSync({ activate: true }));
     bind('st_imagesearch_groups_lore', 'groupsInLore', 'checked', () => scheduleLorebookSync());
     bind('st_imagesearch_group_blind', 'groupBlind', 'checked');
@@ -18112,6 +18409,7 @@ jQuery(() => {
     setInterval(refreshCleanup, CLEANUP_REFRESH_MS);
     registerCommand();
     addButtons();
+    DEVICE_CACHES.forEach(name => deviceCache(name));
     watchInline();
     watchMediaDelete();
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);

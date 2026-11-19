@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.66.0';
+const VERSION = '2.66.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -18404,7 +18404,7 @@ function buildSettings() {
                             <small class="stis-help">For a site that refuses SillyTavern's server (403) or asks for a key: make an account there, copy the API key from your account settings on the site, and put it here with your name (on Gelbooru, your user ID). It stays in your settings. It is sent the way that kind of site expects (Danbooru and e621: login and api_key; Gelbooru: user_id and api_key; Moebooru: login and password_hash; Philomena: key), and SillyTavern's server tells the site honestly that it is SillyImageSearch for your account. A key already written on a site's line in the list above is used as it is.</small>
                             <div id="st_imagesearch_accounts" class="stis-accounts"></div>
                             <div id="st_imagesearch_check_sites" class="menu_button">Check every site</div>
-                            <small class="stis-help">Tries one small search on each site in the list and says what each one needs. A site behind a Cloudflare check cannot be reached by SillyTavern's server; an account sometimes lets it through, otherwise only the site can.</small>
+                            <small class="stis-help">Tries one small search on each site in the list (or tap Check on one site) and says what each one needs and how SillyTavern's server said who was asking. A site behind a Cloudflare check cannot be reached by SillyTavern's server; an account sometimes lets it through, otherwise only the site can.</small>
                             <div id="st_imagesearch_site_report" class="stis-site-report"></div>
                         </div>
                         <div class="stis-set">
@@ -18811,34 +18811,51 @@ function buildSettings() {
             };
             login.addEventListener('change', keep);
             key.addEventListener('change', keep);
-            row.append(login, key);
+            const check = el('div', 'menu_button', 'Check');
+            check.title = `Try one small search on ${entry.domain}`;
+            const result = el('small', 'stis-site-line');
+            check.addEventListener('click', async () => {
+                keep();
+                check.classList.add('disabled');
+                await checkSite(siteEntries().find(item => item.domain === entry.domain) || entry, result);
+                check.classList.remove('disabled');
+            });
+            row.append(login, key, check, result);
             box.appendChild(row);
         }
     };
     renderAccounts();
     document.getElementById('st_imagesearch_sites').addEventListener('change', renderAccounts);
+    const checkSite = async (entry, line) => {
+        const agent = agentFor(`https://${entry.domain}/`)['User-Agent'];
+        const said = accountFor(entry.domain) ? (agent ? `Sent as: ${agent}${/(?:api_key|key|password_hash)=/.test(siteEntries().find(item => item.domain === entry.domain)?.extra || '') || accountFor(entry.domain)?.key ? ', with your key' : ''}.` : 'This browser does not let pages say who is asking, so it went as your browser.') : DONMAI.test(entry.domain) && agent ? `Sent as: ${agent}.` : 'No account for it, so it went as your browser.';
+        line.textContent = `${entry.domain}: checking…`;
+        delete s.engines[entry.domain];
+        let verdict;
+        try {
+            const engineName = await engineOf(entry, []);
+            if (!engineName || engineName === 'none') {
+                verdict = siteVerdict(siteAnswers[entry.domain] || 'not a kind of image board the extension knows', entry.domain);
+            } else {
+                const fresh = siteEntries().find(item => item.domain === entry.domain) || entry;
+                const { items } = await fetchPage(fresh, engineName, [], 0, [], []);
+                verdict = `works (${engineName}${accountFor(entry.domain) ? ', with your account' : ''}), ${items.length} pictures on a first page.`;
+            }
+        } catch (error) {
+            verdict = siteVerdict(String(error?.message || error), entry.domain);
+        }
+        line.textContent = `${entry.domain}: ${verdict} ${said}`;
+        save();
+        showEngines();
+    };
     document.getElementById('st_imagesearch_check_sites').addEventListener('click', async () => {
         const report = document.getElementById('st_imagesearch_site_report');
         report.innerHTML = '';
         for (const entry of siteEntries()) {
-            const line = el('div', 'stis-site-line', `${entry.domain}: checking…`);
+            const line = el('div', 'stis-site-line');
             report.appendChild(line);
-            delete s.engines[entry.domain];
-            try {
-                const engineName = await engineOf(entry, []);
-                if (!engineName || engineName === 'none') {
-                    line.textContent = `${entry.domain}: ${siteVerdict(siteAnswers[entry.domain] || 'not a kind of image board the extension knows', entry.domain)}`;
-                    continue;
-                }
-                const fresh = siteEntries().find(item => item.domain === entry.domain) || entry;
-                const { items } = await fetchPage(fresh, engineName, [], 0, [], []);
-                line.textContent = `${entry.domain}: works (${engineName}${accountFor(entry.domain) ? ', with your account' : ''}), ${items.length} pictures on a first page.`;
-            } catch (error) {
-                line.textContent = `${entry.domain}: ${siteVerdict(String(error?.message || error), entry.domain)}`;
-            }
+            await checkSite(entry, line);
         }
-        save();
-        showEngines();
     });
     bind('st_imagesearch_prefetch', 'prefetch', 'checked');
     RATINGS.forEach(rating => {

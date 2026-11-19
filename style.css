@@ -2478,3 +2478,11 @@ textarea.stis-sent-prompt-text {
     gap: 4px;
     font-size: 0.9em;
 }
+
+.stis-account > .stis-site-line {
+    flex-basis: 100%;
+}
+
+.stis-account > .stis-site-line:empty {
+    display: none;
+}

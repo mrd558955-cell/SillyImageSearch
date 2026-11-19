@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.62.2';
+const VERSION = '2.62.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -852,9 +852,18 @@ const ENGINES = {
     e621: {
         cap: 6,
         pageSize: 100,
-        url: (origin, tags, extra, page) => `${origin}/posts.json?v1=true&limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
+        url: (origin, tags, extra, page) => `${origin}/posts.json?limit=100&page=${page + 1}&tags=${encodeURIComponent(tags.join(' '))}${extra}`,
         tags: (userTags, ratings, noOrder, exclude = []) => [...userTags, 'order:score', ...exclude.slice(0, 10).map(tag => `-${tag}`), ...ratingNegatives(ratings, { general: ['s'], questionable: ['q'], explicit: ['e'] })],
-        parse: result => (result.ok && result.data && Array.isArray(result.data.posts) ? result.data.posts : null),
+        parse: result => {
+            if (!result.ok || !result.data) {
+                return null;
+            }
+            if (Array.isArray(result.data.posts)) {
+                return result.data.posts;
+            }
+            const list = Array.isArray(result.data) ? result.data : null;
+            return list && (!list.length || (list[0] && typeof list[0] === 'object' && 'files' in list[0])) ? list.map(e621Post) : null;
+        },
         image: (post, origin) => absolute(post.sample?.url, origin) || absolute(post.file?.url, origin),
         full: (post, origin) => absolute(post.file?.url, origin),
         thumb: (post, origin) => absolute(post.preview?.url, origin),
@@ -990,6 +999,24 @@ function siteAnswer(result) {
     }
     const cloudflare = /just a moment|cf-chl|cf_chl|challenge-platform|attention required|cloudflare/i.test(text);
     return `${result?.status ?? '?'}${plain ? ` "${plain.slice(0, 70)}"` : ''}${cloudflare ? ' (a Cloudflare check, which stops SillyTavern\'s server)' : ''}`;
+}
+
+function e621Post(post) {
+    if (!post || typeof post !== 'object' || !post.files || typeof post.files !== 'object') {
+        return post;
+    }
+    const files = post.files;
+    const meta = files.meta || {};
+    return {
+        ...post,
+        file: { url: files.original?.url || null, ext: meta.ext || '', md5: meta.md5 || '', size: meta.size || 0, width: files.original?.width || 0, height: files.original?.height || 0 },
+        preview: { url: files.preview?.jpg || files.preview?.webp || null, width: files.preview?.width || 0, height: files.preview?.height || 0 },
+        sample: { has: Boolean(meta.has_sample), url: files.sample?.jpg || files.sample?.webp || null, width: files.sample?.width || 0, height: files.sample?.height || 0 },
+        duration: meta.duration ?? null,
+        relationships: { parent_id: post.relationships?.parent_id ?? null, has_children: Boolean(post.has?.children), has_active_children: Boolean(post.has?.active_children), children: post.relationships?.children || [] },
+        score: post.stats?.score || post.score,
+        fav_count: post.stats?.fav_count ?? post.fav_count,
+    };
 }
 
 function engineFor(name, result) {

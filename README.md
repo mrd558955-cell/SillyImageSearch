@@ -10,7 +10,7 @@ The settings are in folding sections (Setup, Picker, Saving and library, Descrip
 
 1. In API Connections, pick a fast model that does not think (e.g. NanoGPT `deepseek/deepseek-v4.1-flash`), save it as a connection profile called `Tags`, then switch back to your main profile.
 2. In the Image Search settings, choose `Tags` as the tag profile.
-3. List image boards, one per line (e.g. `safebooru.org`, `danbooru.donmai.us`). Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (through their Danbooru-style address, e.g. `rule34.paheal.net`) are found on their own.
+3. List image boards, one per line (e.g. `safebooru.org`, `danbooru.donmai.us`). Gelbooru, Danbooru, e621, Moebooru, Philomena and Shimmie sites (through their Danbooru-style address, e.g. `rule34.paheal.net`) are found on their own (e621's new post format from November 2026 is read directly, and the old one still works).
 4. For the AI to see picked pictures: keep "Save picked pictures" and "Attach saved pictures" on, turn on "Send inline media" in the Chat Completion settings, and use a main model that accepts images.
 
 Saving pictures needs `enableCorsProxy: true` in `config.yaml`, or the Cloudflare image fetcher.

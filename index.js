@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.60.0';
+const VERSION = '2.60.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -12113,6 +12113,7 @@ async function rankedCandidates(message) {
         const detail = looksDetail(choice.view || choice.entry, cast, fromMessage);
         const looks = detail.score;
         const shownPoints = choice.fresh ? 0 : -12;
+        const nextPoints = choice.continues ? SEQUENCE_NEXT_POINTS : 0;
         const clashes = banned.filter(item => showsAction(choice.view || choice.entry, item));
         const bannedPoints = clashes.length ? -15 : 0;
         let meaningNote;
@@ -12127,9 +12128,9 @@ async function rankedCandidates(message) {
         } else {
             meaningNote = 'Meaning: not in the search index yet (it updates in the background) → 0';
         }
-        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with ${cut ? 'your message' : 'the story'} and the character's looks → ${signed(keywords)} (at most +24)`, ...(cut ? [`Scene cut ("${cut}"): the old scene is left out of keywords, meaning and the AI's check`] : []), ...(clashes.length ? [`Your message rules out ${clashes.map(item => `"${item.word}"`).join(', ')}, and the picture shows it → ${signed(bannedPoints)}`] : []), ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : [])] };
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with ${cut ? 'your message' : 'the story'} and the character's looks → ${signed(keywords)} (at most +24)`, ...(cut ? [`Scene cut ("${cut}"): the old scene is left out of keywords, meaning and the AI's check`] : []), ...(clashes.length ? [`Your message rules out ${clashes.map(item => `"${item.word}"`).join(', ')}, and the picture shows it → ${signed(bannedPoints)}`] : []), ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : []), ...(nextPoints ? [`Next item of a sequence already started in this chat → ${signed(nextPoints)}`] : [])] };
         choice.parts.meaningNote = choice.parts.notes.shift();
-        choice.first = keywords + looks + shownPoints + bannedPoints;
+        choice.first = keywords + looks + shownPoints + bannedPoints + nextPoints;
         choice.total = choice.first + meaningPoints;
     }
     const keep = firstPassSize();
@@ -12398,7 +12399,7 @@ function nextPicture(entry, shown) {
             }
         });
         const next = entry.variants[last + 1];
-        return next ? { entry, variant: next, fresh: true } : { entry, variant: entry.variants[0], fresh: false };
+        return next ? { entry, variant: next, fresh: true, continues: last >= 0 } : { entry, variant: entry.variants[0], fresh: false };
     }
     if (isMulti(entry)) {
         const variant = entry.variants.find(item => !shown.has(item.id));
@@ -12408,6 +12409,7 @@ function nextPicture(entry, shown) {
 }
 
 const ITEMS_PER_SET = 3;
+const SEQUENCE_NEXT_POINTS = 100;
 
 function pictureCandidates(text) {
     const shown = shownInChat();

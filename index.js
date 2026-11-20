@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.67.0';
+const VERSION = '2.68.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -130,6 +130,7 @@ const DEFAULTS = {
     siteSpellings: {},
     siteAccounts: {},
     siteKinds: {},
+    viaFirefox: {},
     pixiv: { enabled: false, kind: 'all', order: 'date_d', match: 's_tag', hideAi: false, limit: 400 },
     leadPrompt: '',
     inlinePictures: true,
@@ -947,9 +948,122 @@ async function agentHeaders(url) {
     return agentFor(url);
 }
 
+const firefox = { version: '', sites: [], waiting: new Map(), counter: 0, blobs: new Set(), checked: null };
+
+window.addEventListener('message', event => {
+    if (event.source !== window || event.data?.source !== 'stis-fetcher') {
+        return;
+    }
+    const waiting = firefox.waiting.get(event.data.id);
+    if (waiting) {
+        firefox.waiting.delete(event.data.id);
+        clearTimeout(waiting.timer);
+        waiting.resolve(event.data);
+    }
+});
+
+function askFirefox(type, payload = {}, timeoutMs = 60000) {
+    return new Promise(resolve => {
+        const id = `stis${Date.now()}_${firefox.counter++}`;
+        const timer = setTimeout(() => {
+            firefox.waiting.delete(id);
+            resolve({ ok: false, missing: true, error: 'The SillyImageSearch Fetcher add-on did not answer. Is it installed in this Firefox?' });
+        }, timeoutMs);
+        firefox.waiting.set(id, { resolve, timer });
+        window.postMessage({ source: 'stis-page', id, type, ...payload }, location.origin);
+    });
+}
+
+async function firefoxHello(force = false) {
+    if (!force && firefox.checked) {
+        return firefox.checked;
+    }
+    firefox.checked = askFirefox('hello', {}, 1500).then(reply => {
+        firefox.version = reply.version || '';
+        firefox.sites = Array.isArray(reply.sites) ? reply.sites : [];
+        return reply;
+    });
+    return firefox.checked;
+}
+
+function siteOfHost(host) {
+    const name = String(host || '').toLowerCase().replace(/^www\./, '');
+    return Object.keys(settings().viaFirefox || {}).find(site => settings().viaFirefox[site] && (name === site || name.endsWith(`.${site}`))) || '';
+}
+
+function throughFirefox(url) {
+    return siteOfHost(hostOf(url));
+}
+
+async function firefoxFetch(url, binary = false) {
+    const site = throughFirefox(url);
+    const hello = await firefoxHello();
+    if (!hello.version) {
+        firefox.checked = null;
+        throw new BlockedError(`${site} is set to go through Firefox, but the SillyImageSearch Fetcher add-on did not answer. Install it in this Firefox (Setup → Site accounts tells how), or untick "Through Firefox".`);
+    }
+    let reply = await askFirefox('fetch', { url, binary });
+    if (reply.notAllowed) {
+        const answer = await askFirefox('approve', { domain: site }, 200000);
+        if (!answer.allowed) {
+            throw new BlockedError(`${site} was not allowed in the SillyImageSearch Fetcher.`);
+        }
+        firefox.sites = [...new Set([...firefox.sites, site])];
+        reply = await askFirefox('fetch', { url, binary });
+    }
+    if (reply.challenge) {
+        toastr.info(`Getting a pass from ${site} in Firefox: pass the check if it asks, and you come back here by yourself.`, 'Image Search');
+        const pass = await askFirefox('pass', { domain: site }, 200000);
+        if (pass.passed) {
+            reply = await askFirefox('fetch', { url, binary });
+        }
+    }
+    return reply;
+}
+
+async function firefoxRequest(url) {
+    const reply = await firefoxFetch(url, false);
+    if (reply.missing || (reply.status === 0 && !reply.text)) {
+        throw new BlockedError(reply.error || `Firefox could not reach ${hostOf(url)}.`);
+    }
+    const text = String(reply.text || '');
+    let data = null;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        data = null;
+    }
+    return { ok: Boolean(reply.ok), status: Number(reply.status) || 0, text, data };
+}
+
+async function firefoxImage(url) {
+    const reply = await firefoxFetch(url, true);
+    if (!reply.ok || !reply.bytes) {
+        throw new Error(reply.challenge ? `${hostOf(url)} still asks for its check in Firefox.` : `Firefox got ${reply.status || 'no answer'} for this picture${reply.error ? ` (${reply.error})` : ''}.`);
+    }
+    const type = String(reply.type || '').split(';')[0].trim().toLowerCase();
+    const blob = new Blob([reply.bytes], { type: type || 'application/octet-stream' });
+    return { blob, format: SAVE_FORMATS[type] || await sniffFormat(blob) };
+}
+
+async function firefoxImageUrl(url) {
+    const { blob } = await firefoxImage(url);
+    const link = URL.createObjectURL(blob);
+    firefox.blobs.add(link);
+    return link;
+}
+
+function dropFirefoxBlobs() {
+    firefox.blobs.forEach(link => URL.revokeObjectURL(link));
+    firefox.blobs.clear();
+}
+
 async function request(url, options = {}) {
     const s = settings();
     const { identify = true, ...rest } = options;
+    if (throughFirefox(url)) {
+        return firefoxRequest(url);
+    }
     if (!s.useProxy) {
         try {
             return await rawFetch(url, rest);
@@ -2773,6 +2887,13 @@ async function downloadImage(url, variants = ACCEPT_VARIANTS) {
         return { blob: await ugoiraGif(ugoira[1]), format: 'gif' };
     }
     const errors = [];
+    if (throughFirefox(url)) {
+        try {
+            return await firefoxImage(url);
+        } catch (error) {
+            errors.push(`Through Firefox: ${error?.message || error}`);
+        }
+    }
     const viaFetcher = fetcherLink(url);
     if (viaFetcher) {
         try {
@@ -14817,7 +14938,7 @@ function setThumbSource(img, item, fresh = false) {
     const site = item.siteFiles?.thumb || '';
     const identified = Boolean(agentFor(item.thumb)['User-Agent']);
     const server = identified ? () => serverImageUrl(item.thumb) : proxyUrl(item.thumb);
-    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb), server, site && !identified ? proxyUrl(site) : ''].filter(Boolean);
+    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, throughFirefox(item.thumb) ? () => firefoxImageUrl(item.thumb) : '', site, fetcherLink(item.thumb), server, site && !identified ? proxyUrl(site) : ''].filter(Boolean);
     cycleSources(img, sources, {
         loaded: via => noteThumb(item, img, true, via),
         failed: () => {
@@ -14831,7 +14952,8 @@ function setPreviewSource(img, item) {
     const site = item.siteFiles || {};
     const identified = Boolean(agentFor(item.img || item.thumb)['User-Agent']);
     const server = identified ? [() => serverImageUrl(item.anim || item.img)] : [proxyUrl(item.img), site.img ? proxyUrl(site.img) : ''];
-    const sources = [...new Set([item.anim, item.img, item.anim ? site.full : '', site.img, fetcherLink(item.img), ...server, item.thumb, site.thumb, identified ? () => serverImageUrl(item.thumb) : ''].filter(Boolean))];
+    const viaFirefox = throughFirefox(item.img || item.thumb) ? [() => firefoxImageUrl(item.anim || item.img), () => firefoxImageUrl(item.img)] : [];
+    const sources = [...new Set([item.anim, item.img, ...viaFirefox, item.anim ? site.full : '', site.img, fetcherLink(item.img), ...server, item.thumb, site.thumb, identified ? () => serverImageUrl(item.thumb) : ''].filter(Boolean))];
     cycleSources(img, sources);
 }
 
@@ -18217,6 +18339,7 @@ async function openPicker(initialTags = null, focus = null) {
             state.pickerOpen = false;
             libMedia?.close();
             dropThumbJobs();
+            dropFirefoxBlobs();
             lengthWatch.disconnect();
             lengthQueue.length = 0;
             groupWatch.disconnect();
@@ -18435,6 +18558,8 @@ function buildSettings() {
                             <div class="stis-label">Site accounts</div>
                             <small class="stis-help">For a site that refuses SillyTavern's server (403) or asks for a key: make an account there, copy the API key from your account settings on the site, and put it here with your name (on Gelbooru, your user ID). It stays in your settings. It is sent the way that kind of site expects (Danbooru and e621: login and api_key; Gelbooru: user_id and api_key; Moebooru: login and password_hash; Philomena: key), and SillyTavern's server tells the site honestly that it is SillyImageSearch for your account. A key already written on a site's line in the list above is used as it is.</small>
                             <div id="st_imagesearch_accounts" class="stis-accounts"></div>
+                            <small id="st_imagesearch_firefox_status" class="stis-help"></small>
+                            <small class="stis-help">"Through Firefox": for a site whose Cloudflare check stops SillyTavern's server, the SillyImageSearch Fetcher add-on asks it from Firefox itself, with your browser and the pass you got there, as if you browsed the site. It only asks when you search, one request a second, and only sites you allowed in it. When the pass runs out, Firefox opens the site for a moment so you can pass the check, then comes back. The add-on is in the extension's folder firefox-fetcher; how to install it is in the README.</small>
                             <div id="st_imagesearch_check_sites" class="menu_button">Check every site</div>
                             <small class="stis-help">Tries one small search on each site in the list (or tap Check on one site) and says what each one needs and how SillyTavern's server said who was asking. A site behind a Cloudflare check cannot be reached by SillyTavern's server; an account sometimes lets it through, otherwise only the site can.</small>
                             <div id="st_imagesearch_site_report" class="stis-site-report"></div>
@@ -18863,6 +18988,23 @@ function buildSettings() {
                 clearTagCache();
                 save();
             });
+            const viaLabel = el('label', 'checkbox_label stis-account-via');
+            const via = el('input');
+            via.type = 'checkbox';
+            via.checked = Boolean(s.viaFirefox?.[entry.domain]);
+            via.addEventListener('change', () => {
+                s.viaFirefox = { ...(s.viaFirefox || {}) };
+                if (via.checked) {
+                    s.viaFirefox[entry.domain] = true;
+                } else {
+                    delete s.viaFirefox[entry.domain];
+                }
+                delete s.engines[entry.domain];
+                clearTagCache();
+                save();
+                showFirefox();
+            });
+            viaLabel.append(via, el('span', '', ' Through Firefox (needs the Fetcher add-on)'));
             const check = el('div', 'menu_button', 'Check');
             check.title = `Try one small search on ${entry.domain}`;
             const result = el('small', 'stis-site-line');
@@ -18872,15 +19014,26 @@ function buildSettings() {
                 await checkSite(siteEntries().find(item => item.domain === entry.domain) || entry, result);
                 check.classList.remove('disabled');
             });
-            row.append(login, key, kind, check, result);
+            row.append(login, key, kind, viaLabel, check, result);
             box.appendChild(row);
         }
     };
+    const showFirefox = async () => {
+        const line = document.getElementById('st_imagesearch_firefox_status');
+        const wanted = Object.keys(s.viaFirefox || {}).filter(site => s.viaFirefox[site]);
+        if (!wanted.length) {
+            line.textContent = '';
+            return;
+        }
+        const hello = await firefoxHello(true);
+        line.textContent = hello.version ? `Fetcher add-on ${hello.version} found. Allowed in it: ${hello.sites?.length ? hello.sites.join(', ') : 'none yet (it asks the first time)'}.` : 'The Fetcher add-on did not answer: it is not installed in this Firefox, or SillyTavern is not on 127.0.0.1 or localhost.';
+    };
     renderAccounts();
+    showFirefox();
     document.getElementById('st_imagesearch_sites').addEventListener('change', renderAccounts);
     const checkSite = async (entry, line) => {
         const agent = agentFor(`https://${entry.domain}/`)['User-Agent'];
-        const said = accountFor(entry.domain) ? (agent ? `Sent as: ${agent}${/(?:api_key|key|password_hash)=/.test(siteEntries().find(item => item.domain === entry.domain)?.extra || '') || accountFor(entry.domain)?.key ? ', with your key' : ''}.` : 'This browser does not let pages say who is asking, so it went as your browser.') : DONMAI.test(entry.domain) && agent ? `Sent as: ${agent}.` : 'No account for it, so it went as your browser.';
+        const said = throughFirefox(`https://${entry.domain}/`) ? 'Asked through Firefox: your own browser and its pass, as if you browsed the site.' : accountFor(entry.domain) ? (agent ? `Sent as: ${agent}${/(?:api_key|key|password_hash)=/.test(siteEntries().find(item => item.domain === entry.domain)?.extra || '') || accountFor(entry.domain)?.key ? ', with your key' : ''}.` : 'This browser does not let pages say who is asking, so it went as your browser.') : DONMAI.test(entry.domain) && agent ? `Sent as: ${agent}.` : 'No account for it, so it went as your browser.';
         line.textContent = `${entry.domain}: checking…`;
         delete s.engines[entry.domain];
         let verdict;

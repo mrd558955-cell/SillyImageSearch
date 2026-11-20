@@ -1,0 +1,47 @@
+{
+    "manifest_version": 2,
+    "name": "SillyImageSearch Fetcher",
+    "version": "1.0.0",
+    "description": "Lets the Image Search extension in SillyTavern search sites you allow through Firefox itself, with your own browser and its Cloudflare pass, only when you search.",
+    "homepage_url": "https://github.com/mrd558955-cell/SillyImageSearch",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "sillyimagesearch-fetcher@mrd558955-cell.github.io",
+            "strict_min_version": "115.0",
+            "data_collection_permissions": {
+                "required": [
+                    "none"
+                ]
+            }
+        },
+        "gecko_android": {
+            "strict_min_version": "120.0"
+        }
+    },
+    "permissions": [
+        "<all_urls>",
+        "storage",
+        "tabs",
+        "cookies"
+    ],
+    "background": {
+        "scripts": [
+            "background.js"
+        ]
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "http://127.0.0.1/*",
+                "http://localhost/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_start"
+        }
+    ],
+    "options_ui": {
+        "page": "options.html"
+    }
+}

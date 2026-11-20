@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SillyImageSearch Fetcher</title>
+<style>
+body { font: 16px/1.5 system-ui, sans-serif; margin: 24px; max-width: 32em; }
+.site { font-weight: bold; }
+button { font: inherit; padding: 10px 18px; margin: 8px 8px 0 0; border-radius: 8px; border: 1px solid #888; }
+#allow { background: #2a6; color: white; border-color: #2a6; }
+small { color: #666; display: block; margin-top: 16px; }
+</style>
+</head>
+<body>
+<h2>Allow <span class="site" id="site"></span>?</h2>
+<p>The Image Search extension in SillyTavern wants to search <span class="site" id="site2"></span> through Firefox: with this browser, as if you browsed the site yourself, only when you search, one request at a time.</p>
+<button id="allow">Allow</button><button id="deny">No</button>
+<small>You can remove it any time in the add-on's settings (Add-ons → SillyImageSearch Fetcher → Settings).</small>
+<script src="approve.js"></script>
+</body>
+</html>

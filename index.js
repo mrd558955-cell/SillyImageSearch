@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.71.0';
+const VERSION = '2.72.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -6622,6 +6622,167 @@ async function deleteEntry(entry) {
     await deleteUnusedFiles(urls);
 }
 
+async function unsaveItem(item) {
+    await loadLibrary();
+    const found = findBySource(item.page);
+    if (!found || isMulti(found.entry)) {
+        return false;
+    }
+    await deleteEntry(found.entry);
+    const key = saveKey(item);
+    saveJobs.delete(key);
+    notifySaves(key, '');
+    return true;
+}
+
+const DUPE_LOOK = 20;
+const DUPE_COLOUR = 14;
+const MARKS_VERSION = 2;
+const NIBBLE_BITS = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
+
+function bytesMark(bytes) {
+    const view = new Uint8Array(bytes);
+    let a = 0x811c9dc5;
+    let b = 0x01000193;
+    for (let index = 0; index < view.length; index++) {
+        a = Math.imul(a ^ view[index], 0x01000193) >>> 0;
+        b = Math.imul(b ^ view[view.length - 1 - index], 0x5bd1e995) >>> 0;
+    }
+    return `${view.length.toString(16)}-${a.toString(16)}-${b.toString(16)}`;
+}
+
+async function lookMark(blob) {
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = 17;
+    canvas.height = 16;
+    const draw = canvas.getContext('2d', { willReadFrequently: true });
+    draw.drawImage(bitmap, 0, 0, 17, 16);
+    const pixels = draw.getImageData(0, 0, 17, 16).data;
+    const gray = index => pixels[index * 4] * 0.299 + pixels[index * 4 + 1] * 0.587 + pixels[index * 4 + 2] * 0.114;
+    let hex = '';
+    for (let row = 0; row < 16; row++) {
+        for (let half = 0; half < 2; half++) {
+            let bits = 0;
+            for (let col = half * 8; col < half * 8 + 8; col++) {
+                bits = (bits << 1) | (gray(row * 17 + col) > gray(row * 17 + col + 1) ? 1 : 0);
+            }
+            hex += bits.toString(16).padStart(2, '0');
+        }
+    }
+    canvas.width = 4;
+    canvas.height = 4;
+    draw.drawImage(bitmap, 0, 0, 4, 4);
+    bitmap.close?.();
+    const small = draw.getImageData(0, 0, 4, 4).data;
+    const colour = [];
+    for (let index = 0; index < 16; index++) {
+        colour.push(small[index * 4], small[index * 4 + 1], small[index * 4 + 2]);
+    }
+    return { hex, colour };
+}
+
+function sameLook(a, b) {
+    if (!a?.hex || !b?.hex || a.hex.length !== b.hex.length || lookDistance(a.hex, b.hex) > DUPE_LOOK) {
+        return false;
+    }
+    const gap = a.colour.reduce((sum, value, index) => sum + Math.abs(value - (b.colour[index] ?? 0)), 0) / a.colour.length;
+    return gap <= DUPE_COLOUR;
+}
+
+function lookDistance(a, b) {
+    let total = 0;
+    for (let index = 0; index < a.length; index++) {
+        total += NIBBLE_BITS[parseInt(a[index], 16) ^ parseInt(b[index], 16)];
+    }
+    return total;
+}
+
+async function pictureMarks(url) {
+    const cache = deviceCache('pictureMarks');
+    if (cache[url]?.bytes && cache[url].ver === MARKS_VERSION) {
+        return cache[url];
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`could not read ${url} (${response.status})`);
+    }
+    const blob = await response.blob();
+    const marks = { bytes: bytesMark(await blob.arrayBuffer()), look: null, ver: MARKS_VERSION, at: Date.now() };
+    try {
+        marks.look = await lookMark(blob);
+    } catch {
+        marks.look = null;
+    }
+    cache[url] = marks;
+    return marks;
+}
+
+async function findDuplicates(progress = null) {
+    await loadLibrary();
+    const singles = library.entries.filter(entry => !isMulti(entry));
+    const marks = new Map();
+    let unread = 0;
+    for (const [index, entry] of singles.entries()) {
+        progress?.(index + 1, singles.length);
+        try {
+            marks.set(entry.id, await pictureMarks(entry.url));
+        } catch {
+            unread++;
+        }
+    }
+    const cache = deviceCache('pictureMarks');
+    const kept = new Set(singles.map(entry => entry.url));
+    Object.keys(cache).forEach(url => {
+        if (!kept.has(url)) {
+            delete cache[url];
+        }
+    });
+    keepDeviceCache('pictureMarks', cache);
+    const parent = new Map(singles.map(entry => [entry.id, entry.id]));
+    const root = id => {
+        while (parent.get(id) !== id) {
+            parent.set(id, parent.get(parent.get(id)));
+            id = parent.get(id);
+        }
+        return id;
+    };
+    const why = new Map();
+    const rank = { post: 3, file: 2, look: 1 };
+    const link = (a, b, reason) => {
+        const top = root(a.id);
+        const other = root(b.id);
+        const best = [why.get(top), why.get(other), reason].filter(Boolean).sort((x, y) => rank[y] - rank[x])[0];
+        if (top !== other) {
+            parent.set(other, top);
+        }
+        why.set(root(a.id), best);
+    };
+    for (let i = 0; i < singles.length; i++) {
+        for (let j = i + 1; j < singles.length; j++) {
+            const a = singles[i];
+            const b = singles[j];
+            const ma = marks.get(a.id);
+            const mb = marks.get(b.id);
+            if (a.source && a.source === b.source) {
+                link(a, b, 'post');
+            } else if (a.url === b.url || (ma && mb && ma.bytes === mb.bytes)) {
+                link(a, b, 'file');
+            } else if (sameLook(ma?.look, mb?.look)) {
+                link(a, b, 'look');
+            }
+        }
+    }
+    const groups = new Map();
+    singles.forEach(entry => {
+        const top = root(entry.id);
+        groups.set(top, [...(groups.get(top) || []), entry]);
+    });
+    const list = [...groups.entries()].filter(([, entries]) => entries.length > 1).map(([top, entries]) => ({ why: why.get(top) || 'look', entries: entries.sort((a, b) => (b.added || 0) - (a.added || 0)) }));
+    list.sort((a, b) => rank[b.why] - rank[a.why] || (b.entries[0].added || 0) - (a.entries[0].added || 0));
+    return { groups: list, checked: singles.length, unread };
+}
+
 async function deleteAllPictures() {
     await loadLibrary();
     const all = [...library.entries];
@@ -9592,12 +9753,18 @@ async function applyTagChoices(entry, choices) {
         }
         if (choice.state === 'out') {
             const keep = list => list.filter(other => normalizeTag(other) !== tag);
-            entry.tags = keep(entry.tags);
-            entry.variants.forEach(item => {
+            const only = report.ownMissing?.[tag]?.length ? new Set(report.ownMissing[tag]) : null;
+            entry.variants.forEach((item, index) => {
+                if (only && !only.has(index + 1)) {
+                    return;
+                }
                 item.tags = keep(item.tags);
                 item.shows = keep(item.shows);
                 item.added = keep(item.added);
             });
+            if (!only || !entry.variants.some(item => item.tags.some(other => normalizeTag(other) === tag))) {
+                entry.tags = keep(entry.tags);
+            }
             report.notShown = report.notShown.filter(other => other !== tag);
             report.decided[tag] = 'out';
             judged(tag, false, note || 'you threw it out');
@@ -15152,6 +15319,8 @@ async function openPicker(initialTags = null, focus = null) {
         libOrder: el('div', 'stis-lib-order'),
         libSize: el('div', 'menu_button stis-lib-size'),
         libClear: el('div', 'menu_button stis-lib-clear', 'Clear all'),
+        libDupes: el('div', 'menu_button stis-lib-dupes'),
+        libDupeHead: el('div', 'stis-dupe-head'),
         selectToggle: el('div', 'menu_button stis-tab stis-select-btn'),
         sites: el('div', 'stis-sites'),
         pixivBar: el('div', 'stis-pixiv-bar'),
@@ -15173,8 +15342,11 @@ async function openPicker(initialTags = null, focus = null) {
     ui.sites.hidden = true;
     ui.favs.hidden = true;
     ui.libClear.title = 'Remove the search and every filter, and show the whole library';
-    ui.libBar.append(ui.libOrder, ui.libClear, ui.libSize);
-    ui.libraryView.append(ui.libSearch, ui.libBar, ui.libFilters, ui.libGrid);
+    ui.libDupes.innerHTML = '<i class="fa-regular fa-copy"></i>';
+    ui.libDupes.title = 'Find duplicates: the same post, the same file, or pictures that look the same';
+    ui.libBar.append(ui.libOrder, ui.libClear, ui.libDupes, ui.libSize);
+    ui.libDupeHead.hidden = true;
+    ui.libraryView.append(ui.libSearch, ui.libBar, ui.libFilters, ui.libDupeHead, ui.libGrid);
     ui.libraryView.hidden = true;
     ui.input.type = 'text';
     ui.input.placeholder = 'add tag (-tag to exclude), Enter';
@@ -15324,6 +15496,8 @@ async function openPicker(initialTags = null, focus = null) {
     let libMedia = null;
     const libFilter = new Set();
     let libMoreOpen = false;
+    let dupes = null;
+    let dupeScan = 0;
     let reps = [];
     let gridFamilies = new Map();
     const lengthCells = new WeakMap();
@@ -15410,12 +15584,18 @@ async function openPicker(initialTags = null, focus = null) {
         if (index === activeTab || closed) {
             return;
         }
+        if (!ui.preview.hidden) {
+            closePreview();
+        }
         keepTab();
         showTab(index);
         storeTabs();
         save();
     };
     const addTab = () => {
+        if (!ui.preview.hidden) {
+            closePreview();
+        }
         keepTab();
         searchTabs.push(tabFrom({ site: ui.site.value }));
         showTab(searchTabs.length - 1);
@@ -16681,9 +16861,17 @@ async function openPicker(initialTags = null, focus = null) {
     function paintSave(button, item) {
         const state = cellSaveState(item);
         button.innerHTML = '';
+        if (button.dataset.armed && state === 'done') {
+            button.appendChild(el('i', 'fa-solid fa-trash-can'));
+            button.title = 'Tap again to remove it from the library';
+            button.classList.add('stis-cell-armed');
+            return;
+        }
+        delete button.dataset.armed;
+        button.classList.remove('stis-cell-armed');
         const icon = state === 'done' ? 'fa-solid fa-bookmark' : state === 'failed' ? 'fa-solid fa-triangle-exclamation' : state ? 'fa-solid fa-spinner fa-spin' : 'fa-regular fa-bookmark';
         button.appendChild(el('i', icon));
-        button.title = state === 'done' ? 'In the library' : state === 'failed' ? 'Saving failed, tap to try again' : state ? 'Saving to the library…' : 'Save to the library and keep browsing (not added to the chat)';
+        button.title = state === 'done' ? 'In the library (tap twice to remove it)' : state === 'failed' ? 'Saving failed, tap to try again' : state ? 'Saving to the library…' : 'Save to the library and keep browsing (not added to the chat)';
         button.classList.toggle('stis-cell-saved', state === 'done');
     }
 
@@ -16699,6 +16887,25 @@ async function openPicker(initialTags = null, focus = null) {
             const state = cellSaveState(item);
             if (state === '' || state === 'failed') {
                 queueSave(item, [...tags]);
+            } else if (state === 'done') {
+                const found = library.loaded ? findBySource(item.page) : null;
+                if (!found || isMulti(found.entry)) {
+                    toastr.info('This one is part of a saved set or sequence: remove it from there in the library.', 'Image Search');
+                } else if (button.dataset.armed) {
+                    delete button.dataset.armed;
+                    button.innerHTML = '';
+                    button.appendChild(el('i', 'fa-solid fa-spinner fa-spin'));
+                    unsaveItem(item).then(() => updateLibraryTab()).catch(error => toastr.warning(`Could not remove it: ${error?.message || error}`, 'Image Search')).finally(() => paintSave(button, item));
+                    return;
+                } else {
+                    button.dataset.armed = '1';
+                    setTimeout(() => {
+                        if (button.dataset.armed) {
+                            delete button.dataset.armed;
+                            paintSave(button, item);
+                        }
+                    }, 3000);
+                }
             }
             paintSave(button, item);
         });
@@ -17418,9 +17625,23 @@ async function openPicker(initialTags = null, focus = null) {
         if (s.keepLibrary && s.saveLocal) {
             const keep = el('div', 'menu_button stis-act-keep');
             keep.title = 'Save it in the library without adding it to the chat; you can keep browsing';
+            const unsave = confirmButton('Remove', 'Tap again to remove', async button => {
+                button.textContent = 'Removing…';
+                try {
+                    await unsaveItem(current);
+                    updateLibraryTab();
+                } catch (error) {
+                    toastr.warning(`Could not remove it: ${error?.message || error}`, 'Image Search');
+                }
+                button.textContent = 'Remove';
+                paintKeep();
+            });
+            unsave.classList.add('stis-act-unsave');
+            unsave.title = 'Saved by mistake? Take it out of the library (and its file off the disk)';
             const paintKeep = () => {
                 const state = saveState(current);
                 const found = library.loaded ? findBySource(current.page) : null;
+                unsave.hidden = !found || isMulti(found.entry) || state === 'queued' || state === 'saving';
                 keep.textContent = keep.dataset.restoring ? 'Downloading again…' : state === 'queued' || state === 'saving' ? 'Saving…' : found ? (found.entry.kind === 'set' ? 'In a saved set' : 'In library') : state === 'failed' ? 'Retry saving' : 'Save to library';
                 const shown = current;
                 if (found && !current.video && !keep.dataset.restoring) {
@@ -17467,7 +17688,7 @@ async function openPicker(initialTags = null, focus = null) {
                 queueSave(current, [...tags]);
                 paintKeep();
             });
-            actionRow.append(keep, setButton);
+            actionRow.append(keep, unsave, setButton);
         }
         if (selecting) {
             actionRow.append(selectButton(itemPick(current)));
@@ -18140,6 +18361,92 @@ async function openPicker(initialTags = null, focus = null) {
         return s.libOrder === 'new' || s.libOrder === 'used' ? [...ranked].sort((a, b) => time(b.entry) - time(a.entry) || (b.entry.added || 0) - (a.entry.added || 0)) : ranked;
     }
 
+    const DUPE_WHY = { post: 'Same post', file: 'Same file', look: 'Look the same' };
+
+    function renderDupes() {
+        const scroll = ui.libGrid.scrollTop;
+        ui.libGrid.innerHTML = '';
+        libMedia?.close();
+        libMedia = gridMedia(ui.libGrid, s.libAnimate !== false);
+        const live = new Set(library.entries.map(entry => entry.id));
+        dupes.groups = dupes.groups.map(group => ({ ...group, entries: group.entries.filter(entry => live.has(entry.id)) })).filter(group => group.entries.length > 1);
+        const head = ui.libDupeHead;
+        head.innerHTML = '';
+        head.hidden = false;
+        const done = el('div', 'menu_button', 'Done');
+        done.addEventListener('click', () => {
+            dupes = null;
+            renderLibrary();
+        });
+        head.append(el('small', '', dupes.groups.length ? `${dupes.groups.length} group${dupes.groups.length === 1 ? '' : 's'} of duplicates among ${dupes.checked} single pictures${dupes.unread ? ` (${dupes.unread} could not be read)` : ''}. Same colour = same group, newest first. Open one to compare, or × to remove it.` : `No duplicates among ${dupes.checked} single pictures${dupes.unread ? ` (${dupes.unread} could not be read)` : ''}.`), done);
+        libraryOrder = dupes.groups.flatMap(group => group.entries);
+        dupes.groups.forEach((group, number) => {
+            group.entries.forEach((entry, at) => {
+                const cell = el('div', 'stis-cell stis-dupe-cell');
+                cell.style.setProperty('--stis-dupe', `hsl(${(number * 67) % 360} 70% 55%)`);
+                const img = el('img');
+                img.alt = '';
+                img.draggable = false;
+                img.dataset.full = entry.url;
+                img.onerror = () => cell.classList.add('stis-broken');
+                cell.dataset.entry = entry.id;
+                cell.title = shortDescription(entry);
+                cell.appendChild(img);
+                libMedia.add(img, entry.animated || itemAnimated(entry, entry));
+                const badge = el('span', 'stis-dupe-badge', `${number + 1}${at ? '' : ' · newest'}`);
+                badge.title = `${DUPE_WHY[group.why]}: group ${number + 1}`;
+                cell.appendChild(badge);
+                const shut = el('div', 'stis-dupe-remove');
+                shut.appendChild(el('i', 'fa-solid fa-xmark'));
+                shut.title = 'Remove this one from the library';
+                ['pointerdown', 'pointerup', 'mousedown', 'touchstart'].forEach(name => shut.addEventListener(name, event => event.stopPropagation(), { passive: true }));
+                shut.addEventListener('click', async event => {
+                    event.stopPropagation();
+                    if (!shut.dataset.armed) {
+                        shut.dataset.armed = '1';
+                        shut.innerHTML = '';
+                        shut.appendChild(el('i', 'fa-solid fa-trash-can'));
+                        shut.title = 'Tap again to remove it';
+                        setTimeout(() => {
+                            if (shut.isConnected && shut.dataset.armed) {
+                                delete shut.dataset.armed;
+                                shut.innerHTML = '';
+                                shut.appendChild(el('i', 'fa-solid fa-xmark'));
+                            }
+                        }, 3000);
+                        return;
+                    }
+                    shut.innerHTML = '';
+                    shut.appendChild(el('i', 'fa-solid fa-spinner fa-spin'));
+                    await deleteEntry(entry);
+                    updateLibraryTab();
+                    renderDupes();
+                });
+                cell.appendChild(shut);
+                bindPress(cell, () => showEntry(entry), () => {});
+                ui.libGrid.appendChild(cell);
+            });
+        });
+        ui.libGrid.scrollTop = scroll;
+    }
+
+    async function scanDupes() {
+        const run = ++dupeScan;
+        ui.libGrid.innerHTML = '';
+        const status = el('div', 'stis-status', 'Looking for duplicates…');
+        ui.libGrid.appendChild(status);
+        const found = await findDuplicates((done, total) => {
+            if (run === dupeScan) {
+                status.textContent = `Looking for duplicates: ${done} of ${total}…`;
+            }
+        });
+        if (closed || run !== dupeScan || ui.libraryView.hidden) {
+            return;
+        }
+        dupes = found;
+        renderDupes();
+    }
+
     async function renderLibrary() {
         await loadLibrary();
         if (closed) {
@@ -18148,6 +18455,12 @@ async function openPicker(initialTags = null, focus = null) {
         updateLibraryTab();
         renderLibFilters();
         renderLibBar();
+        ui.libDupes.classList.toggle('stis-fchip-on', Boolean(dupes));
+        ui.libDupeHead.hidden = !dupes;
+        if (dupes) {
+            renderDupes();
+            return;
+        }
         const scroll = ui.libGrid.scrollTop;
         ui.libGrid.innerHTML = '';
         const query = [...wordsOf(ui.libSearch.value)];
@@ -18313,7 +18626,19 @@ async function openPicker(initialTags = null, focus = null) {
         clearTimeout(libTimer);
         libTimer = setTimeout(renderLibrary, 250);
     });
+    ui.libDupes.addEventListener('click', () => {
+        if (dupes) {
+            dupes = null;
+            dupeScan++;
+            renderLibrary();
+            return;
+        }
+        ui.libDupes.classList.add('stis-fchip-on');
+        scanDupes();
+    });
     ui.libClear.addEventListener('click', () => {
+        dupes = null;
+        dupeScan++;
         clearTimeout(libTimer);
         ui.libSearch.value = '';
         libFilter.clear();

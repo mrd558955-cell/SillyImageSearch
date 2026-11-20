@@ -20,6 +20,7 @@ const passes = new Map();
 const passFailed = new Map();
 const pools = new Map();
 const opening = new Map();
+const passTabs = new Set();
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -170,6 +171,9 @@ function siteTab(url, backTo) {
 }
 
 async function wakeTab(tabId, backTo) {
+    if (passTabs.has(tabId)) {
+        return waitLoaded(tabId, PASS_WAIT_MS);
+    }
     if (await waitLoaded(tabId, QUIET_LOAD_MS)) {
         return true;
     }
@@ -269,6 +273,7 @@ function getPass(site, url, tabId) {
         } catch {
             return { passed: false };
         }
+        passTabs.add(passTab);
         const loaded = waitLoaded(passTab, PASS_WAIT_MS, true);
         await browser.tabs.update(passTab, { url, active: true }).catch(() => {});
         await loaded;
@@ -286,6 +291,7 @@ function getPass(site, url, tabId) {
             }
             await sleep(PASS_POLL_MS);
         }
+        passTabs.delete(passTab);
         if (tabId !== undefined) {
             await browser.tabs.update(tabId, { active: true }).catch(() => {});
         }
@@ -336,6 +342,9 @@ async function doFetch(url, binary, tabId) {
                 return reply;
             }
             PAGE_FIRST.add(origin);
+        }
+        if (passes.has(site)) {
+            await passes.get(site);
         }
         let reply = await pageFetch(url, binary, tabId);
         if (!reply.challenge) {

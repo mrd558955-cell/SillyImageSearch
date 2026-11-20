@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.69.0';
+const VERSION = '2.69.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -3249,19 +3249,31 @@ function pageGist(text) {
     return (title || String(text).replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
+async function firefoxVideo(url) {
+    const reply = await firefoxFetch(url, true);
+    if (!reply.ok || !reply.bytes) {
+        const gist = pageGist(String(reply.text || ''));
+        return { ok: false, status: Number(reply.status) || 0, text: async () => (reply.challenge ? 'a Cloudflare check' : gist || reply.error || '') };
+    }
+    const type = String(reply.type || '').split(';')[0].trim().toLowerCase();
+    const blob = new Blob([reply.bytes], { type: /^video\//.test(type) ? type : '' });
+    return { ok: true, status: Number(reply.status) || 200, blob: async () => blob };
+}
+
 async function downloadVideo(url) {
     const errors = [];
     const host = hostOf(url);
-    const routes = [fetcherLink(url), proxyUrl(url)].filter(Boolean);
+    const viaFirefox = Boolean(throughFirefox(url));
+    const routes = viaFirefox ? ['firefox'] : [fetcherLink(url), proxyUrl(url)].filter(Boolean);
     for (const route of routes) {
         for (let attempt = 0; attempt < 3; attempt++) {
             let again = false;
             try {
-                const response = await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
+                const response = route === 'firefox' ? await firefoxVideo(url) : await fetch(route, route === fetcherLink(url) ? {} : { headers: { ...ctx().getRequestHeaders(), ...await agentHeaders(url) } });
                 if (!response.ok) {
                     const gist = pageGist(await response.text().catch(() => ''));
                     again = response.status === 429 || response.status >= 500;
-                    throw new Error(`${host} answered ${response.status}${gist ? ` ("${gist}")` : ''}`);
+                    throw new Error(`${host} answered ${response.status || 'nothing'}${viaFirefox ? ' in Firefox' : ''}${gist ? ` ("${gist}")` : ''}`);
                 }
                 const blob = await response.blob();
                 const head = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
@@ -3553,7 +3565,7 @@ const videoCopies = new Map();
 const videoPlayUrls = new Map();
 
 function needsVideoCopy(url) {
-    return DONMAI.test(hostOf(url));
+    return DONMAI.test(hostOf(url)) || Boolean(throughFirefox(url));
 }
 
 function videoCopy(url) {
@@ -16146,7 +16158,8 @@ async function openPicker(initialTags = null, focus = null) {
             if (fresh) {
                 forgetVideo(url);
             }
-            say(fresh ? 'The video did not play; downloading it again through SillyTavern…' : 'Loading the video through SillyTavern…');
+            const way = throughFirefox(url) ? 'Firefox' : 'SillyTavern';
+            say(fresh ? `The video did not play; downloading it again through ${way}…` : `Loading the video through ${way}…`);
             try {
                 const objectUrl = await videoPlayUrl(url);
                 if (player.isConnected) {

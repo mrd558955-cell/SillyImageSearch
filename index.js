@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.68.0';
+const VERSION = '2.68.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -948,7 +948,7 @@ async function agentHeaders(url) {
     return agentFor(url);
 }
 
-const firefox = { version: '', sites: [], waiting: new Map(), counter: 0, blobs: new Set(), checked: null };
+const firefox = { version: '', sites: [], waiting: new Map(), counter: 0, blobs: new Set(), checked: null, passing: new Map() };
 
 window.addEventListener('message', event => {
     if (event.source !== window || event.data?.source !== 'stis-fetcher') {
@@ -1002,20 +1002,23 @@ async function firefoxFetch(url, binary = false) {
         firefox.checked = null;
         throw new BlockedError(`${site} is set to go through Firefox, but the SillyImageSearch Fetcher add-on did not answer. Install it in this Firefox (Setup → Site accounts tells how), or untick "Through Firefox".`);
     }
-    let reply = await askFirefox('fetch', { url, binary });
+    let reply = await askFirefox('fetch', { url, binary }, 240000);
     if (reply.notAllowed) {
         const answer = await askFirefox('approve', { domain: site }, 200000);
         if (!answer.allowed) {
             throw new BlockedError(`${site} was not allowed in the SillyImageSearch Fetcher.`);
         }
         firefox.sites = [...new Set([...firefox.sites, site])];
-        reply = await askFirefox('fetch', { url, binary });
+        reply = await askFirefox('fetch', { url, binary }, 240000);
     }
-    if (reply.challenge) {
-        toastr.info(`Getting a pass from ${site} in Firefox: pass the check if it asks, and you come back here by yourself.`, 'Image Search');
-        const pass = await askFirefox('pass', { domain: site }, 200000);
+    if (reply.challenge && !reply.passTried) {
+        if (!firefox.passing.has(site)) {
+            toastr.info(`Getting a pass from ${site} in Firefox: pass the check if it asks, and you come back here by yourself.`, 'Image Search');
+            firefox.passing.set(site, askFirefox('pass', { domain: site }, 200000).finally(() => setTimeout(() => firefox.passing.delete(site), 60000)));
+        }
+        const pass = await firefox.passing.get(site);
         if (pass.passed) {
-            reply = await askFirefox('fetch', { url, binary });
+            reply = await askFirefox('fetch', { url, binary }, 240000);
         }
     }
     return reply;

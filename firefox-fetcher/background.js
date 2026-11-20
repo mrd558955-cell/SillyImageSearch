@@ -8,6 +8,10 @@ const APPROVAL_WAIT_MS = 3 * 60 * 1000;
 const TAB_LOAD_MS = 30 * 1000;
 const TAB_IDLE_MS = 2 * 60 * 1000;
 const IMAGE_PARALLEL = 4;
+const TEXT_WAIT_MS = 60 * 1000;
+const FILE_WAIT_MS = 3 * 60 * 1000;
+const QUIET_LOAD_MS = 10 * 1000;
+const STATE_WAIT_MS = 10 * 1000;
 const lastAt = new Map();
 const chains = new Map();
 const approvals = new Map();
@@ -19,6 +23,13 @@ const opening = new Map();
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function inTime(promise, ms, fallback) {
+    let timer;
+    return Promise.race([promise, new Promise(resolve => {
+        timer = setTimeout(() => resolve(fallback), ms);
+    })]).finally(() => clearTimeout(timer));
 }
 
 function cleanDomain(value) {
@@ -69,18 +80,21 @@ function acceptFor(binary) {
 }
 
 async function backgroundFetch(url, binary) {
-    let response;
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), binary ? FILE_WAIT_MS : TEXT_WAIT_MS);
     try {
-        response = await fetch(url, { credentials: 'include', redirect: 'follow', headers: { Accept: acceptFor(binary) } });
+        const response = await fetch(url, { credentials: 'include', redirect: 'follow', headers: { Accept: acceptFor(binary) }, signal: stop.signal });
+        const type = response.headers.get('content-type') || '';
+        if (binary && response.ok && !/text\/html/i.test(type)) {
+            return { ok: true, status: response.status, type, bytes: await response.arrayBuffer() };
+        }
+        const text = await response.text();
+        return { ok: response.ok, status: response.status, type, text, challenge: isChallenge(response.status, text) };
     } catch (error) {
-        return { ok: false, status: 0, error: `Firefox could not reach ${new URL(url).hostname}: ${error?.message || error}` };
+        return { ok: false, status: 0, error: `Firefox could not reach ${new URL(url).hostname}: ${stop.signal.aborted ? 'it took too long' : error?.message || error}` };
+    } finally {
+        clearTimeout(timer);
     }
-    const type = response.headers.get('content-type') || '';
-    if (binary && response.ok && !/text\/html/i.test(type)) {
-        return { ok: true, status: response.status, type, bytes: await response.arrayBuffer() };
-    }
-    const text = await response.text();
-    return { ok: response.ok, status: response.status, type, text, challenge: isChallenge(response.status, text) };
 }
 
 function originOf(url) {
@@ -144,25 +158,39 @@ function waitLoaded(tabId, ms, fresh = false) {
     });
 }
 
-function siteTab(url) {
+function siteTab(url, backTo) {
     const origin = originOf(url);
     if (opening.has(origin)) {
         return opening.get(origin);
     }
-    const job = openSiteTab(origin);
+    const job = openSiteTab(origin, backTo);
     opening.set(origin, job);
     job.finally(() => opening.delete(origin)).catch(() => {});
     return job;
 }
 
-async function openSiteTab(origin) {
+async function wakeTab(tabId, backTo) {
+    if (await waitLoaded(tabId, QUIET_LOAD_MS)) {
+        return true;
+    }
+    await browser.tabs.update(tabId, { active: true }).catch(() => {});
+    const loaded = await waitLoaded(tabId, TAB_LOAD_MS);
+    if (backTo !== undefined) {
+        await browser.tabs.update(backTo, { active: true }).catch(() => {});
+    }
+    return loaded;
+}
+
+async function openSiteTab(origin, backTo) {
     const known = siteTabs.get(origin);
     if (known) {
         try {
             await browser.tabs.get(known.tabId);
             touchTab(origin);
-            await waitLoaded(known.tabId, TAB_LOAD_MS);
-            return known.tabId;
+            if (await wakeTab(known.tabId, backTo)) {
+                return known.tabId;
+            }
+            dropTab(known.tabId);
         } catch {
             tabGone(known.tabId);
         }
@@ -170,15 +198,20 @@ async function openSiteTab(origin) {
     const tab = await browser.tabs.create({ url: `${origin}/`, active: false });
     siteTabs.set(origin, { tabId: tab.id, timer: null });
     touchTab(origin);
-    await waitLoaded(tab.id, TAB_LOAD_MS);
+    await wakeTab(tab.id, backTo);
     return tab.id;
+}
+
+function dropTab(tabId) {
+    tabGone(tabId);
+    browser.tabs.remove(tabId).catch(() => {});
 }
 
 const PAGE_CHALLENGE = /just a moment|attention required|checking your browser|verify you are human|cf-chl|cf_chl|challenge-platform/i;
 
 async function pageState(tabId) {
     try {
-        const [state] = await browser.tabs.executeScript(tabId, { code: '({ title: document.title, text: String(document.body ? document.body.innerText : "").slice(0, 3000), head: document.documentElement.outerHTML.slice(0, 6000) })' });
+        const [state] = await inTime(browser.tabs.executeScript(tabId, { code: '({ title: document.title, text: String(document.body ? document.body.innerText : "").slice(0, 3000), head: document.documentElement.outerHTML.slice(0, 6000) })' }), STATE_WAIT_MS, []);
         return state || null;
     } catch {
         return null;
@@ -189,10 +222,10 @@ function pageChallenged(state) {
     return !state || PAGE_CHALLENGE.test(`${state.title}\n${state.head}`);
 }
 
-async function pageFetch(url, binary) {
+async function pageFetch(url, binary, backTo) {
     let tabId;
     try {
-        tabId = await siteTab(url);
+        tabId = await siteTab(url, backTo);
     } catch (error) {
         return { ok: false, status: 0, error: `Firefox could not open ${new URL(url).hostname}: ${error?.message || error}`, challenge: true };
     }
@@ -210,12 +243,13 @@ async function pageFetch(url, binary) {
     })()`;
     let reply;
     try {
-        [reply] = await browser.tabs.executeScript(tabId, { code });
+        [reply] = await inTime(browser.tabs.executeScript(tabId, { code }), binary ? FILE_WAIT_MS : TEXT_WAIT_MS, [{ ok: false, status: 0, error: 'The site tab took too long to answer.', stuck: true }]);
     } catch (error) {
         return { ok: false, status: 0, error: `Firefox could not ask from the ${new URL(url).hostname} tab: ${error?.message || error}`, challenge: true };
     }
-    if (!reply) {
-        return { ok: false, status: 0, error: 'The site tab gave no answer.', challenge: true };
+    if (!reply || reply.stuck) {
+        dropTab(tabId);
+        return { ok: false, status: 0, error: reply?.error || 'The site tab gave no answer.', challenge: true };
     }
     touchTab(originOf(url));
     return { ...reply, challenge: reply.status === 0 || isChallenge(reply.status, String(reply.text || '')) };
@@ -231,7 +265,7 @@ function getPass(site, url, tabId) {
     const job = (async () => {
         let passTab;
         try {
-            passTab = await siteTab(url);
+            passTab = await siteTab(url, tabId);
         } catch {
             return { passed: false };
         }
@@ -303,13 +337,13 @@ async function doFetch(url, binary, tabId) {
             }
             PAGE_FIRST.add(origin);
         }
-        let reply = await pageFetch(url, binary);
+        let reply = await pageFetch(url, binary, tabId);
         if (!reply.challenge) {
             return reply;
         }
         const pass = await getPass(site, url, tabId);
         if (pass.passed) {
-            reply = await pageFetch(url, binary);
+            reply = await pageFetch(url, binary, tabId);
         }
         return { ...reply, passTried: true };
     });

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.70.0';
+const VERSION = '2.71.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -23,7 +23,7 @@ const TAG_SYNONYMS = { male: '1boy', man: '1boy', boy: '1boy', guy: '1boy', fema
 const DEFAULT_TAG_PROMPT = 'You pick image-board (booru) tags to find a picture of one person from a roleplay. First decide who the picture should show: {{char}} if they are in the latest messages, otherwise the person the latest message is about. Then give tags for that person only, based only on what the text below says or clearly implies. Never guess: if the text does not say it, leave it out. Three correct tags are better than many guesses. Give at most {{max}} tags.\nUseful kinds of tags, most important first: how many and gender (1girl, 1boy), species if not human, body type and age look, skin color, hair color or baldness, lasting features of the body, and the kind of outfit.\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, place, background, time, weather or lighting. Never use names from the story. Use common booru tags: lowercase, with underscores inside a tag.\nFor every tag, quote the few words of the text below that support it.\n\nReply in exactly this format:\nSubject: the person\'s name, or none\nTags:\ntag = "exact words from the text"\ntag = "exact words from the text"\n\n{{context}}';
 const OLD_TAG_PROMPTS = ['Below is the latest part of a roleplay. Reply with up to {{max}} image-board (booru) tags describing who or what is visible right now: character type, hair, eyes, clothing, expression, pose, creatures, objects. Most important tag first. Lowercase, underscores inside multi-word tags (black_hair, cat_ears), separated by commas. No locations, backgrounds, time of day, weather or lighting. Reply with the tags only, nothing else.\n\n{{context}}', 'You choose image-board (booru) tags to find a picture of {{char}} as they appear in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. Reply with up to {{max}} tags, most important first, in this order:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, demon_girl, wolf, dragon\n3. hair color, then hair length or style: black_hair, long_hair, ponytail\n4. eye color: blue_eyes\n5. skin color: dark_skin, pale_skin, tan\n6. clothing and accessories: armor, hooded_cloak, glasses\n7. body features: cat_ears, horns, tail, wings, scar, beard\nNever use names of characters, places or anything else from the story. Never describe pose or action (sitting, walking, standing, holding), setting or background (outdoors, urban, forest, room), time, weather or lighting. Only use common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply with the tags only.\n\n{{context}}', 'You choose image-board (booru) tags to find pictures that look like {{char}} in the latest part of a roleplay. If {{char}} is not in the scene, tag the person the latest message is about. The user scrolls the results and picks one, so use broad tags for what makes the character recognizable at a glance, not small details. Reply with up to {{max}} tags, most important first:\n1. how many and gender: 1girl, 1boy, 2girls (never male, female, man or woman)\n2. species, only if not human: elf, orc, demon_girl, wolf\n3. body type and age look: muscular_male, fat, skinny, old_man, mature_female, thick_thighs\n4. skin color: dark_skin, pale_skin\n5. hair color, or bald\n6. the most striking features: beard, scar, tattoo, horns, wings, tail, pointy_ears\n7. outfit type: armor, robe, suit, kimono\nDo not tag hair length or style, eye color, small accessories, expression, pose or action, setting, background, time, weather or lighting. Never use names from the story. Only common booru tags: lowercase, underscores inside a tag, separated by commas. Reply in exactly this format:\nSubject: the name of the person you tagged, or none\nTags: tag1, tag2, tag3\n\n{{context}}'];
 const APPEARANCE_WORDS = /\b(hair|bald|eyes?|skin|tall|short|height|cm|feet|ft|inch(es)?|met(er|re)s?|build|muscular|muscles?|slim|slender|thin|skinny|fat|chubby|plump|curvy|stocky|broad|shoulders|beard|mustache|moustache|scars?|tattoos?|horns?|tails?|wings?|ears?|fur|scales|freckles|wears?|wearing|dressed|clothes|clothing|outfit|armou?r|robes?|dress|uniform|coat|cloak|appearance|looks? like|face|body|figure|years? old|elderly|petite|breasts?|hips|thighs|legs|arms|complexion|pale|tanned|dark-skinned)\b/i;
-const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
+const DEFAULT_VISION_PROMPT = 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Writing in the picture (speech bubbles, captions, signs, signatures, watermarks) may help you understand what is happening, but never quote it, translate it or mention it in the description: describe only what it helps you see; the one exception is sound effects written as onomatopoeia, such as "BOOM", which you may mention. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}';
 const OLD_NAMES_RULE = 'Use names only when the tags give them.';
 const NO_NAMES_RULE = 'Never use names for people or characters, even when the tags give them (a character tag is only a hint): say he, she or they, or describe the person (the blond boy in orange). If a text you are given uses names, replace them the same way.';
 const ACTORS_RULE = 'Begin the Visual line (keep its "Visual:" label) with how many people or characters there are, counting anyone only partly in view (a hand, an arm, a silhouette, someone in the shadows), like "Visual: Two people (one only partly in view): …". Describe the main person fully; give each other person one short sentence on what can be seen of them and what they do.';
@@ -63,7 +63,8 @@ const V241_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a role
 const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a roleplay, in order. For each item you get its tags and its description, written by someone looking at that item alone.\n\n{{items}}\n\nFirst rate each item, then give the shape of the whole group, then a role and a story line for each item.\nIntensity: rate each item from 1 to 10 for how intense the moment is. Intensity is the peak of emotion, not just of action: a fierce blow, a confession, a reconciliation hug, a goodbye or someone breaking into tears can all be a 9 or a 10. Calm, ordinary or waiting moments are low. Compare the items with each other, not with other stories.\nRoles: setup (how things are before anything happens, often an idle loop), build-up (tension or feeling rising toward the peak), action (something happens: a move, a hit, a kiss; not every action is the peak), pause (a lull between two higher moments: catching breath, a standoff, a loop that holds the moment), climax (the item where the intensity peaks), aftermath (after the climax: its result, or the reaction to it, with the intensity coming down), transition (moving on to another place or scene). After the role, add a finer role of 1 to 3 words of your own, like idle loop, wind-up, first clash, standoff, finishing blow, embrace, tears, reaction, calm down.\nGuidelines:\n- Decide the climax from the intensity: it is the item with the highest one, and there is at most one. It can be anywhere, also the first item, and in a sad or tender scene it is the most emotional moment, not the most active one.\n- An item after the climax that shows its result or a reaction is the aftermath, even if something still moves in it. A group that ends on the peak has no aftermath.\n- Item 1 is not always the setup: a group can start in the middle of things, with a build-up or an action.\n- A group has highs and lows. Roles can repeat and come in any order, like setup, action, pause, action, climax.\n- A loop says how an item moves, not what it is: it can be a setup, a pause or an aftermath depending on what it shows.\nExamples: setup, climax, aftermath; build-up, climax, aftermath (starts in the middle of things); setup, action, pause, climax, aftermath; setup, build-up, action, climax (ends on the peak); climax, aftermath, aftermath (starts at the peak); setup, build-up, climax (a tearful goodbye).\nStory line: 1 to 2 sentences on what this moment means in the story, from what was happening before and what is happening now, like "He was eating his ramen; now he slurps the last noodle, so he has just finished the bowl." Say what it means, not what looks different (not "the noodles are shorter now"). For item 1, say what is going on. Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one rating line per item, then the shape line, then one line per item, and nothing else, like:\nIntensity 1: 4, they size each other up\nIntensity 2: 9, the decisive blow\nIntensity 3: 5, she staggers back, hurt\nShape: build-up → climax → aftermath\n1. build-up, sizing up: ...\n2. climax, finishing blow: ...';
 const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
-const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
+const DEFAULT_OWN_TAGS_PROMPT = 'Each picture of a {{kind}} was tagged on its own by an image board, then described by someone looking at it. For each item below, list only those of its own tags that nothing in its description shows: not in any words, and not as something that clearly goes with it. Tags never match a description word for word and descriptions leave out small things, so be generous: when the description shows the thing a tag names, or something close to it, the tag is shown. Judge each item on its own description only.{{hints}}\n\n{{items}}\n\nReply with one line per item and nothing else, like:\nItem 1: none\nItem 2: a_tag, another_tag';
+const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
@@ -158,6 +159,7 @@ const DEFAULTS = {
     groupReview: true,
     groupImportance: true,
     importancePrompt: DEFAULT_IMPORTANCE_PROMPT,
+    ownTagsPrompt: DEFAULT_OWN_TAGS_PROMPT,
     catalogSize: 30,
     sendButton: true,
     confirmPicture: true,
@@ -6045,6 +6047,8 @@ function cleanReport(report) {
         facts: String(report.facts || '').slice(0, 1500),
         itemFacts: Array.isArray(report.itemFacts) ? report.itemFacts.slice(0, 8).map(text => String(text || '').slice(0, 1500)) : [],
         ownTags: Array.isArray(report.ownTags) ? report.ownTags.map(Number).filter(Boolean).slice(0, 8) : [],
+        ownMissing: tagMap(report.ownMissing),
+        ownReply: String(report.ownReply || '').slice(0, 3000),
         gender: report.gender && typeof report.gender === 'object' ? { word: String(report.gender.word || '').slice(0, 40), board: String(report.gender.board || '').slice(0, 60), items: (Array.isArray(report.gender.items) ? report.gender.items : []).map(Number).filter(Boolean).slice(0, 20), story: Boolean(report.gender.story) } : null,
         fit: Array.isArray(report.fit) ? report.fit.filter(item => item && item.item).slice(0, 20).map(item => ({ item: Number(item.item) || 0, fits: Boolean(item.fits), said: String(item.said || '').slice(0, 300), instead: String(item.instead || '').slice(0, 300), fixed: Boolean(item.fixed) })) : [],
         fitReply: String(report.fitReply || '').slice(0, 3000),
@@ -6076,7 +6080,7 @@ function cleanEntry(entry) {
         report: cleanReport(entry.report),
         attention: entry.attention && typeof entry.attention === 'object' ? { tags: cleanStrings(entry.attention.tags, 20), at: Number(entry.attention.at) || Date.now() } : null,
         arc: grouped ? String(entry.arc || '').slice(0, 300) : '',
-        removedTags: grouped && entry.removedTags && typeof entry.removedTags === 'object' ? Object.fromEntries(Object.entries(entry.removedTags).slice(0, 40).map(([tag, info]) => [String(tag), { reason: String(info?.reason || '').slice(0, 400), by: info?.by === 'ai' ? 'ai' : 'you', ...(info?.confirmed ? { confirmed: true } : {}), at: Number(info?.at) || Date.now() }])) : {},
+        removedTags: grouped && entry.removedTags && typeof entry.removedTags === 'object' ? Object.fromEntries(Object.entries(entry.removedTags).slice(0, 40).map(([tag, info]) => [String(tag), { reason: String(info?.reason || '').slice(0, 400), by: info?.by === 'ai' ? 'ai' : 'you', ...(info?.confirmed ? { confirmed: true } : {}), ...(Array.isArray(info?.items) && info.items.length ? { items: info.items.map(Number).filter(Boolean).slice(0, 8) } : {}), at: Number(info?.at) || Date.now() }])) : {},
         keywords: Array.isArray(entry.keywords) ? entry.keywords.map(String) : [],
         wiKeys: Array.isArray(entry.wiKeys) ? entry.wiKeys.map(String) : null,
         characters: Array.isArray(entry.characters) ? entry.characters.map(String) : [],
@@ -7344,12 +7348,18 @@ function saveRemovalNote(tag, note) {
 
 function removeTag(entry, tag, info) {
     const keep = list => list.filter(other => normalizeTag(other) !== tag);
-    entry.tags = keep(entry.tags);
-    entry.variants.forEach(item => {
+    const only = Array.isArray(info?.items) && info.items.length ? new Set(info.items.map(Number)) : null;
+    entry.variants.forEach((item, index) => {
+        if (only && !only.has(index + 1)) {
+            return;
+        }
         item.tags = keep(item.tags);
         item.shows = keep(item.shows);
         item.added = keep(item.added);
     });
+    if (!only || !entry.variants.some(item => item.tags.some(other => normalizeTag(other) === tag))) {
+        entry.tags = keep(entry.tags);
+    }
     if (entry.report) {
         entry.report.notShown = entry.report.notShown.filter(other => other !== tag);
     }
@@ -7360,6 +7370,12 @@ function restoreTag(entry, tag) {
     if (!entry.tags.includes(tag)) {
         entry.tags = [...entry.tags, tag];
     }
+    (entry.removedTags?.[tag]?.items || []).forEach(number => {
+        const item = entry.variants[number - 1];
+        if (item && !item.tags.includes(tag)) {
+            item.tags = [...item.tags, tag];
+        }
+    });
     if (entry.report && !entry.report.notShown.includes(tag)) {
         entry.report.notShown = [...entry.report.notShown, tag];
         delete entry.report.decided[tag];
@@ -8033,12 +8049,12 @@ async function reviewGroup(entry) {
     };
 }
 
-function importancePrompt(entry, tags, missing) {
+function importancePrompt(entry, tags, missing, ownMissing = entry.report?.ownMissing) {
     const items = entry.variants.map((item, index) => `Item ${index + 1}: ${[item.sections?.action, item.diff].filter(Boolean).join(' ') || shortDescription({ ...entry, sections: item.sections, description: item.description })}`).join('\n');
     const { matter, dont } = rememberedTags();
     const remembered = [matter.size ? `Tags the user said matter: ${[...matter].slice(0, 40).join(', ')}.` : '', dont.size ? `Tags the user threw out as unimportant: ${[...dont].slice(0, 40).join(', ')}.` : ''].filter(Boolean);
     const rememberedText = remembered.length ? `${remembered.join(' ')} Judge similar tags the same way.` : '';
-    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: tags.join(', ') || 'none', missing: missing.join(', '), overview: entry.description || '', remembered: rememberedText };
+    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, tags: tags.join(', ') || 'none', missing: missing.map(tag => (ownMissing?.[tag] ? `${tag} (tagged on item ${ownMissing[tag].join(', ')} only, and not seen in ${ownMissing[tag].length === 1 ? 'its' : 'their'} description)` : tag)).join(', '), overview: entry.description || '', remembered: rememberedText };
     const template = String(settings().importancePrompt || DEFAULT_IMPORTANCE_PROMPT);
     const text = template.replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
     const definitions = missing.map(tag => (definitionLine(tag) ? `- ${tag.replace(/_/g, ' ')}: ${definitionLine(tag)}` : '')).filter(Boolean);
@@ -8046,8 +8062,8 @@ function importancePrompt(entry, tags, missing) {
     return definitions.length ? `${withLists}\n\nWhat the tags not found mean, copied from the site's wiki:\n${definitions.join('\n')}` : withLists;
 }
 
-async function judgeMissing(entry, tags, missing) {
-    const reply = await textAsk(importancePrompt(entry, tags, missing), 120 + missing.length * 40);
+async function judgeMissing(entry, tags, missing, ownMissing) {
+    const reply = await textAsk(importancePrompt(entry, tags, missing, ownMissing), 120 + missing.length * 40);
     const wanted = new Set(missing);
     const judged = new Map();
     let verdict = '';
@@ -8384,7 +8400,7 @@ async function describeSet(entry, blobs = []) {
             if (ask.length) {
                 groupStep(entry, `Judging ${ask.length} tag${ask.length === 1 ? '' : 's'} not found…`);
                 try {
-                    const judged = await judgeMissing(entry, checkable, ask);
+                    const judged = await judgeMissing(entry, checkable, ask, report.ownMissing);
                     report.importance.push(...judged.items);
                     verdict = judged.verdict;
                     report.steps.importance = 'on';
@@ -8826,6 +8842,16 @@ async function tagImplications(tags, site = '') {
     return new Map(tags.filter(tag => now[tag]?.to?.length).map(tag => [tag, now[tag].to]));
 }
 
+function ownTagsPrompt(entry, own) {
+    const { matter } = rememberedTags();
+    const hints = tagHintLines([...new Set(own.flat())].filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length));
+    const items = entry.variants.map((item, index) => (own[index].length ? `Item ${index + 1}:\nDescription: ${String(item.description || '').replace(/\s+/g, ' ').trim().slice(0, 1500)}\nIts own tags: ${own[index].join(', ')}` : '')).filter(Boolean).join('\n\n');
+    const values = { kind: groupWhat(entry), count: String(entry.variants.length), items, hints: hints.length ? `\n\nWhat some of these tags mean (copied from the site's wiki) and what the user said about them in earlier pictures:\n${hints.join('\n')}` : '' };
+    const template = String(settings().ownTagsPrompt || DEFAULT_OWN_TAGS_PROMPT);
+    const text = template.replace(/\{\{(\w+)\}\}/g, (all, key) => values[key] ?? all);
+    return template.includes('{{items}}') ? text : `${text}\n\n${items}`;
+}
+
 function itemTagsPrompt(entry, lacking) {
     const { matter } = rememberedTags();
     const all = [...new Set(lacking.flat())];
@@ -9159,6 +9185,33 @@ async function describeSequence(entry, blobs = []) {
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
         const described = items.every(item => item.description);
+        report.ownMissing = {};
+        const ownCheck = items.map((item, index) => (trusted[index] && item.description ? item.shows.filter(tag => own[index].includes(tag)) : []));
+        if (described && ownCheck.some(list => list.length)) {
+            groupStep(entry, 'Checking each picture against its own tags…');
+            try {
+                report.cost.text += 1;
+                const reply = await textAsk(ownTagsPrompt(entry, ownCheck), 60 + 40 * count);
+                report.ownReply = String(reply).slice(0, 3000);
+                readItemTags(entry, ownCheck, reply).forEach((hits, index) => hits.forEach(hit => {
+                    items[index].shows = items[index].shows.filter(tag => tag !== hit.tag);
+                    report.ownMissing[hit.tag] = [...(report.ownMissing[hit.tag] || []), index + 1];
+                    const left = (report.board[hit.tag] || []).filter(number => number !== index + 1);
+                    if (left.length) {
+                        report.board[hit.tag] = left;
+                    } else {
+                        delete report.board[hit.tag];
+                    }
+                }));
+                report.steps.own = Object.keys(report.ownMissing).length ? 'on' : 'all found';
+            } catch (error) {
+                report.errors.push(`Checking each picture against its own tags: ${error?.message || error}`);
+                report.steps.own = 'failed';
+            }
+            const gone = Object.keys(report.ownMissing);
+            report.missing = [...new Set([...report.missing, ...gone])];
+            report.notShown = [...new Set([...report.notShown, ...gone])];
+        }
         const lacking = items.map((item, index) => (trusted[index] ? [] : checkable.filter(tag => !item.shows.includes(tag) && !item.dropped.includes(tag))));
         if (described && lacking.some(list => list.length)) {
             if (report.notShown.length) {
@@ -9226,7 +9279,7 @@ async function describeSequence(entry, blobs = []) {
         }
         const verify = new Map();
         const proposed = new Map();
-        const deducible = report.notShown.filter(tag => tagNotesFor(tag).length || removalNotesFor(tag).length || (matter.has(tag) && tagDefinition(tag)));
+        const deducible = report.notShown.filter(tag => !report.ownMissing[tag] && (tagNotesFor(tag).length || removalNotesFor(tag).length || (matter.has(tag) && tagDefinition(tag))));
         if (deducible.length && described && s.groupDeduce !== false) {
             groupStep(entry, `Your notes: where ${deducible.length} tag${deducible.length === 1 ? '' : 's'} nobody saw could be…`);
             try {
@@ -9353,7 +9406,7 @@ async function describeSequence(entry, blobs = []) {
                 groupStep(entry, `Tags not found: judging ${ask.length}…`);
                 try {
                     report.cost.text += 1;
-                    const judged = await judgeMissing(entry, checkable, ask);
+                    const judged = await judgeMissing(entry, checkable, ask, report.ownMissing);
                     report.importance.push(...judged.items);
                     verdict = judged.verdict;
                     report.steps.importance = 'on';
@@ -9533,7 +9586,7 @@ async function applyTagChoices(entry, choices) {
             report.decided[tag] = 'nothere';
             judged(tag, true, note ? `not in this picture: ${note}` : 'not in this picture');
             rememberTag(tag, true, entry.site);
-            removeTag(entry, tag, { reason: note, by: 'you' });
+            removeTag(entry, tag, { reason: note, by: 'you', items: report.ownMissing?.[tag] });
             saveRemovalNote(tag, { reason: plainNote(note, entry), kind });
             continue;
         }
@@ -10291,6 +10344,10 @@ function tagPanel(entry, onChange) {
         if (meaning) {
             body.appendChild(el('small', 'stis-tagfix-def', `${meaning.text} (${meaning.site} wiki)`));
         }
+        const ownedBy = report.ownMissing?.[tag];
+        if (ownedBy?.length) {
+            body.appendChild(el('small', 'stis-tagfix-why', `The site tagged picture ${ownedBy.join(', ')} with it, but ${ownedBy.length === 1 ? 'its' : 'their'} description does not show it. Not here takes it off ${ownedBy.length === 1 ? 'that picture' : 'those pictures'} only.`));
+        }
         if (judged?.why) {
             body.appendChild(el('small', 'stis-tagfix-why', `${judged.important ? 'Matters' : 'Minor'}: ${judged.why}`));
         }
@@ -10508,10 +10565,10 @@ function groupReportBox(entry, current) {
     const box = el('details', 'stis-group-report');
     const notShown = report.notShown.length;
     box.appendChild(el('summary', '', `How this was described${notShown ? ` · ${notShown} tag${notShown === 1 ? '' : 's'} not found` : ''}${report.problems.length ? ` · ${report.problems.length} fix${report.problems.length === 1 ? '' : 'es'}` : ''}`));
-    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix', 'own tags': 'not needed: each picture has its own tags' };
+    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix', 'own tags': 'not needed: each picture has its own tags', 'all found': 'all found' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
     const v3 = report.framework === 'v3';
-    const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · site implications: ${step('implied')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · site implications: ${step('implied')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')}${report.ownTags?.length ? ` · each picture against its own tags: ${step('own')}` : ''} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
     if (report.ownTags?.length) {
         lines.push(report.ownTags.length === entry.variants.length ? 'Each picture kept its own tags from the site: no guessing which tag goes where.' : `Picture ${report.ownTags.join(', ')} kept ${report.ownTags.length === 1 ? 'its' : 'their'} own tags from the site; the others had none of their own, so their tags were placed by the look at the whole sequence.`);
     }
@@ -18866,6 +18923,12 @@ function buildSettings() {
                             <div id="st_imagesearch_importance_reset" class="menu_button">Reset this prompt</div>
                         </div>
                         <div class="stis-set">
+                            <div class="stis-label">Prompt for each picture's own tags (picture sequences)</div>
+                            <textarea id="st_imagesearch_own_tags_prompt" class="text_pole"></textarea>
+                            <small class="stis-help">In a sequence of separate pictures, each picture keeps its own tags; after they are described, this asks which of its own tags each description does not show. Those go to "tags not found" for that picture, and are judged with the prompt above. Filled in: {{kind}}, {{count}}, {{items}} (each item's description and own tags), {{hints}} (wiki definitions and your notes). The answer needs one "Item 1: none" or "Item 2: a_tag, another_tag" line per item.</small>
+                            <div id="st_imagesearch_own_tags_reset" class="menu_button">Reset this prompt</div>
+                        </div>
+                        <div class="stis-set">
                             <div class="stis-label">Story prompt (sequences)</div>
                             <textarea id="st_imagesearch_story_prompt" class="text_pole"></textarea>
                             <small class="stis-help">Filled in: {{kind}}, {{count}}, {{items}} (each item's tags and description, with the part's place in the video), {{tags}}. The answer needs one line per item, like "2. main action, climax: ...".</small>
@@ -19386,6 +19449,12 @@ function buildSettings() {
     }
     bind('st_imagesearch_group_importance', 'groupImportance', 'checked');
     bind('st_imagesearch_importance_prompt', 'importancePrompt');
+    bind('st_imagesearch_own_tags_prompt', 'ownTagsPrompt');
+    document.getElementById('st_imagesearch_own_tags_reset').addEventListener('click', () => {
+        s.ownTagsPrompt = DEFAULT_OWN_TAGS_PROMPT;
+        document.getElementById('st_imagesearch_own_tags_prompt').value = DEFAULT_OWN_TAGS_PROMPT;
+        save();
+    });
     document.getElementById('st_imagesearch_importance_reset').addEventListener('click', () => {
         s.importancePrompt = DEFAULT_IMPORTANCE_PROMPT;
         document.getElementById('st_imagesearch_importance_prompt').value = DEFAULT_IMPORTANCE_PROMPT;

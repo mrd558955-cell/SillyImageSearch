@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.69.1';
+const VERSION = '2.70.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -11604,6 +11604,7 @@ function onWorldInfoActivated(entries) {
 
 const CARD_BATCH = 8;
 const CARD_VERSION = 6;
+const MAX_SEARCH_TABS = 6;
 const RATING_LEVELS = ['general', 'sensitive', 'questionable', 'explicit'];
 const RATING_NAMES = { general: 'General (SFW)', sensitive: 'Sensitive', questionable: 'Questionable', explicit: 'Explicit (R-18)' };
 const SHEET_VERSION = 4;
@@ -15063,6 +15064,7 @@ async function openPicker(initialTags = null, focus = null) {
         tabs: el('div', 'stis-tabs'),
         tabSearch: el('div', 'menu_button stis-tab stis-tab-on', 'Search'),
         tabLibrary: el('div', 'menu_button stis-tab', 'Library'),
+        searchTabs: el('div', 'stis-search-tabs'),
         who: el('div', 'stis-who'),
         top: el('div', 'stis-top'),
         site: el('select', 'text_pole stis-site'),
@@ -15152,7 +15154,7 @@ async function openPicker(initialTags = null, focus = null) {
     ui.grid.appendChild(ui.sentinel);
     ui.preview.hidden = true;
     ui.debug.hidden = !s.debug;
-    ui.root.append(ui.tabs, ui.who, ui.top, ui.complete, ui.sites, ui.pixivBar, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.check, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
+    ui.root.append(ui.tabs, ui.searchTabs, ui.who, ui.top, ui.complete, ui.sites, ui.pixivBar, ui.favs, ui.chipMenu, ui.lookBar, ui.status, ui.debug, ui.blocked, ui.check, ui.grid, ui.libraryView, ui.selectBar, ui.preview);
     ui.blocked.hidden = true;
     ui.check.hidden = true;
     thumbTrouble.clear();
@@ -15288,6 +15290,99 @@ async function openPicker(initialTags = null, focus = null) {
     };
 
     const requiredList = () => tags.filter(tag => required.has(tag));
+
+    const tabFrom = saved => ({ site: String(saved?.site || ''), tags: (Array.isArray(saved?.tags) ? saved.tags : []).map(String), required: (Array.isArray(saved?.required) ? saved.required : []).map(String), negatives: (Array.isArray(saved?.negatives) ? saved.negatives : []).map(String), browse: null, scroll: 0 });
+    const searchTabs = [tabFrom(null), ...(Array.isArray(s.searchTabs) ? s.searchTabs.slice(1, MAX_SEARCH_TABS) : []).map(tabFrom)];
+    let activeTab = 0;
+    const tabLabel = list => (list.length ? `${list.slice(0, 2).join(' ').replace(/_/g, ' ')}${list.length > 2 ? ` +${list.length - 2}` : ''}` : 'New search');
+    const keepTab = () => {
+        Object.assign(searchTabs[activeTab], { site: ui.site.value, tags: [...tags], required: requiredList(), negatives: [...negatives], browse, scroll: ui.grid.scrollTop });
+    };
+    const storeTabs = () => {
+        s.searchTabs = searchTabs.map(tab => ({ site: tab.site, tags: tab.tags, required: tab.required, negatives: tab.negatives }));
+    };
+    const renderSearchTabs = () => {
+        ui.searchTabs.innerHTML = '';
+        searchTabs.forEach((tab, index) => {
+            const on = index === activeTab;
+            const button = el('div', `menu_button stis-search-tab${on ? ' stis-search-tab-on' : ''}`);
+            const label = tabLabel(on ? tags : tab.tags);
+            button.appendChild(el('span', 'stis-search-tab-name', label));
+            button.title = on ? 'This search' : `Go to: ${label}`;
+            button.addEventListener('click', () => switchTab(index));
+            if (searchTabs.length > 1) {
+                const shut = el('i', 'fa-solid fa-xmark stis-search-tab-x');
+                shut.title = 'Close this tab';
+                shut.addEventListener('click', event => {
+                    event.stopPropagation();
+                    closeTab(index);
+                });
+                button.appendChild(shut);
+            }
+            ui.searchTabs.appendChild(button);
+        });
+        if (searchTabs.length < MAX_SEARCH_TABS) {
+            const add = el('div', 'menu_button stis-search-tab stis-search-tab-add');
+            add.innerHTML = '<i class="fa-solid fa-plus"></i>';
+            add.title = 'New search tab, with its own tags';
+            add.addEventListener('click', addTab);
+            ui.searchTabs.appendChild(add);
+        }
+    };
+    const showTab = index => {
+        activeTab = index;
+        const tab = searchTabs[index];
+        if (tab.site && [...ui.site.options].some(option => option.value === tab.site)) {
+            ui.site.value = tab.site;
+        }
+        negatives = [...tab.negatives];
+        setTags(tab.tags, false, tab.required);
+        renderSites();
+        if (tab.browse && !tab.browse.error && sameSearch(tab.browse, ui.site.value, tags, requiredList(), negatives)) {
+            useBrowse(tab.browse);
+            const scroll = tab.scroll;
+            requestAnimationFrame(() => {
+                ui.grid.scrollTop = scroll;
+            });
+            renderSearchTabs();
+        } else {
+            runSearch();
+        }
+    };
+    const switchTab = index => {
+        if (index === activeTab || closed) {
+            return;
+        }
+        keepTab();
+        showTab(index);
+        storeTabs();
+        save();
+    };
+    const addTab = () => {
+        keepTab();
+        searchTabs.push(tabFrom({ site: ui.site.value }));
+        showTab(searchTabs.length - 1);
+        storeTabs();
+        save();
+        ui.input.focus();
+    };
+    const closeTab = index => {
+        if (searchTabs.length < 2) {
+            return;
+        }
+        if (index !== activeTab) {
+            searchTabs.splice(index, 1);
+            if (index < activeTab) {
+                activeTab--;
+            }
+            renderSearchTabs();
+        } else {
+            searchTabs.splice(index, 1);
+            showTab(Math.min(index, searchTabs.length - 1));
+        }
+        storeTabs();
+        save();
+    };
 
     const selectedLookName = () => {
         if (!selectedWho || selectedWho === '*ai*') {
@@ -16010,10 +16105,15 @@ async function openPicker(initialTags = null, focus = null) {
             return;
         }
         const req = requiredList();
-        s.lastTags = [...tags];
-        s.lastRequired = req;
+        if (activeTab === 0) {
+            s.lastTags = [...tags];
+            s.lastRequired = req;
+        }
         s.lastSite = ui.site.value;
+        Object.assign(searchTabs[activeTab], { site: ui.site.value, tags: [...tags], required: req, negatives: [...negatives] });
+        storeTabs();
         save();
+        renderSearchTabs();
         if (!tags.length) {
             browse = null;
             ui.grid.querySelectorAll('.stis-cell').forEach(cell => cell.remove());
@@ -16040,6 +16140,12 @@ async function openPicker(initialTags = null, focus = null) {
     const adoptSuggestion = pre => {
         if (closed || edited || !pre?.tags) {
             renderWho();
+            return;
+        }
+        if (activeTab !== 0) {
+            Object.assign(searchTabs[0], { tags: pre.tags.map(normalizeTag), required: (pre.required || []).map(normalizeTag), browse: null, scroll: 0 });
+            storeTabs();
+            renderSearchTabs();
             return;
         }
         const keepLook = selectedLookName() && pre.lookName !== selectedLookName();
@@ -18083,6 +18189,7 @@ async function openPicker(initialTags = null, focus = null) {
     function setView(next) {
         const lib = next === 'library';
         ui.top.hidden = lib;
+        ui.searchTabs.hidden = lib;
         ui.complete.hidden = true;
         ui.status.hidden = lib;
         ui.grid.hidden = lib;

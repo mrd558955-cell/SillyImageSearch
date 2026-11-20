@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.68.1';
+const VERSION = '2.69.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -948,7 +948,7 @@ async function agentHeaders(url) {
     return agentFor(url);
 }
 
-const firefox = { version: '', sites: [], waiting: new Map(), counter: 0, blobs: new Set(), checked: null, passing: new Map() };
+const firefox = { version: '', sites: [], waiting: new Map(), counter: 0, blobs: new Set(), checked: null, passing: new Map(), images: new Map(), ready: new Map() };
 
 window.addEventListener('message', event => {
     if (event.source !== window || event.data?.source !== 'stis-fetcher') {
@@ -1049,16 +1049,25 @@ async function firefoxImage(url) {
     return { blob, format: SAVE_FORMATS[type] || await sniffFormat(blob) };
 }
 
-async function firefoxImageUrl(url) {
-    const { blob } = await firefoxImage(url);
-    const link = URL.createObjectURL(blob);
-    firefox.blobs.add(link);
-    return link;
+function firefoxImageUrl(url) {
+    if (!firefox.images.has(url)) {
+        const job = firefoxImage(url).then(({ blob }) => {
+            const link = URL.createObjectURL(blob);
+            firefox.blobs.add(link);
+            firefox.ready.set(url, link);
+            return link;
+        });
+        job.catch(() => firefox.images.delete(url));
+        firefox.images.set(url, job);
+    }
+    return firefox.images.get(url);
 }
 
 function dropFirefoxBlobs() {
     firefox.blobs.forEach(link => URL.revokeObjectURL(link));
     firefox.blobs.clear();
+    firefox.images.clear();
+    firefox.ready.clear();
 }
 
 async function request(url, options = {}) {
@@ -6022,6 +6031,8 @@ function cleanReport(report) {
         fixed: Array.isArray(report.fixed) ? report.fixed.filter(fix => fix && fix.item).slice(0, 20).map(fix => ({ item: Number(fix.item) || 0, role: Boolean(fix.role), problems: Number(fix.problems) || 0, kept: cleanStrings(fix.kept, 10), left: cleanStrings(fix.left, 10) })) : [],
         cost: report.cost && typeof report.cost === 'object' ? { vision: Number(report.cost.vision) || 0, text: Number(report.cost.text) || 0, seconds: Number(report.cost.seconds) || 0 } : null,
         facts: String(report.facts || '').slice(0, 1500),
+        itemFacts: Array.isArray(report.itemFacts) ? report.itemFacts.slice(0, 8).map(text => String(text || '').slice(0, 1500)) : [],
+        ownTags: Array.isArray(report.ownTags) ? report.ownTags.map(Number).filter(Boolean).slice(0, 8) : [],
         gender: report.gender && typeof report.gender === 'object' ? { word: String(report.gender.word || '').slice(0, 40), board: String(report.gender.board || '').slice(0, 60), items: (Array.isArray(report.gender.items) ? report.gender.items : []).map(Number).filter(Boolean).slice(0, 20), story: Boolean(report.gender.story) } : null,
         fit: Array.isArray(report.fit) ? report.fit.filter(item => item && item.item).slice(0, 20).map(item => ({ item: Number(item.item) || 0, fits: Boolean(item.fits), said: String(item.said || '').slice(0, 300), instead: String(item.instead || '').slice(0, 300), fixed: Boolean(item.fixed) })) : [],
         fitReply: String(report.fitReply || '').slice(0, 3000),
@@ -8923,8 +8934,9 @@ async function v3Describe(entry, index, blob, { problems = [], roleFix = null, v
     const item = entry.variants[index];
     const before = index > 0 ? entry.variants[index - 1] : null;
     const context = [`This ${itemAnimated(entry, item) ? 'GIF' : 'picture'} is item ${index + 1} of a ${groupWhat(entry)}.${item.role ? ` In the sequence it is the ${roleText(item.role)}${item.role.intensity ? `, intensity ${item.role.intensity}/10` : ''}${item.roleLock ? ' (set by the user)' : ''}.` : ''}`];
-    if (report?.facts) {
-        context.push(report.facts);
+    const factsText = typeof report?.itemFacts?.[index] === 'string' ? report.itemFacts[index] : report?.facts;
+    if (factsText) {
+        context.push(factsText);
     }
     const board = boardLines(entry, index);
     if (board) {
@@ -9040,39 +9052,52 @@ async function describeSequence(entry, blobs = []) {
         }
     });
     entry.arc = '';
-    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, implied: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 }, facts: '', gender: null };
+    const report = { framework: 'v3', at: Date.now(), steps: {}, missing: [], found: {}, notShown: [], importance: [], verdict: '', problems: [], errors: [], decided: {}, placed: {}, notes: {}, deduced: {}, noteLog: [], linked: {}, fit: [], inText: {}, board: {}, owned: {}, implied: {}, boardPeak: null, boardReply: '', fixed: [], cost: { vision: 0, text: 0, seconds: 0 }, facts: '', itemFacts: [], ownTags: [], gender: null };
     const checkable = checkableTags(entry);
     const ordered = list => checkable.filter(tag => list.includes(tag));
+    const own = items.map(item => (item.tags || []).map(normalizeTag).filter(tag => checkable.includes(tag)));
+    const distinct = new Set(own.map(list => [...new Set(list)].sort().join(' '))).size > 1;
+    const trusted = items.map((item, index) => !entry.fromVideo && distinct && own[index].length > 0);
+    report.ownTags = trusted.map((yes, index) => (yes ? index + 1 : 0)).filter(Boolean);
     try {
         const { matter } = rememberedTags();
         const hinted = checkable.filter(tag => matter.has(tag) || tagNotesFor(tag).length || removalNotesFor(tag).length);
-        const characters = await Promise.race([characterGenders(checkable, entry.site), new Promise(done => setTimeout(() => done(null), 8000))]).catch(() => null);
+        const lookup = tags => Promise.race([characterGenders(tags, entry.site), new Promise(done => setTimeout(() => done(null), 8000))]).catch(() => null);
+        const characters = await lookup(checkable);
         const facts = genderFacts(entry.tags, characters);
+        const itemFacts = await Promise.all(items.map(async (item, index) => (trusted[index] ? genderFacts(item.tags, await lookup(own[index])) : facts)));
         report.facts = facts.text;
+        report.itemFacts = itemFacts.map(found => found.text);
         if (hinted.length) {
             await Promise.race([ensureDefinitions(hinted, entry.site), new Promise(done => setTimeout(done, 15000))]).catch(() => null);
         }
+        const boardTags = trusted.every(Boolean) ? [] : checkable;
+        const ownLines = items.map((item, index) => (trusted[index] ? `Item ${index + 1}: ${own[index].join(', ').replace(/_/g, ' ')}` : '')).filter(Boolean);
+        const boardFacts = [facts.text, ownLines.length ? `Each of these pictures was tagged on its own by the site. Its own tags, as hints on who is there and what happens (the picture comes first):\n${ownLines.join('\n')}` : ''].filter(Boolean).join('\n\n');
         groupStep(entry, `Looking at all ${count} items together…`);
         let seen = null;
         try {
-            seen = await lookAtBoard(entry, blobs, checkable, report, facts.text);
-            const clash = items.map((item, index) => ({ index, word: genderClash(`${item.cast} ${item.beat}`, facts) })).filter(found => found.word);
+            seen = await lookAtBoard(entry, blobs, boardTags, report, boardFacts);
+            const clash = items.map((item, index) => ({ index, word: genderClash(`${item.cast} ${item.beat}`, itemFacts[index]) })).filter(found => found.word);
             if (seen && clash.length) {
+                const first = itemFacts[clash[0].index];
                 report.gender = { word: clash[0].word, board: 'asked again', items: [] };
-                const again = `Your first answer called someone "${clash[0].word}" (item ${clash.map(found => found.index + 1).join(', ')}), but ${facts.onlyMale ? 'no tag counts a girl or a woman, and everyone the tags count is male' : 'no tag counts a boy or a man, and everyone the tags count is female'}. Look again: that person is most likely ${facts.onlyMale ? 'one of the boys, androgynous or feminine-looking' : 'one of the girls'}. Answer again in the same format, for every item.`;
-                const second = await lookAtBoard(entry, blobs, checkable, report, facts.text, again).catch(() => null);
+                const again = `Your first answer called someone "${clash[0].word}" (item ${clash.map(found => found.index + 1).join(', ')}), but ${first.onlyMale ? 'no tag counts a girl or a woman, and everyone the tags count is male' : 'no tag counts a boy or a man, and everyone the tags count is female'}${trusted[clash[0].index] ? ' in that item\'s own tags' : ''}. Look again: that person is most likely ${first.onlyMale ? 'one of the boys, androgynous or feminine-looking' : 'one of the girls'}. Answer again in the same format, for every item.`;
+                const second = await lookAtBoard(entry, blobs, boardTags, report, boardFacts, again).catch(() => null);
                 if (second) {
                     seen = second;
                 }
-                report.gender.board = items.some(item => genderClash(`${item.cast} ${item.beat}`, facts)) ? 'asked again, still says so' : 'asked again, fixed';
+                report.gender.board = items.some((item, index) => genderClash(`${item.cast} ${item.beat}`, itemFacts[index])) ? 'asked again, still says so' : 'asked again, fixed';
             }
         } catch (error) {
             report.errors.push(`The whole sequence: ${error?.message || error}`);
             report.steps.board = 'failed';
         }
-        const own = items.map(item => (item.tags || []).map(normalizeTag).filter(tag => checkable.includes(tag)));
-        const distinct = new Set(own.map(list => [...new Set(list)].sort().join(' '))).size > 1;
         items.forEach((item, index) => {
+            if (trusted[index]) {
+                item.shows = checkable.filter(tag => (own[index].includes(tag) || item.added.includes(tag)) && !item.dropped.includes(tag));
+                return;
+            }
             item.shows = checkable.filter(tag => seen?.get(tag)?.has(index + 1) || item.added.includes(tag) || (distinct && own[index].includes(tag)));
             if (distinct) {
                 own[index].filter(tag => !seen?.get(tag)?.has(index + 1) && !item.added.includes(tag)).forEach(tag => {
@@ -9122,7 +9147,7 @@ async function describeSequence(entry, blobs = []) {
         entry.description = items[0].description;
         entry.keywords = [...new Set(items.flatMap(item => item.keywords))].slice(0, 12);
         const described = items.every(item => item.description);
-        const lacking = items.map(item => checkable.filter(tag => !item.shows.includes(tag) && !item.dropped.includes(tag)));
+        const lacking = items.map((item, index) => (trusted[index] ? [] : checkable.filter(tag => !item.shows.includes(tag) && !item.dropped.includes(tag))));
         if (described && lacking.some(list => list.length)) {
             if (report.notShown.length) {
                 await Promise.race([ensureDefinitions(report.notShown, entry.site), new Promise(done => setTimeout(done, 10000))]).catch(() => null);
@@ -9148,7 +9173,7 @@ async function describeSequence(entry, blobs = []) {
                 report.steps.inText = 'failed';
             }
         } else {
-            report.steps.inText = described ? 'not needed' : 'skipped';
+            report.steps.inText = !described ? 'skipped' : trusted.every(Boolean) ? 'own tags' : 'not needed';
         }
         if (described) {
             groupStep(entry, 'Story: intensity, roles and story lines…');
@@ -9243,9 +9268,9 @@ async function describeSequence(entry, blobs = []) {
             need(index).verify = list;
         });
         items.forEach((item, index) => {
-            const word = genderClash(item.description, facts);
+            const word = genderClash(item.description, itemFacts[index]);
             if (word && !item.lock) {
-                need(index).problems.push(genderProblem(word, facts));
+                need(index).problems.push(genderProblem(word, itemFacts[index]));
                 report.gender = { board: '', ...(report.gender || {}), word: report.gender?.word || word, items: [...(report.gender?.items || []), index + 1] };
             }
         });
@@ -9287,9 +9312,9 @@ async function describeSequence(entry, blobs = []) {
         });
         report.problems = problems.map(problem => ({ ...problem, redone: problem.about === 'story' ? storied : redone.has(problem.item) }));
         const storyNotes = problems.filter(problem => problem.about === 'story').map(problem => `item ${problem.item}: ${problem.problem}`);
-        const storyClash = items.map((item, index) => ({ number: index + 1, word: genderClash(item.diff, facts) })).filter(found => found.word);
+        const storyClash = items.map((item, index) => ({ number: index + 1, word: genderClash(item.diff, itemFacts[index]), facts: itemFacts[index] })).filter(found => found.word);
         if (storyClash.length) {
-            storyNotes.push(`the story lines of item ${storyClash.map(found => found.number).join(', ')} call someone "${storyClash[0].word}", but ${facts.onlyMale ? 'everyone the tags count is male: use he for that person' : 'everyone the tags count is female: use she for that person'}.`);
+            storyNotes.push(`the story lines of item ${storyClash.map(found => found.number).join(', ')} call someone "${storyClash[0].word}", but ${storyClash[0].facts.onlyMale ? 'everyone the tags count is male: use he for that person' : 'everyone the tags count is female: use she for that person'}.`);
             report.gender = { board: '', items: [], ...(report.gender || {}), word: report.gender?.word || storyClash[0].word, story: true };
         }
         if (storied && (redone.size || storyNotes.length)) {
@@ -10471,10 +10496,13 @@ function groupReportBox(entry, current) {
     const box = el('details', 'stis-group-report');
     const notShown = report.notShown.length;
     box.appendChild(el('summary', '', `How this was described${notShown ? ` · ${notShown} tag${notShown === 1 ? '' : 's'} not found` : ''}${report.problems.length ? ` · ${report.problems.length} fix${report.problems.length === 1 ? '' : 'es'}` : ''}`));
-    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix' };
+    const words = { on: 'done', off: 'off', failed: 'failed', together: 'all items together', 'one by one': 'one item at a time', 'not needed': 'not needed', skipped: 'skipped', 'no tags to check': 'no tags to check', remembered: 'from your past choices', 'none placed': 'none placed', 'all fit': 'all fit', 'no rules': 'no rules written', 'none found': 'none found', 'stills only': 'done with still pictures', 'nothing to fix': 'nothing to fix', 'own tags': 'not needed: each picture has its own tags' };
     const step = key => words[report.steps[key]] || report.steps[key] || 'not run';
     const v3 = report.framework === 'v3';
     const lines = [v3 ? `New steps (v3): whole sequence: ${step('board')} · site implications: ${step('implied')} · descriptions: ${step('describe')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · tags from your notes: ${step('deduce')} · final check: ${step('review')} · looking again: ${step('fix')} · story again: ${step('again')} · judging tags not found: ${step('importance')}` : `First look without tags: ${step('blind')} · looking for tags not seen: ${step('check')} · tags in the descriptions: ${step('inText')} · story lines: ${step('story')} · role fit: ${step('fit')} · deducing tags nobody saw: ${step('deduce')} · final check: ${step('review')} · judging tags not found: ${step('importance')}`];
+    if (report.ownTags?.length) {
+        lines.push(report.ownTags.length === entry.variants.length ? 'Each picture kept its own tags from the site: no guessing which tag goes where.' : `Picture ${report.ownTags.join(', ')} kept ${report.ownTags.length === 1 ? 'its' : 'their'} own tags from the site; the others had none of their own, so their tags were placed by the look at the whole sequence.`);
+    }
     const index = current ? entry.variants.indexOf(current) : -1;
     if (current && index >= 0) {
         lines.push(`${entry.fromVideo ? 'Part' : entry.kind === 'sequence' ? 'Picture' : 'Version'} ${index + 1} was given ${current.shows.length} tag${current.shows.length === 1 ? '' : 's'}: ${current.shows.join(', ').replace(/_/g, ' ') || 'none (its own or the group\'s tags were used)'}`);
@@ -14941,7 +14969,9 @@ function setThumbSource(img, item, fresh = false) {
     const site = item.siteFiles?.thumb || '';
     const identified = Boolean(agentFor(item.thumb)['User-Agent']);
     const server = identified ? () => serverImageUrl(item.thumb) : proxyUrl(item.thumb);
-    const sources = [fresh ? freshUrl(item.thumb) : item.thumb, throughFirefox(item.thumb) ? () => firefoxImageUrl(item.thumb) : '', site, fetcherLink(item.thumb), server, site && !identified ? proxyUrl(site) : ''].filter(Boolean);
+    const sources = throughFirefox(item.thumb)
+        ? [() => firefoxImageUrl(item.thumb), fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb)].filter(Boolean)
+        : [fresh ? freshUrl(item.thumb) : item.thumb, site, fetcherLink(item.thumb), server, site && !identified ? proxyUrl(site) : ''].filter(Boolean);
     cycleSources(img, sources, {
         loaded: via => noteThumb(item, img, true, via),
         failed: () => {
@@ -14955,8 +14985,15 @@ function setPreviewSource(img, item) {
     const site = item.siteFiles || {};
     const identified = Boolean(agentFor(item.img || item.thumb)['User-Agent']);
     const server = identified ? [() => serverImageUrl(item.anim || item.img)] : [proxyUrl(item.img), site.img ? proxyUrl(site.img) : ''];
-    const viaFirefox = throughFirefox(item.img || item.thumb) ? [() => firefoxImageUrl(item.anim || item.img), () => firefoxImageUrl(item.img)] : [];
-    const sources = [...new Set([item.anim, item.img, ...viaFirefox, item.anim ? site.full : '', site.img, fetcherLink(item.img), ...server, item.thumb, site.thumb, identified ? () => serverImageUrl(item.thumb) : ''].filter(Boolean))];
+    if (throughFirefox(item.img || item.thumb)) {
+        const quick = firefox.ready.get(item.anim || item.img) || firefox.ready.get(item.thumb);
+        if (quick) {
+            img.src = quick;
+        }
+        cycleSources(img, [...new Set([() => firefoxImageUrl(item.anim || item.img), item.anim ? () => firefoxImageUrl(item.img) : '', () => firefoxImageUrl(item.thumb), item.anim, item.img].filter(Boolean))]);
+        return;
+    }
+    const sources = [...new Set([item.anim, item.img, item.anim ? site.full : '', site.img, fetcherLink(item.img), ...server, item.thumb, site.thumb, identified ? () => serverImageUrl(item.thumb) : ''].filter(Boolean))];
     cycleSources(img, sources);
 }
 

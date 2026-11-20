@@ -7,12 +7,15 @@ const PASS_COOLDOWN_MS = 60 * 1000;
 const APPROVAL_WAIT_MS = 3 * 60 * 1000;
 const TAB_LOAD_MS = 30 * 1000;
 const TAB_IDLE_MS = 2 * 60 * 1000;
+const IMAGE_PARALLEL = 4;
 const lastAt = new Map();
 const chains = new Map();
 const approvals = new Map();
 const siteTabs = new Map();
 const passes = new Map();
 const passFailed = new Map();
+const pools = new Map();
+const opening = new Map();
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -141,8 +144,18 @@ function waitLoaded(tabId, ms, fresh = false) {
     });
 }
 
-async function siteTab(url) {
+function siteTab(url) {
     const origin = originOf(url);
+    if (opening.has(origin)) {
+        return opening.get(origin);
+    }
+    const job = openSiteTab(origin);
+    opening.set(origin, job);
+    job.finally(() => opening.delete(origin)).catch(() => {});
+    return job;
+}
+
+async function openSiteTab(origin) {
     const known = siteTabs.get(origin);
     if (known) {
         try {
@@ -254,12 +267,34 @@ function getPass(site, url, tabId) {
     return job;
 }
 
+function pooled(site, job) {
+    const pool = pools.get(site) || pools.set(site, { running: 0, waiting: [] }).get(site);
+    return new Promise((resolve, reject) => {
+        const start = () => {
+            pool.running++;
+            Promise.resolve().then(job).then(resolve, reject).finally(() => {
+                pool.running--;
+                const next = pool.waiting.shift();
+                if (next) {
+                    next();
+                }
+            });
+        };
+        if (pool.running < IMAGE_PARALLEL) {
+            start();
+        } else {
+            pool.waiting.push(start);
+        }
+    });
+}
+
 async function doFetch(url, binary, tabId) {
     const site = await siteFor(url);
     if (!site) {
         return { ok: false, notAllowed: cleanDomain(new URL(url).hostname), error: 'This site is not allowed in the SillyImageSearch Fetcher.' };
     }
-    return queued(site, async () => {
+    const run = binary ? job => pooled(site, job) : job => queued(site, job);
+    return run(async () => {
         const origin = originOf(url);
         if (!PAGE_FIRST.has(origin)) {
             const reply = await backgroundFetch(url, binary);

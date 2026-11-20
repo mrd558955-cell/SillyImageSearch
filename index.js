@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.66.2';
+const VERSION = '2.67.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -129,6 +129,7 @@ const DEFAULTS = {
     spellAi: true,
     siteSpellings: {},
     siteAccounts: {},
+    siteKinds: {},
     pixiv: { enabled: false, kind: 'all', order: 'date_d', match: 's_tag', hideAi: false, limit: 400 },
     leadPrompt: '',
     inlinePictures: true,
@@ -1386,6 +1387,26 @@ function postFileTags(post) {
 }
 
 const siteAnswers = {};
+const siteProbes = {};
+const KIND_NAMES = { danbooru: 'Danbooru', e621: 'e621', gelbooru: 'Gelbooru', moebooru: 'Moebooru', philomena: 'Philomena', shimmie: 'Shimmie' };
+
+function siteKind(domain) {
+    const kind = settings().siteKinds?.[domain];
+    return ENGINES[kind] && kind !== 'pixiv' ? kind : '';
+}
+
+function maskKey(url) {
+    return String(url).replace(/((?:api_key|key|password_hash)=)[^&]+/g, '$1•••');
+}
+
+function shortAddress(url) {
+    try {
+        const parsed = new URL(url);
+        return maskKey(`${parsed.pathname}${parsed.search}`).slice(0, 140);
+    } catch {
+        return maskKey(url).slice(0, 140);
+    }
+}
 
 async function detectEngine(entry, probeTags) {
     const s = settings();
@@ -1394,14 +1415,24 @@ async function detectEngine(entry, probeTags) {
         save();
         return 'none';
     }
+    const chosen = siteKind(entry.domain);
+    if (chosen) {
+        s.engines[entry.domain] = chosen;
+        delete siteAnswers[entry.domain];
+        siteProbes[entry.domain] = [];
+        save();
+        return chosen;
+    }
     const origin = `https://${entry.domain}`;
     const probe = probeTags.slice(0, 1);
     const answers = [];
+    siteProbes[entry.domain] = [];
     for (const name of ENGINE_ORDER) {
         const engine = ENGINES[name];
         let result;
+        const address = engine.url(origin, engine.tags(probe, false), `${entry.extra}${accountExtra(entry.domain, name, entry.extra)}`, 0);
         try {
-            result = await request(engine.url(origin, engine.tags(probe, false), `${entry.extra}${accountExtra(entry.domain, name, entry.extra)}`, 0));
+            result = await request(address);
         } catch (error) {
             if (error instanceof BlockedError) {
                 throw new BlockedError(`${entry.domain}: the browser blocked the check. If it is an image board, set enableCorsProxy: true in SillyTavern's config.yaml and restart.`);
@@ -1409,6 +1440,7 @@ async function detectEngine(entry, probeTags) {
             throw error;
         }
         const detected = engineFor(name, result);
+        siteProbes[entry.domain].push({ kind: KIND_NAMES[name] || name, address: shortAddress(address), answer: ENGINES[detected].parse(result) !== null ? 'answered as this kind of board' : siteAnswer(result) });
         if (ENGINES[detected].parse(result) !== null) {
             s.engines[entry.domain] = detected;
             delete siteAnswers[entry.domain];
@@ -1481,7 +1513,7 @@ async function fetchPage(entry, engineName, required, page, wanted = required, n
                 noOrderSites.add(entry.domain);
                 continue;
             }
-            throw new Error(`${entry.domain} answered ${result.status}: ${pageText(result.text).slice(0, 150)}`);
+            throw new Error(`${entry.domain} answered ${result.status}: ${pageText(result.text).slice(0, 150)}${/just a moment|cf-chl|cf_chl|challenge-platform|attention required|cloudflare/i.test(String(result.text || '')) ? ' (a Cloudflare check, which stops SillyTavern\'s server)' : ''}`);
         }
         const stats = { rating: 0, excluded: 0, local: 0, notImage: 0 };
         const items = postsToItems(engineName, posts, origin, s.ratings, localTags, stats, new Set(exclude));
@@ -18811,6 +18843,26 @@ function buildSettings() {
             };
             login.addEventListener('change', keep);
             key.addEventListener('change', keep);
+            const kind = el('select', 'text_pole');
+            kind.title = 'What kind of board it is. Choosing it means the extension asks only that kind of address.';
+            [['', 'Kind: find out by itself'], ...Object.entries(KIND_NAMES).map(([value, name]) => [value, `Kind: ${name}`])].forEach(([value, name]) => {
+                const option = el('option', '', name);
+                option.value = value;
+                kind.appendChild(option);
+            });
+            kind.value = siteKind(entry.domain);
+            kind.addEventListener('change', () => {
+                s.siteKinds = { ...(s.siteKinds || {}) };
+                if (kind.value) {
+                    s.siteKinds[entry.domain] = kind.value;
+                } else {
+                    delete s.siteKinds[entry.domain];
+                }
+                delete s.engines[entry.domain];
+                delete s.termLimits?.[entry.domain];
+                clearTagCache();
+                save();
+            });
             const check = el('div', 'menu_button', 'Check');
             check.title = `Try one small search on ${entry.domain}`;
             const result = el('small', 'stis-site-line');
@@ -18820,7 +18872,7 @@ function buildSettings() {
                 await checkSite(siteEntries().find(item => item.domain === entry.domain) || entry, result);
                 check.classList.remove('disabled');
             });
-            row.append(login, key, check, result);
+            row.append(login, key, kind, check, result);
             box.appendChild(row);
         }
     };
@@ -18832,19 +18884,29 @@ function buildSettings() {
         line.textContent = `${entry.domain}: checking…`;
         delete s.engines[entry.domain];
         let verdict;
+        const tried = [];
         try {
             const engineName = await engineOf(entry, []);
+            (siteProbes[entry.domain] || []).forEach(probe => tried.push(`${probe.kind} (${probe.address}): ${probe.answer}`));
             if (!engineName || engineName === 'none') {
                 verdict = siteVerdict(siteAnswers[entry.domain] || 'not a kind of image board the extension knows', entry.domain);
             } else {
                 const fresh = siteEntries().find(item => item.domain === entry.domain) || entry;
-                const { items } = await fetchPage(fresh, engineName, [], 0, [], []);
-                verdict = `works (${engineName}${accountFor(entry.domain) ? ', with your account' : ''}), ${items.length} pictures on a first page.`;
+                const engine = ENGINES[engineName];
+                const address = shortAddress(engine.url(`https://${entry.domain}`, engine.tags([], s.ratings, false, excludedTags()), fresh.extra, 0));
+                try {
+                    const { items } = await fetchPage(fresh, engineName, [], 0, [], []);
+                    tried.push(`${KIND_NAMES[engineName] || engineName} search (${address}): ${items.length} pictures`);
+                    verdict = `works (${KIND_NAMES[engineName] || engineName}${accountFor(entry.domain) ? ', with your account' : ''}), ${items.length} pictures on a first page.`;
+                } catch (error) {
+                    tried.push(`${KIND_NAMES[engineName] || engineName} search (${address}): ${String(error?.message || error).replace(`${entry.domain} answered `, '')}`);
+                    throw error;
+                }
             }
         } catch (error) {
             verdict = siteVerdict(String(error?.message || error), entry.domain);
         }
-        line.textContent = `${entry.domain}: ${verdict} ${said}`;
+        line.textContent = `${entry.domain}: ${verdict} ${said}${tried.length ? `\nTried:\n${tried.map(item => `• ${item}`).join('\n')}` : ''}`;
         save();
         showEngines();
     };

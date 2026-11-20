@@ -2486,3 +2486,8 @@ textarea.stis-sent-prompt-text {
 .stis-account > .stis-site-line:empty {
     display: none;
 }
+
+.stis-site-line {
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}

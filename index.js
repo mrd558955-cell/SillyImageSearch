@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.75.3';
+const VERSION = '2.76.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -64,6 +64,7 @@ const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a r
 const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
 const DEFAULT_OWN_TAGS_PROMPT = 'Each picture of a {{kind}} was tagged on its own by an image board, then described by someone looking at it. For each item below, list only those of its own tags that nothing in its description shows: not in any words, and not as something that clearly goes with it. Tags never match a description word for word and descriptions leave out small things, so be generous: when the description shows the thing a tag names, or something close to it, the tag is shown. Judge each item on its own description only.{{hints}}\n\n{{items}}\n\nReply with one line per item and nothing else, like:\nItem 1: none\nItem 2: a_tag, another_tag';
+const DEFAULT_CAST_PROMPT = 'Below is {{what}} from a roleplay. List every person it describes: people only, not places, groups, items, or creatures without a name. For each person give their name, the other names the text uses for them, and copy word for word every sentence that says how they look (age, body, face, hair, eyes, skin, scars, clothes). Use "" for looks when nothing is written about how they look.{{#entries}} Give the number of the entry each person comes from.{{/entries}}\n\nReply with only a JSON array, like this:\n[{"name": "Mira", "aliases": ["the healer"], "looks": "A tall woman with short red hair and a scar on her chin."{{#entries}}, "entry": 3{{/entries}}}]\nReply [] when it describes no person.\n\n{{text}}';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
 const SECTION_CAP = 2500;
@@ -162,6 +163,11 @@ const DEFAULTS = {
     groupReview: true,
     groupImportance: true,
     importancePrompt: DEFAULT_IMPORTANCE_PROMPT,
+    castPrompt: DEFAULT_CAST_PROMPT,
+    castLore: true,
+    castTracker: true,
+    cardCasts: {},
+    lorePeople: {},
     ownTagsPrompt: DEFAULT_OWN_TAGS_PROMPT,
     catalogSize: 30,
     sendButton: true,
@@ -2836,6 +2842,13 @@ function startPrefetch() {
 
 function onReplyFinished(messageId, type) {
     const s = settings();
+    if (s.enabled && type !== 'impersonate') {
+        try {
+            scanTracker();
+        } catch (error) {
+            console.warn('[Image Search] could not read the tracker', error);
+        }
+    }
     if (!s.enabled || !s.prefetch || !s.tagProfile || type === 'impersonate') {
         return;
     }
@@ -2848,6 +2861,12 @@ function onReplyFinished(messageId, type) {
 }
 
 function onChatChanged() {
+    clearTimeout(castState.timer);
+    castState.timer = setTimeout(() => {
+        if (settings().enabled) {
+            prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
+        }
+    }, 2500);
     sendState.pending = null;
     clearForcePrompt();
     state.catalogSends = 0;
@@ -11948,7 +11967,11 @@ async function syncLorebook({ activate = false } = {}) {
 }
 
 function onWorldInfoActivated(entries) {
-    if (!settings().debug || !Array.isArray(entries)) {
+    if (!Array.isArray(entries)) {
+        return;
+    }
+    castState.activated = { at: (ctx().chat || []).length, keys: new Set(entries.filter(entry => entry && entry.world !== LOREBOOK).map(entry => `${entry.world}:${entry.uid}`)) };
+    if (!settings().debug) {
         return;
     }
     const offered = entries.filter(entry => entry?.world === LOREBOOK).map(entry => entry.comment);
@@ -13335,30 +13358,310 @@ function chatCharacters() {
     return [];
 }
 
-function sceneMembers() {
+const castState = { running: null, failed: new Set(), activated: { at: -99, keys: new Set() } };
+const CAST_SCENE = 6;
+
+function characterKey(character) {
+    return String(character?.avatar || character?.name || '');
+}
+
+function cardText(character, limit = 4000) {
+    return fillNames(character?.description || character?.data?.description || '', character?.name).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, limit);
+}
+
+function castBooks() {
     const c = ctx();
+    const books = chatCharacters().map(character => character?.data?.extensions?.world).filter(Boolean);
+    if (c.chatMetadata?.world_info) {
+        books.push(c.chatMetadata.world_info);
+    }
+    return [...new Set(books.map(String))].filter(name => name && name !== LOREBOOK);
+}
+
+function castMemory() {
+    const meta = ctx().chatMetadata;
+    if (!meta || typeof meta !== 'object') {
+        return null;
+    }
+    if (!meta.stisCast || typeof meta.stisCast !== 'object') {
+        meta.stisCast = { npcs: {}, scanned: 0, scene: null };
+    }
+    meta.stisCast.npcs = meta.stisCast.npcs && typeof meta.stisCast.npcs === 'object' ? meta.stisCast.npcs : {};
+    return meta.stisCast;
+}
+
+function cleanPersonName(name) {
+    return String(name || '').replace(/[*_`"“”]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+function trackerLines(text) {
+    const people = [];
+    for (const raw of String(text || '').split('\n')) {
+        const line = raw.replace(/<[^>]+>/g, ' ').trim();
+        if ((line.match(/\|/g) || []).length < 2) {
+            continue;
+        }
+        const parts = line.split('|').map(part => part.trim());
+        const name = cleanPersonName(parts[0].replace(/^[\s>*_#-]+/, ''));
+        const fields = {};
+        parts.slice(1).forEach(part => {
+            const found = part.match(/^([A-Za-z][\w ]{0,20}?)\s*:\s*(.*)$/);
+            if (found) {
+                fields[found[1].trim().toLowerCase()] = found[2].trim();
+            }
+        });
+        if (!name || /[:{}[\]]/.test(name) || name.split(' ').length > 4 || Object.keys(fields).length < 2) {
+            continue;
+        }
+        people.push({ name, fields });
+    }
+    return people;
+}
+
+function namePattern(name) {
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegex(name)}($|[^\\p{L}\\p{N}])`, 'iu');
+}
+
+function introPassage(name, chat) {
+    const pattern = namePattern(name);
+    const first = name.split(' ')[0];
+    const short = first.length >= 3 && first !== name ? namePattern(first) : null;
+    const hits = [];
+    for (const message of chat) {
+        if (!message || message.is_system || typeof message.mes !== 'string' || hits.length >= 3) {
+            continue;
+        }
+        const paragraphs = message.mes.split(/\n+/).map(part => part.replace(/<[^>]+>/g, ' ').trim()).filter(part => part && trackerLines(part).length === 0);
+        paragraphs.forEach((part, index) => {
+            if (pattern.test(part) || short?.test(part)) {
+                hits.push(...paragraphs.slice(Math.max(0, index - 1), index + 2));
+            }
+        });
+    }
+    return [...new Set(hits)].join('\n').slice(0, 3000);
+}
+
+function knownCastNames() {
+    const c = ctx();
+    const s = settings();
+    const names = new Set([c.name1, c.name2, ...chatCharacters().map(character => character.name)].filter(Boolean).map(name => String(name).toLowerCase()));
+    Object.values(s.cardCasts || {}).forEach(cast => (cast.people || []).forEach(person => [person.name, ...(person.aliases || [])].forEach(name => names.add(String(name).toLowerCase()))));
+    castBooks().forEach(book => (s.lorePeople?.[book]?.people || []).forEach(person => [person.name, ...(person.aliases || [])].forEach(name => names.add(String(name).toLowerCase()))));
+    return names;
+}
+
+function scanTracker() {
+    if (settings().castTracker === false) {
+        return false;
+    }
+    const memory = castMemory();
+    const chat = ctx().chat || [];
+    if (!memory) {
+        return false;
+    }
+    let changed = false;
+    const scanned = Math.min(Number(memory.scanned) || 0, chat.length);
+    const known = knownCastNames();
+    for (let index = scanned; index < chat.length; index++) {
+        const message = chat[index];
+        if (!message || message.is_user || typeof message.mes !== 'string') {
+            continue;
+        }
+        trackerLines(message.mes).forEach(person => {
+            const key = person.name.toLowerCase();
+            if (known.has(key) || memory.npcs[key]) {
+                return;
+            }
+            memory.npcs[key] = { name: person.name, first: index, source: '', at: Date.now() };
+            changed = true;
+        });
+    }
+    memory.scanned = chat.length;
+    Object.values(memory.npcs).forEach(npc => {
+        if (!npc.source) {
+            const passage = introPassage(npc.name, chat);
+            if (passage) {
+                npc.source = passage;
+                changed = true;
+            }
+        }
+    });
+    let latest = null;
+    for (let index = chat.length - 1; index >= 0 && index >= chat.length - 30; index--) {
+        const message = chat[index];
+        if (message && !message.is_user && typeof message.mes === 'string') {
+            const lines = trackerLines(message.mes);
+            if (lines.length) {
+                latest = { at: index, people: lines.map(person => ({ name: person.name, here: !/off[\s-]*screen|not present|absent/i.test(person.fields.body || person.fields.location || '') })) };
+                break;
+            }
+        }
+    }
+    if (JSON.stringify(latest) !== JSON.stringify(memory.scene)) {
+        memory.scene = latest;
+        changed = true;
+    }
+    if (changed) {
+        (ctx().saveMetadataDebounced || ctx().saveMetadata)?.();
+    }
+    return changed;
+}
+
+async function readCast(what, text, entries = false) {
+    const s = settings();
+    const service = ctx().ConnectionManagerRequestService;
+    if (!service || !s.tagProfile) {
+        throw new Error('Choose a tag profile first: it reads the characters.');
+    }
+    const prompt = fillTemplate(String(s.castPrompt || DEFAULT_CAST_PROMPT), { what, text, entries: entries ? 'yes' : '' });
+    const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 2000, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.1));
+    const reply = replyText(result).replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
+    const start = reply.indexOf('[');
+    const end = reply.lastIndexOf(']');
+    const items = start >= 0 && end > start ? JSON.parse(reply.slice(start, end + 1)) : [];
+    return (Array.isArray(items) ? items : []).filter(item => item && typeof item === 'object' && item.name).map(item => ({
+        name: cleanPersonName(item.name),
+        aliases: (Array.isArray(item.aliases) ? item.aliases : []).map(cleanPersonName).filter(Boolean).slice(0, 6),
+        looks: String(item.looks || '').replace(/\s+/g, ' ').trim().slice(0, 3000),
+        entry: Number(item.entry) || 0,
+    })).filter(person => person.name);
+}
+
+async function prepareCast() {
+    if (castState.running) {
+        return castState.running;
+    }
+    castState.running = (async () => {
+        const s = settings();
+        s.cardCasts = s.cardCasts && typeof s.cardCasts === 'object' ? s.cardCasts : {};
+        s.lorePeople = s.lorePeople && typeof s.lorePeople === 'object' ? s.lorePeople : {};
+        let changed = false;
+        const canAsk = Boolean(ctx().ConnectionManagerRequestService && s.tagProfile);
+        for (const character of chatCharacters()) {
+            const text = cardText(character, 12000);
+            const basis = String(hashText(text));
+            const key = characterKey(character);
+            if (!text || !canAsk || s.cardCasts[key]?.basis === basis || castState.failed.has(`card:${basis}`)) {
+                continue;
+            }
+            try {
+                s.cardCasts[key] = { basis, name: character.name, people: await readCast('a character card', text) };
+                changed = true;
+            } catch (error) {
+                castState.failed.add(`card:${basis}`);
+                console.warn('[Image Search] could not read the characters of the card', error);
+            }
+        }
+        if (s.castLore !== false && canAsk) {
+            for (const book of castBooks()) {
+                const data = await Promise.resolve(ctx().loadWorldInfo?.(book)).catch(() => null);
+                const entries = Object.values(data?.entries || {}).filter(entry => entry && !entry.disable && String(entry.content || '').trim());
+                const basis = String(hashText(entries.map(entry => `${entry.uid}|${(entry.key || []).join(',')}|${entry.content}`).join('\n')));
+                if (!entries.length || s.lorePeople[book]?.basis === basis || castState.failed.has(`lore:${book}:${basis}`)) {
+                    continue;
+                }
+                try {
+                    const people = [];
+                    for (let start = 0; start < entries.length; start += 20) {
+                        const chunk = entries.slice(start, start + 20);
+                        const text = chunk.map((entry, index) => `Entry ${index + 1}${entry.comment ? ` (${entry.comment})` : ''}${entry.key?.length ? ` [keys: ${entry.key.join(', ')}]` : ''}:\n${String(entry.content).slice(0, 1500)}`).join('\n\n');
+                        (await readCast('lorebook entries', text, true)).forEach(person => {
+                            const entry = chunk[person.entry - 1];
+                            people.push({ ...person, uid: entry ? entry.uid : null, keys: entry ? (entry.key || []).map(String).filter(key => key.length >= 3).slice(0, 8) : [] });
+                        });
+                    }
+                    s.lorePeople[book] = { basis, people };
+                    changed = true;
+                } catch (error) {
+                    castState.failed.add(`lore:${book}:${basis}`);
+                    console.warn('[Image Search] could not read the characters of the lorebook', book, error);
+                }
+            }
+        }
+        scanTracker();
+        if (changed) {
+            save();
+        }
+    })().finally(() => {
+        castState.running = null;
+    });
+    return castState.running;
+}
+
+function castMembers() {
+    const c = ctx();
+    const s = settings();
     const user = String(c.name1 || '').toLowerCase();
     const looks = parseLooks();
-    const members = [];
     const savedFor = name => looks.filter(look => look.name.toLowerCase() === String(name).toLowerCase()).map(look => `Saved look: ${look.tags.join(', ').replace(/_/g, ' ')}`);
-    for (const character of chatCharacters()) {
-        const card = fillNames(character.description || character.data?.description || '', character.name).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 4000);
-        const source = [card, ...savedFor(character.name)].filter(Boolean).join('\n');
-        if (source) {
-            members.push({ key: `char:${character.avatar || character.name}`, name: character.name, source });
+    const text = recentText(2);
+    const length = (c.chat || []).length;
+    const memory = castMemory();
+    const tracked = new Map((memory?.scene && memory.scene.at >= length - 6 ? memory.scene.people : []).map(person => [person.name.toLowerCase(), person.here]));
+    const named = names => names.filter(name => name && name.length >= 3).some(name => namePattern(name).test(text));
+    const fired = id => castState.activated.at >= length - 2 && castState.activated.keys.has(id);
+    const members = [];
+    const add = member => {
+        const lower = member.name.toLowerCase();
+        if (!member.name || lower === user || members.some(other => other.name.toLowerCase() === lower)) {
+            return;
         }
+        const names = [member.name, member.name.split(' ')[0], ...(member.aliases || [])];
+        const fromTracker = names.map(name => tracked.get(String(name).toLowerCase())).find(value => value !== undefined);
+        member.here = member.always || (fromTracker !== undefined ? fromTracker : named(names) || Boolean(member.fired && fired(member.fired)));
+        members.push(member);
+    };
+    for (const character of chatCharacters()) {
+        const split = s.cardCasts?.[characterKey(character)];
+        const people = split?.basis === String(hashText(cardText(character, 12000))) ? split.people || [] : [];
+        if (people.length > 1) {
+            people.forEach(person => {
+                const source = [person.looks, ...savedFor(person.name)].filter(Boolean).join('\n');
+                if (source) {
+                    add({ key: `cast:${characterKey(character)}:${person.name.toLowerCase()}`, name: person.name, aliases: person.aliases, kind: 'card', source });
+                }
+            });
+        } else {
+            const source = [cardText(character), ...savedFor(character.name)].filter(Boolean).join('\n');
+            if (source) {
+                add({ key: `char:${characterKey(character)}`, name: character.name, kind: 'card', source, always: true });
+            }
+        }
+    }
+    if (s.castLore !== false) {
+        for (const book of castBooks()) {
+            (s.lorePeople?.[book]?.people || []).forEach(person => {
+                const source = [person.looks, ...savedFor(person.name)].filter(Boolean).join('\n');
+                if (source) {
+                    add({ key: `lore:${book}:${person.uid ?? person.name.toLowerCase()}`, name: person.name, aliases: [...(person.aliases || []), ...(person.keys || [])], kind: 'lore', source, fired: person.uid !== null && person.uid !== undefined ? `${book}:${person.uid}` : '' });
+                }
+            });
+        }
+    }
+    if (s.castTracker !== false) {
+        Object.values(memory?.npcs || {}).forEach(npc => {
+            const source = [npc.source, ...savedFor(npc.name)].filter(Boolean).join('\n');
+            if (source) {
+                add({ key: `npc:${npc.name.toLowerCase()}`, name: npc.name, kind: 'story', source });
+            }
+        });
     }
     const extra = [c.name2, ...mentionedLooks(looks).map(look => look.name)].filter(name => name && name.toLowerCase() !== user && !members.some(member => member.name.toLowerCase() === name.toLowerCase()));
     for (const name of [...new Set(extra)].slice(0, 3)) {
         const source = savedFor(name).join('\n');
         if (source) {
-            members.push({ key: `look:${name.toLowerCase()}`, name, source });
+            add({ key: `look:${name.toLowerCase()}`, name, kind: 'saved', source, always: true });
         }
     }
     return members.map(member => ({ ...member, basis: String(hashText(member.source)) }));
 }
 
+function sceneMembers() {
+    return castMembers().filter(member => member.here).slice(0, CAST_SCENE);
+}
+
 async function castSheets() {
+    await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
     const plan = castPlan();
     const members = [plan.main, ...plan.extras].filter(member => member && member.source);
     const sheets = await lookSheets({ members });
@@ -13388,8 +13691,8 @@ function castPlan(options = pickOptions) {
     if (options.focus === 'user') {
         return { main: persona, extras: options.allowOther ? characters : [] };
     }
-    const main = characters.find(member => member.name === options.main) || characters[0] || null;
-    return { main, extras: [...characters.filter(member => member !== main), ...(options.allowOther && persona ? [persona] : [])] };
+    const main = characters.find(member => member.name === options.main) || (options.main ? castMembers().find(member => member.name === options.main) : null) || characters[0] || null;
+    return { main, extras: [...characters.filter(member => member.key !== main?.key), ...(options.allowOther && persona ? [persona] : [])] };
 }
 
 function sheetCategories() {
@@ -13445,7 +13748,10 @@ async function lookSheets({ ask = true, members = allMembers() } = {}) {
     const service = ctx().ConnectionManagerRequestService;
     if (ask && missing.length && service && s.tagProfile) {
         try {
-            const people = await requestSheets(missing);
+            const people = new Map();
+            for (let start = 0; start < missing.length; start += 6) {
+                (await requestSheets(missing.slice(start, start + 6))).forEach((person, name) => people.set(name, person));
+            }
             for (const member of missing) {
                 const person = people.get(member.name.toLowerCase()) || (missing.length === 1 && people.size === 1 ? [...people.values()][0] : null);
                 const old = s.lookSheets[member.key];
@@ -14655,7 +14961,8 @@ function askSendOptions() {
     }
     const c = ctx();
     const user = c.name1 || 'You';
-    const names = [...new Set([...chatCharacters().map(character => character.name), ...(chatCharacters().length ? [] : [c.name2])].filter(Boolean))];
+    const cast = castMembers();
+    const names = [...new Set([...cast.filter(member => member.here).map(member => member.name), ...cast.filter(member => !member.here).map(member => member.name).slice(0, 12), ...(cast.length ? [] : chatCharacters().map(character => character.name)), ...(cast.length || chatCharacters().length ? [] : [c.name2])].filter(Boolean))];
     return new Promise(resolve => {
         let answer = null;
         const root = el('div', 'stis-sendopts');
@@ -14733,6 +15040,7 @@ async function sendWithPicture() {
     sendState.busy = true;
     let choices = null;
     try {
+        await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
         choices = await askSendOptions();
     } finally {
         sendState.busy = false;
@@ -19503,7 +19811,16 @@ function buildSettings() {
                             <small id="st_imagesearch_card_status"></small>
                         </div>
                         <div class="stis-set">
-                            <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div></div>
+                            <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div><div id="st_imagesearch_cast_reread" class="menu_button" title="Read the characters of the card, the lorebooks and the tracker again">Read the characters again</div></div>
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_lore"><span>Find characters in the character's and the chat's lorebooks</span></label>
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_tracker"><span>Find characters the story makes, from the preset's tracker lines (Name | Agenda: … | Body: …)</span></label>
+                            <small class="stis-help">A card that describes several people (an RPG) is split into one character each. Characters count for pictures when they are in the scene: named in the last two messages, their lorebook entry just used, or on screen in the newest tracker line (Body: Off-screen means not there). Each card and lorebook is read once (one request each, with the tag profile), again only when it changes; a new character from the tracker gets its looks from the message where the story introduced them.</small>
+                            <details class="stis-prompt-parts">
+                                <summary class="stis-label">Prompt for finding characters</summary>
+                                <textarea id="st_imagesearch_cast_prompt" class="text_pole"></textarea>
+                                <small class="stis-help">Filled in: {{what}} (a character card, or lorebook entries), {{text}}, {{#entries}}…{{/entries}} (only for lorebooks). The answer must be a JSON array with name, aliases, looks (and entry for lorebooks).</small>
+                                <div id="st_imagesearch_cast_prompt_reset" class="menu_button">Reset this prompt</div>
+                            </details>
                             <div id="st_imagesearch_sheets"></div>
                         </div>
                         <details id="st_imagesearch_cats_box" class="stis-set">
@@ -19934,6 +20251,32 @@ function buildSettings() {
     bind('st_imagesearch_group_importance', 'groupImportance', 'checked');
     bind('st_imagesearch_importance_prompt', 'importancePrompt');
     bind('st_imagesearch_own_tags_prompt', 'ownTagsPrompt');
+    bind('st_imagesearch_cast_prompt', 'castPrompt');
+    bind('st_imagesearch_cast_lore', 'castLore', 'checked');
+    bind('st_imagesearch_cast_tracker', 'castTracker', 'checked');
+    document.getElementById('st_imagesearch_cast_prompt_reset').addEventListener('click', () => {
+        s.castPrompt = DEFAULT_CAST_PROMPT;
+        document.getElementById('st_imagesearch_cast_prompt').value = DEFAULT_CAST_PROMPT;
+        save();
+    });
+    document.getElementById('st_imagesearch_cast_reread').addEventListener('click', async () => {
+        const box = document.getElementById('st_imagesearch_sheets');
+        chatCharacters().forEach(character => delete s.cardCasts?.[characterKey(character)]);
+        castBooks().forEach(book => delete s.lorePeople?.[book]);
+        castState.failed.clear();
+        const memory = castMemory();
+        if (memory) {
+            memory.scanned = 0;
+            Object.values(memory.npcs).forEach(npc => {
+                npc.source = '';
+            });
+        }
+        box.innerHTML = '';
+        box.appendChild(el('small', '', 'Reading the characters…'));
+        await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
+        save();
+        document.getElementById('st_imagesearch_sheets_show').click();
+    });
     document.getElementById('st_imagesearch_own_tags_reset').addEventListener('click', () => {
         s.ownTagsPrompt = DEFAULT_OWN_TAGS_PROMPT;
         document.getElementById('st_imagesearch_own_tags_prompt').value = DEFAULT_OWN_TAGS_PROMPT;
@@ -20049,12 +20392,23 @@ function buildSettings() {
         const box = document.getElementById('st_imagesearch_sheets');
         box.innerHTML = '';
         box.appendChild(el('small', '', 'Reading…'));
-        const cast = await lookSheets();
+        await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
+        const everyone = castMembers();
+        const persona = personaMember();
+        const cast = await lookSheets({ members: [...everyone, ...(persona?.source ? [persona] : [])] });
         box.innerHTML = '';
         if (!cast.length) {
-            box.appendChild(el('small', '', 'No character in this chat has looks written (character card or saved look).'));
+            box.appendChild(el('small', '', 'No character in this chat has looks written (character card, lorebook, tracker or saved look).'));
         }
-        cast.forEach(member => box.appendChild(sheetBox(member)));
+        const kinds = { card: 'from the card', lore: 'from a lorebook', story: 'made by the story', saved: 'saved look' };
+        cast.forEach(member => {
+            const known = everyone.find(other => other.key === member.key);
+            const sheet = sheetBox(member);
+            if (known) {
+                sheet.prepend(el('small', 'stis-cast-kind', `${kinds[known.kind] || ''}${known.here ? ' · in the scene now' : ''}${known.aliases?.length ? ` · also: ${known.aliases.slice(0, 4).join(', ')}` : ''}`));
+            }
+            box.appendChild(sheet);
+        });
     });
     const catBox = document.getElementById('st_imagesearch_cats');
     const catStatus = document.getElementById('st_imagesearch_cat_status');

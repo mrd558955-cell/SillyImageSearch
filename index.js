@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.73.0';
+const VERSION = '2.73.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -8222,11 +8222,21 @@ function renderTagLinks() {
     box.innerHTML = '';
     const s = settings();
     const links = Array.isArray(s.tagLinks) ? s.tagLinks : [];
+    const title = document.getElementById('st_imagesearch_tag_links_title');
+    if (title) {
+        title.textContent = `Same tag, written differently (${links.length})`;
+    }
+    const find = document.getElementById('st_imagesearch_tag_links_find');
+    if (find && !find.dataset.bound) {
+        find.dataset.bound = '1';
+        find.addEventListener('input', () => renderTagLinks());
+    }
+    const query = normalizeTag(find?.value || '').replace(/_/g, ' ');
     if (!links.length) {
         box.appendChild(el('small', 'stis-help', 'None yet. Links are made from the sites\' aliases and, for important tags not found, by the AI.'));
     }
     const words = { site: 'from the site', ai: 'by the AI', you: 'by you' };
-    [...links].sort((x, y) => x.a.localeCompare(y.a)).forEach(link => {
+    [...links].filter(link => !query || `${link.a} ${link.b}`.replace(/_/g, ' ').includes(query)).sort((x, y) => x.a.localeCompare(y.a)).forEach(link => {
         const row = el('div', 'stis-tag-link');
         row.appendChild(el('span', '', `${link.a.replace(/_/g, ' ')} = ${link.b.replace(/_/g, ' ')}`));
         row.appendChild(el('small', 'stis-tag-note-kind', ` ${words[link.by] || ''}`));
@@ -19395,10 +19405,11 @@ function buildSettings() {
                             <small class="stis-help">Filled in when you sort the tags not found in a group (Important, Doesn't matter). A tag not found that is on these lists is judged by your choice without asking; the others are judged with these lists as examples.</small>
                         </div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_group_link"> <span>Link tags written differently</span></label><small class="stis-help">After the first look, a real tag also counts as seen when the first look wrote it another way: from the links below, then the site's aliases (fetched once), then, only for important tags still not found, one text request that links them. Links are remembered, so next time the tag is matched at once.</small></div>
-                        <div class="stis-set">
-                            <div class="stis-label">Same tag, written differently</div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label" id="st_imagesearch_tag_links_title">Same tag, written differently</summary>
+                            <input type="search" id="st_imagesearch_tag_links_find" class="text_pole" placeholder="find a tag">
                             <div id="st_imagesearch_tag_links" class="stis-tag-notes"></div>
-                        </div>
+                        </details>
                         <div class="stis-set">
                             <div class="stis-label">Corrections without a tag</div>
                             <div id="st_imagesearch_fix_log" class="stis-tag-notes"></div>

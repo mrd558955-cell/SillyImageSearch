@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.75.1';
+const VERSION = '2.75.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -853,13 +853,17 @@ async function shrinkPictures(prompt, budget) {
     return next;
 }
 
+function hasPictures(prompt) {
+    return Array.isArray(prompt) && prompt.some(message => Array.isArray(message?.content) && message.content.some(part => part?.type === 'image_url'));
+}
+
 async function modelRequest(service, profile, prompt, maxTokens, custom = {}, override = {}) {
-    const fitted = await shrinkPictures(prompt, REQUEST_BUDGET);
+    const pictures = hasPictures(prompt);
+    const fitted = pictures && promptSize(prompt) > REQUEST_BUDGET ? await shrinkPictures(prompt, REQUEST_BUDGET) : prompt;
     try {
         return await modelRequestOnce(service, profile, fitted, maxTokens, custom, override);
     } catch (error) {
-        const pictures = Array.isArray(fitted) && JSON.stringify(fitted).includes('"image_url"');
-        if (!pictures || !TOO_LARGE.test(String(error?.message || error))) {
+        if (!pictures || custom?.signal?.aborted || !TOO_LARGE.test(String(error?.message || error))) {
             throw error;
         }
         console.warn('[Image Search] the request was too large; sending the pictures smaller', error);

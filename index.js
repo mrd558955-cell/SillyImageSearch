@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.72.1';
+const VERSION = '2.73.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -66,6 +66,9 @@ const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} 
 const DEFAULT_OWN_TAGS_PROMPT = 'Each picture of a {{kind}} was tagged on its own by an image board, then described by someone looking at it. For each item below, list only those of its own tags that nothing in its description shows: not in any words, and not as something that clearly goes with it. Tags never match a description word for word and descriptions leave out small things, so be generous: when the description shows the thing a tag names, or something close to it, the tag is shown. Judge each item on its own description only.{{hints}}\n\n{{items}}\n\nReply with one line per item and nothing else, like:\nItem 1: none\nItem 2: a_tag, another_tag';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
+const SECTION_CAP = 2500;
+const OLD_SECTION_CAP = 700;
+const RESERVED_LABELS = new Set(['keywords', 'keyword', 'tags', 'tag', 'changed', 'description', 'checked', 'note', 'notes', 'item', 'items', 'picture', 'pictures', 'variant', 'version', 'step', 'example', 'format', 'reply', 'answer']);
 const META_TAG = /^(highres|absurdres|lowres|incredibly_absurdres|tagme|official_art|commentary|.*_commentary|commentary_.*|translat.*|.*_request|bad_.*|artist_name|signature|watermark|web_address|md5_mismatch|dated|jpeg_artifacts|third-party_edit|.*_username|copyright_name|character_name|.*_id|.*_background|image_sample|resized|duplicate|revision|variant_set|.*_available|.*_text|text)$/;
 const DETAIL_TAGS = new Set(['long_hair', 'short_hair', 'medium_hair', 'very_long_hair', 'absurdly_long_hair', 'ponytail', 'high_ponytail', 'twintails', 'braid', 'single_braid', 'twin_braids', 'bangs', 'blunt_bangs', 'sidelocks', 'hair_between_eyes', 'ahoge', 'hair_ornament', 'hair_ribbon', 'hairband', 'hair_bow', 'hair_over_one_eye', 'smile', 'grin', 'smirk', 'open_mouth', 'closed_mouth', 'blush', 'frown', 'angry', 'serious', 'expressionless', 'teeth', 'closed_eyes', 'half-closed_eyes', 'earrings', 'necklace', 'jewelry', 'ring', 'bracelet', 'choker']);
 const EYE_COLOR = /^(aqua|black|blue|brown|green|grey|gray|orange|pink|purple|red|white|yellow|amber|gold|golden|silver|violet|light_blue|dark_blue|light_brown|light_green|multicolored)_eyes$/;
@@ -5654,12 +5657,85 @@ function parseKeywords(text) {
         .slice(0, 8);
 }
 
+const formatCache = { text: null, list: [] };
+let cutWarned = 0;
+
+function promptFormat() {
+    const text = String(settings().visionPrompt || DEFAULT_VISION_PROMPT);
+    if (formatCache.text !== text) {
+        const seen = new Set();
+        formatCache.list = [...text.matchAll(/^[\s*#>-]*\**([A-Za-z][A-Za-z' -]{0,30}?)\**\s*:[ \t]*\S/gm)]
+            .map(match => match[1].trim().toLowerCase().replace(/\s+/g, ' '))
+            .filter(key => key.split(' ').length <= 3 && !/\d/.test(key) && !seen.has(key) && seen.add(key));
+        formatCache.text = text;
+    }
+    return formatCache.list;
+}
+
+function customSections() {
+    const built = new Set(SECTIONS.map(([key]) => key));
+    return promptFormat().filter(key => !built.has(key) && !RESERVED_LABELS.has(key) && key !== 'keyword');
+}
+
+function sectionLabel(key) {
+    return SECTIONS.find(([name]) => name === key)?.[1] || key.replace(/(^|\s)\S/g, letter => letter.toUpperCase());
+}
+
+function sectionKeys(sections) {
+    const order = [...new Set([...promptFormat().filter(key => !RESERVED_LABELS.has(key)), ...SECTIONS.map(([key]) => key), ...Object.keys(sections || {})])];
+    return order.filter(key => !key.startsWith('_') && typeof sections?.[key] === 'string' && sections[key]);
+}
+
 function renderSections(sections) {
-    return SECTIONS.filter(([key]) => sections?.[key]).map(([key, label]) => `${label}: ${sections[key]}`).join('\n');
+    return sectionKeys(sections).map(key => `${sectionLabel(key)}: ${sections[key]}`).join('\n');
+}
+
+const ENDS_SENTENCE = /[.!?…"”'’)\]*]\s*$/;
+
+function cutReason(sections) {
+    if (!sections || typeof sections !== 'object') {
+        return '';
+    }
+    if (sections._cut) {
+        return String(sections._cut);
+    }
+    const capped = sectionKeys(sections).find(key => sections[key].length >= OLD_SECTION_CAP - 5 && sections[key].length <= OLD_SECTION_CAP && !ENDS_SENTENCE.test(sections[key]));
+    return capped ? `${sectionLabel(capped)} stops at the old ${OLD_SECTION_CAP}-character limit` : '';
+}
+
+function itemCut(entry) {
+    return isMulti(entry) ? entry.variants.map((item, index) => [index, cutReason(item.sections)]).filter(([, reason]) => reason) : cutReason(entry.sections) ? [[-1, cutReason(entry.sections)]] : [];
+}
+
+function findCut(marks, source, sections, keywords) {
+    const format = promptFormat();
+    const got = marks.map(mark => mark[1].toLowerCase().replace(/\s+/g, ' ').replace(/^keyword$/, 'keywords'));
+    const capped = sectionKeys(sections).find(key => sections[key].length >= SECTION_CAP);
+    if (capped) {
+        return `${sectionLabel(capped)} is longer than ${SECTION_CAP} characters`;
+    }
+    const last = marks[marks.length - 1];
+    const lastKey = got[got.length - 1];
+    const tail = last ? source.slice(last.index + last[0].length).replace(/\s+/g, ' ').trim() : source.replace(/\s+/g, ' ').trim();
+    if (!tail) {
+        return lastKey ? `it stops right after "${sectionLabel(lastKey)}:"` : '';
+    }
+    if (lastKey !== 'keywords' && lastKey !== 'changed' && !ENDS_SENTENCE.test(tail)) {
+        return `it stops mid-sentence${lastKey ? ` in ${sectionLabel(lastKey)}` : ''}`;
+    }
+    const at = format.indexOf(lastKey);
+    if (at >= 0) {
+        const missing = format.slice(at + 1).filter(key => !got.includes(key) && key !== 'tags' && (key !== 'keywords' || !keywords.length));
+        if (missing.length && got.length > 1) {
+            return `it stops after ${sectionLabel(lastKey)}: ${missing.map(sectionLabel).join(', ')} never came`;
+        }
+    }
+    return '';
 }
 
 function parseDescription(raw) {
-    const labels = 'visual|expression|action|atmosphere|framing|changed|keywords?|description|variant\\s*\\d+|version\\s*\\d+|picture\\s*\\d+|step\\s*\\d+';
+    const custom = customSections().map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+'));
+    const labels = ['visual|expression|action|atmosphere|framing', ...custom, 'changed|keywords?|description|variant\\s*\\d+|version\\s*\\d+|picture\\s*\\d+|step\\s*\\d+'].join('|');
     const marks = [...String(raw || '').matchAll(new RegExp(`^[\\s*#>-]*\\**(${labels})\\**\\s*:\\s*(?:\\*\\*\\s*)?`, 'gim'))];
     const sections = {};
     const variants = {};
@@ -5680,15 +5756,19 @@ function parseDescription(raw) {
         } else if (/^(variant|version|picture|step) \d+$/.test(label)) {
             variants[Number(label.split(' ')[1])] = content.slice(0, 500);
         } else if (content) {
-            sections[label] = content.slice(0, 700);
+            sections[label] = content.slice(0, SECTION_CAP);
         }
     });
     const lead = String(plain).replace(/\s+/g, ' ').trim();
     if (lead && Object.keys(sections).length && !/^(sure|okay|ok|certainly|of course|here('s| is| are))\b/i.test(lead) && lead.length <= 600) {
-        sections.visual = sections.visual ? `${lead.replace(/[:\s]+$/, ':')} ${sections.visual}`.slice(0, 900) : lead.slice(0, 700);
+        sections.visual = sections.visual ? `${lead.replace(/[:\s]+$/, ':')} ${sections.visual}`.slice(0, SECTION_CAP) : lead.slice(0, SECTION_CAP);
     }
-    const text = renderSections(sections) || String(plain).replace(/\s+/g, ' ').trim().slice(0, 1500);
-    return { text, sections, keywords, variants, changed };
+    const text = renderSections(sections) || String(plain).replace(/\s+/g, ' ').trim().slice(0, SECTION_CAP * 3);
+    const cut = findCut(marks, source, sections, keywords);
+    if (cut) {
+        sections._cut = cut;
+    }
+    return { text, sections, keywords, variants, changed, cut };
 }
 
 function peopleLine(description) {
@@ -5787,6 +5867,10 @@ async function requestDescription(url, tags, blob = null, locked = '', note = ''
     }
     const parsed = parseDescription(raw);
     parsed.raw = raw;
+    if (parsed.cut && Date.now() - cutWarned > 20000) {
+        cutWarned = Date.now();
+        toastr.warning(`A description came back cut off (${parsed.cut}). Raise "Description length (tokens)" in the Image Search settings, then Redo it. It is marked with scissors in the library.`, 'Image Search', { timeOut: 12000 });
+    }
     parsed.animated = Boolean(frames?.length);
     parsed.clip = frames?.clip || null;
     if (!parsed.text) {
@@ -5858,7 +5942,7 @@ function cleanLock(lock) {
 }
 
 function cleanSections(sections) {
-    return sections && typeof sections === 'object' ? Object.fromEntries(SECTIONS.filter(([key]) => typeof sections[key] === 'string').map(([key]) => [key, sections[key]])) : {};
+    return sections && typeof sections === 'object' ? Object.fromEntries(Object.entries(sections).filter(([key, value]) => typeof value === 'string' && /^_?[a-z][a-z' -]{0,30}$/.test(key)).slice(0, 16).map(([key, value]) => [key, value.slice(0, SECTION_CAP)])) : {};
 }
 
 function cleanStrings(list, limit = 80) {
@@ -11559,7 +11643,7 @@ function verbForms(base) {
 }
 
 function entryVerbs(entry) {
-    const hasSections = Object.keys(entry.sections || {}).length > 0;
+    const hasSections = sectionKeys(entry.sections).length > 0;
     const texts = [hasSections ? entry.sections.action || '' : entry.description];
     if (isMulti(entry)) {
         texts.push(...entry.variants.slice(1).map(variant => variant.diff || ''));
@@ -13683,7 +13767,7 @@ function entryAnimated(entry) {
 
 function entryFacets(entry) {
     const cards = groupDescribed(entry) ? [...new Set(cardUnits([entry]).flatMap(cardFacets))] : cardFacets(entry);
-    return [...cards, ...(entryAnimated(entry) ? ['file:animated'] : []), ...(entry.attention ? ['check:needs a look'] : []), ...(isMulti(entry) && entry.variants.some(item => item.deduced?.length) ? ['check:deduced'] : [])];
+    return [...cards, ...(entryAnimated(entry) ? ['file:animated'] : []), ...(entry.attention ? ['check:needs a look'] : []), ...(itemCut(entry).length ? ['check:cut off'] : []), ...(isMulti(entry) && entry.variants.some(item => item.deduced?.length) ? ['check:deduced'] : [])];
 }
 
 const COUNT_WORDS = { one: 1, a: 1, an: 1, single: 1, lone: 1, solo: 1, two: 2, both: 2, pair: 2, couple: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
@@ -17801,7 +17885,15 @@ async function openPicker(initialTags = null, focus = null) {
         const itemName = `${entry.fromVideo ? 'Part' : sequence ? 'Picture' : 'Version'} ${index + 1}`;
         let roleBox = null;
         const desc = section('desc', itemized ? `${itemName}${current.role ? ` · ${roleText(current.role)}` : ''}` : 'Description', true);
+        const cutNote = reason => {
+            const note = el('div', 'stis-entry-text stis-cut-warn', ` This description is cut off: ${reason}. Raise "Description length (tokens)" in the settings, then Redo.`);
+            note.prepend(el('i', 'fa-solid fa-scissors'));
+            return note;
+        };
         if (itemized) {
+            if (cutReason(current.sections)) {
+                desc.appendChild(cutNote(cutReason(current.sections)));
+            }
             desc.appendChild(el('div', 'stis-entry-text', current.description));
             if (itemStory(entry, current, index)) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-changed', itemStory(entry, current, index)));
@@ -17844,6 +17936,9 @@ async function openPicker(initialTags = null, focus = null) {
                 desc.appendChild(el('div', 'stis-entry-text stis-entry-deduced', `Deduced, not seen: ${current.deduced.map(d => `${d.tag.replace(/_/g, ' ')} (${d.why})`).join('; ')}`));
             }
         } else {
+            if (cutReason(entry.sections)) {
+                desc.appendChild(cutNote(cutReason(entry.sections)));
+            }
             desc.appendChild(el('div', 'stis-entry-text', entry.description || 'No description yet. One is made the next time you use it, or tap Redo.'));
             if (multi && index > 0) {
                 desc.appendChild(el('div', 'stis-entry-text', sequence ? `Picture ${index + 1}: ${current.diff || 'not described yet.'}` : `This version: ${current.diff || 'no difference noted yet.'}`));
@@ -18543,6 +18638,13 @@ async function openPicker(initialTags = null, focus = null) {
                 flag.appendChild(el('i', 'fa-solid fa-wand-magic-sparkles'));
                 flag.title = 'Some tags were deduced from your notes; check them in the preview';
                 cell.appendChild(flag);
+            }
+            const cuts = itemCut(entry);
+            if (cuts.length) {
+                const snip = el('span', 'stis-cut-badge');
+                snip.appendChild(el('i', 'fa-solid fa-scissors'));
+                snip.title = `Description cut off${isMulti(entry) ? ` (item ${cuts.map(([index]) => index + 1).join(', ')})` : ''}: ${cuts[0][1]}`;
+                cell.appendChild(snip);
             }
             if (entry.attention) {
                 const flag = el('span', 'stis-attention-badge');

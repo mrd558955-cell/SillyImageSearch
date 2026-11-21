@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.75.2';
+const VERSION = '2.75.3';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -11084,11 +11084,21 @@ async function redoAll(onProgress, only = null, onSaved = null) {
         await saveLibrary();
         onSaved?.(ids);
     };
+    let gifTurn = Promise.resolve();
+    const oneGif = job => {
+        const turn = gifTurn.then(job, job);
+        gifTurn = turn.catch(() => {});
+        return turn;
+    };
     const worker = async () => {
         while (queue.length && !redoState.cancel) {
             const entry = queue.shift();
             try {
-                await redoEntry(entry, { save: false });
+                if (entryAnimated(entry)) {
+                    await oneGif(() => (redoState.cancel ? null : redoEntry(entry, { save: false })));
+                } else {
+                    await redoEntry(entry, { save: false });
+                }
             } catch (error) {
                 redoState.failed++;
                 redoState.failedIds.push(entry.id);

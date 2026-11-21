@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.76.0';
+const VERSION = '2.76.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -13660,6 +13660,89 @@ function sceneMembers() {
     return castMembers().filter(member => member.here).slice(0, CAST_SCENE);
 }
 
+async function rereadCast() {
+    const s = settings();
+    chatCharacters().forEach(character => delete s.cardCasts?.[characterKey(character)]);
+    castBooks().forEach(book => delete s.lorePeople?.[book]);
+    castState.failed.clear();
+    const memory = castMemory();
+    if (memory) {
+        memory.scanned = 0;
+        Object.values(memory.npcs).forEach(npc => {
+            npc.source = '';
+        });
+    }
+    await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
+    save();
+}
+
+async function fillCast(box) {
+    box.innerHTML = '';
+    box.appendChild(el('small', '', 'Reading…'));
+    await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
+    const everyone = castMembers();
+    const persona = personaMember();
+    const cast = await lookSheets({ members: [...everyone, ...(persona?.source ? [persona] : [])] });
+    box.innerHTML = '';
+    if (!settings().tagProfile) {
+        box.appendChild(el('small', 'stis-cast-kind', 'No tag profile chosen: the card and lorebooks are not read for characters until one is.'));
+    }
+    if (!cast.length) {
+        box.appendChild(el('small', '', 'No character in this chat has looks written (character card, lorebook, tracker or saved look).'));
+    }
+    const kinds = { card: 'from the card', lore: 'from a lorebook', story: 'made by the story', saved: 'saved look' };
+    const order = member => {
+        const known = everyone.find(other => other.key === member.key);
+        return known ? (known.here ? 0 : 1) : 2;
+    };
+    [...cast].sort((a, b) => order(a) - order(b)).forEach(member => {
+        const known = everyone.find(other => other.key === member.key);
+        const sheet = sheetBox(member);
+        sheet.prepend(el('small', 'stis-cast-kind', known ? `${kinds[known.kind] || ''}${known.here ? ' · in the scene now' : ''}${known.aliases?.length ? ` · also: ${known.aliases.slice(0, 4).join(', ')}` : ''}` : 'you (persona)'));
+        box.appendChild(sheet);
+    });
+}
+
+function openCast() {
+    const c = ctx();
+    const s = settings();
+    const root = el('div', 'stis-cast-window');
+    root.appendChild(el('b', '', 'Characters in this chat'));
+    const row = el('div', 'st-imagesearch-row stis-wrap');
+    const again = el('div', 'menu_button', 'Read the characters again');
+    again.title = 'Read the characters of the card, the lorebooks and the tracker again';
+    row.appendChild(again);
+    const toggle = (key, text) => {
+        const label = el('label', 'checkbox_label');
+        const box = el('input');
+        box.type = 'checkbox';
+        box.checked = s[key] !== false;
+        box.addEventListener('change', () => {
+            s[key] = box.checked;
+            save();
+            const other = document.getElementById(key === 'castLore' ? 'st_imagesearch_cast_lore' : 'st_imagesearch_cast_tracker');
+            if (other) {
+                other.checked = box.checked;
+            }
+            fillCast(list);
+        });
+        label.append(box, el('span', '', ` ${text}`));
+        return label;
+    };
+    const list = el('div', 'stis-cast-list');
+    again.addEventListener('click', async () => {
+        list.innerHTML = '';
+        list.appendChild(el('small', '', 'Reading the characters…'));
+        await rereadCast();
+        await fillCast(list);
+    });
+    root.append(row, toggle('castLore', "Find characters in the character's and the chat's lorebooks"), toggle('castTracker', "Find characters the story makes, from the preset's tracker lines"), list);
+    const popup = new c.Popup(root, c.POPUP_TYPE.DISPLAY, '', { animation: 'fast', wide: true, allowVerticalScrolling: true });
+    popup.show();
+    fillCast(list);
+    return popup;
+}
+
 async function castSheets() {
     await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
     const plan = castPlan();
@@ -14984,6 +15067,10 @@ function askSendOptions() {
             focus.value = 'user';
         }
         row.appendChild(focus);
+        const castLink = el('i', 'fa-solid fa-users interactable stis-cast-link');
+        castLink.title = 'Characters in this chat';
+        castLink.addEventListener('click', () => openCast());
+        row.appendChild(castLink);
         const label = el('label', 'checkbox_label');
         const box = el('input');
         box.type = 'checkbox';
@@ -19455,13 +19542,24 @@ function addButtons() {
             menu.appendChild(item);
         }
     }
+    if (!document.getElementById('st_imagesearch_cast_wand')) {
+        const menu = document.getElementById('extensionsMenu');
+        if (menu) {
+            const item = el('div', 'list-group-item flex-container flexGap5');
+            item.id = 'st_imagesearch_cast_wand';
+            item.appendChild(el('div', 'fa-solid fa-users extensionsMenuExtensionButton'));
+            item.appendChild(el('span', '', 'Characters (Image Search)'));
+            item.addEventListener('click', () => openCast());
+            menu.appendChild(item);
+        }
+    }
     updateButtons();
 }
 
 function updateButtons() {
     const s = settings();
     const show = s.enabled;
-    ['st_imagesearch_button', 'st_imagesearch_wand'].forEach(id => {
+    ['st_imagesearch_button', 'st_imagesearch_wand', 'st_imagesearch_cast_wand'].forEach(id => {
         const node = document.getElementById(id);
         if (node) {
             node.style.display = show ? '' : 'none';
@@ -20261,21 +20359,10 @@ function buildSettings() {
     });
     document.getElementById('st_imagesearch_cast_reread').addEventListener('click', async () => {
         const box = document.getElementById('st_imagesearch_sheets');
-        chatCharacters().forEach(character => delete s.cardCasts?.[characterKey(character)]);
-        castBooks().forEach(book => delete s.lorePeople?.[book]);
-        castState.failed.clear();
-        const memory = castMemory();
-        if (memory) {
-            memory.scanned = 0;
-            Object.values(memory.npcs).forEach(npc => {
-                npc.source = '';
-            });
-        }
         box.innerHTML = '';
         box.appendChild(el('small', '', 'Reading the characters…'));
-        await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
-        save();
-        document.getElementById('st_imagesearch_sheets_show').click();
+        await rereadCast();
+        await fillCast(box);
     });
     document.getElementById('st_imagesearch_own_tags_reset').addEventListener('click', () => {
         s.ownTagsPrompt = DEFAULT_OWN_TAGS_PROMPT;
@@ -20392,23 +20479,7 @@ function buildSettings() {
         const box = document.getElementById('st_imagesearch_sheets');
         box.innerHTML = '';
         box.appendChild(el('small', '', 'Reading…'));
-        await prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
-        const everyone = castMembers();
-        const persona = personaMember();
-        const cast = await lookSheets({ members: [...everyone, ...(persona?.source ? [persona] : [])] });
-        box.innerHTML = '';
-        if (!cast.length) {
-            box.appendChild(el('small', '', 'No character in this chat has looks written (character card, lorebook, tracker or saved look).'));
-        }
-        const kinds = { card: 'from the card', lore: 'from a lorebook', story: 'made by the story', saved: 'saved look' };
-        cast.forEach(member => {
-            const known = everyone.find(other => other.key === member.key);
-            const sheet = sheetBox(member);
-            if (known) {
-                sheet.prepend(el('small', 'stis-cast-kind', `${kinds[known.kind] || ''}${known.here ? ' · in the scene now' : ''}${known.aliases?.length ? ` · also: ${known.aliases.slice(0, 4).join(', ')}` : ''}`));
-            }
-            box.appendChild(sheet);
-        });
+        await fillCast(box);
     });
     const catBox = document.getElementById('st_imagesearch_cats');
     const catStatus = document.getElementById('st_imagesearch_cat_status');

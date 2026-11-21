@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.73.1';
+const VERSION = '2.74.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -2834,11 +2834,6 @@ function blobToBase64(blob) {
         reader.readAsDataURL(blob);
     });
 }
-
-const ORIGINAL_ACCEPT = [
-    { 'Accept': 'image/gif,image/png,image/jpeg,image/*;q=0.8,video/*;q=0.7,*/*;q=0.5' },
-    { 'Accept': '*/*' },
-];
 
 const ACCEPT_VARIANTS = [
     { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Upgrade-Insecure-Requests': '1' },
@@ -9977,19 +9972,6 @@ const redoState = { running: false, cancel: false, done: 0, total: 0, failed: 0,
 
 const ANIMATED_TAGS = new Set(['animated', 'animated_gif', 'gif', 'animated_png', 'animation', 'video', 'webm', 'mp4', 'ugoira']);
 
-function stillGifs() {
-    const found = [];
-    for (const entry of library.entries) {
-        const pictures = isMulti(entry) ? entry.variants.map(variant => ({ entry, variant, tags: variant.tags.length ? variant.tags : entry.tags, url: variant.url, source: variant.source || entry.source })) : [{ entry, variant: null, tags: entry.tags, url: entry.url, source: entry.source }];
-        for (const picture of pictures) {
-            if (!/\.gif(\?|$)/i.test(picture.url) && !(picture.entry.animated && !picture.variant) && picture.tags.some(tag => ANIMATED_TAGS.has(normalizeTag(tag))) && postRef(picture.source)) {
-                found.push(picture);
-            }
-        }
-    }
-    return found;
-}
-
 function postRef(source) {
     try {
         const url = new URL(source);
@@ -10018,17 +10000,6 @@ async function sourcePost(ref) {
         throw new Error(`${domain} did not return post ${ref.id}`);
     }
     return { post, engine };
-}
-
-async function originalFile(ref) {
-    const { post, engine } = await sourcePost(ref);
-    const choices = [post.file_url, post.file?.url, post.view_url, post.representations?.full, engine.full(post, ref.origin)].map(url => absolute(url, ref.origin)).filter(Boolean);
-    const usable = choices.filter(url => !/\.zip(\?|$)/i.test(url));
-    const url = usable[0] || absolute(post.large_file_url, ref.origin) || absolute(post.sample?.url, ref.origin);
-    if (!url) {
-        throw new Error(`${ref.domain} gave no file for post ${ref.id} (it may need a login)`);
-    }
-    return url;
 }
 
 const FEW_TAGS = 10;
@@ -10993,79 +10964,6 @@ async function huntAll(onProgress) {
         onProgress?.();
     }
     return redoState.found;
-}
-
-async function redownloadGif(picture) {
-    const url = await originalFile(postRef(picture.source));
-    let file = null;
-    if (isVideoUrl(url)) {
-        file = await convertVideoItem({ video: url });
-        redoState.videos++;
-    } else {
-        try {
-            file = await downloadImage(url, ORIGINAL_ACCEPT);
-        } catch (error) {
-            if (!/not a supported picture \(video\//.test(String(error?.message))) {
-                throw error;
-            }
-            file = await convertVideoItem({ video: url });
-            redoState.videos++;
-        }
-    }
-    if (!(await isAnimated(file))) {
-        redoState.stills.push(`${url.split('/').pop()} (${file.format})`);
-        return false;
-    }
-    const src = await uploadImage(file);
-    const old = picture.url;
-    if (picture.variant) {
-        picture.variant.url = src;
-        if (picture.entry.url === old) {
-            picture.entry.url = src;
-        }
-    } else {
-        picture.entry.url = src;
-    }
-    picture.entry.animated = true;
-    descriptions.delete(old);
-    return old;
-}
-
-async function redownloadGifs(onProgress) {
-    if (redoState.running) {
-        return;
-    }
-    await loadLibrary();
-    const queue = stillGifs();
-    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, skipped: 0, videos: 0, stills: [], errors: [] });
-    onProgress?.();
-    const replaced = [];
-    try {
-        for (const picture of queue) {
-            if (redoState.cancel) {
-                break;
-            }
-            try {
-                const old = await redownloadGif(picture);
-                if (old) {
-                    replaced.push(old);
-                } else {
-                    redoState.skipped++;
-                }
-            } catch (error) {
-                redoState.failed++;
-                redoState.errors.push(String(error?.message || error).slice(0, 120));
-                console.warn('[Image Search] could not download the animated version', picture.source, error);
-            }
-            redoState.done++;
-            onProgress?.();
-        }
-    } finally {
-        redoState.running = false;
-        await saveLibrary();
-        onProgress?.();
-    }
-    return replaced.length;
 }
 
 async function redoAll(onProgress, only = null) {
@@ -15146,7 +15044,7 @@ function confirmClicks(button, label, armedLabel, action, before = null) {
     const disarm = () => {
         clearTimeout(timer);
         armed = false;
-        button.textContent = label;
+        button.textContent = typeof label === 'function' ? label() : label;
         button.classList.remove('stis-armed');
     };
     button.addEventListener('click', async () => {
@@ -19309,9 +19207,15 @@ function buildSettings() {
                         <div class="stis-set st-imagesearch-library">
                             <div id="st_imagesearch_lib_count" class="stis-label">Library</div>
                             <div class="st-imagesearch-row stis-wrap">
-                                <div id="st_imagesearch_redo_all" class="menu_button" title="Describe every saved picture again with the vision model">Redo all descriptions</div>
+                                <select id="st_imagesearch_redo_which" class="text_pole" title="Which pictures Redo describes again">
+                                    <option value="all">Everything</option>
+                                    <option value="single">Single pictures only</option>
+                                    <option value="set">Sets only</option>
+                                    <option value="sequence">Sequences only</option>
+                                    <option value="cut">Cut-off descriptions only</option>
+                                </select>
+                                <div id="st_imagesearch_redo_all" class="menu_button" title="Describe again the saved pictures chosen on the left">Redo descriptions</div>
                                 <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt, and the sets and sequences that still have one description for all their items or no story lines">Redo out-of-date descriptions</div>
-                                <div id="st_imagesearch_regif" class="menu_button" title="Download again the animated GIFs that were saved as still pictures">Re-download GIFs saved as stills</div>
                                 <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
                                 <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop after the pictures being worked on now" hidden>Stop</div>
                             </div>
@@ -20232,7 +20136,7 @@ function buildSettings() {
         libCount.textContent = library.broken ? 'The picture library could not be read.' : `Library: ${pictureCount()} picture(s)${groups ? ` (${groups})` : ''}`;
         if (!redoState.running) {
             redoOld.textContent = oldLabel();
-            regif.textContent = gifLabel();
+            redoButton.textContent = redoLabel();
             huntButton.textContent = huntLabel();
         }
     };
@@ -20246,7 +20150,18 @@ function buildSettings() {
             redoStop.textContent = 'Stopping…';
         }
     });
-    const redoLabel = 'Redo all descriptions';
+    const redoWhich = document.getElementById('st_imagesearch_redo_which');
+    const REDO_PICKS = { all: () => true, single: entry => !isMulti(entry), set: entry => isMulti(entry) && entry.kind === 'set', sequence: entry => isMulti(entry) && entry.kind === 'sequence', cut: entry => itemCut(entry).length > 0 };
+    redoWhich.value = REDO_PICKS[s.redoWhich] ? s.redoWhich : 'all';
+    const redoList = () => library.entries.filter(REDO_PICKS[redoWhich.value] || REDO_PICKS.all);
+    const redoLabel = () => `Redo descriptions (${redoList().length})`;
+    redoWhich.addEventListener('change', () => {
+        s.redoWhich = redoWhich.value;
+        save();
+        if (!redoState.running) {
+            redoButton.textContent = redoLabel();
+        }
+    });
     const redoOld = document.getElementById('st_imagesearch_redo_old');
     const oldLabel = () => `Redo out-of-date descriptions (${library.entries.filter(describedOld).length})`;
     const runRedo = async (button, label, only) => {
@@ -20289,31 +20204,12 @@ function buildSettings() {
         const count = list.filter(entry => entry.lock || (isMulti(entry) && entry.variants.some(item => item.lock))).length;
         return count ? ` (${count} locked: updated from their locked description)` : '';
     };
-    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${library.entries.length} entr${library.entries.length === 1 ? 'y' : 'ies'} again${lockedNote(library.entries)}`, () => runRedo(redoButton, redoLabel, null), () => canRedo());
-    const regif = document.getElementById('st_imagesearch_regif');
-    const gifLabel = () => `Re-download GIFs saved as stills (${stillGifs().length})`;
-    confirmClicks(regif, 'Re-download GIFs saved as stills', () => `Tap again to download ${stillGifs().length} animated GIF(s) again`, async () => {
-        regif.textContent = 'Downloading…';
-        redoStop.hidden = false;
-        redoStop.textContent = 'Stop';
-        redoBar.hidden = false;
-        const progress = () => {
-            libStatus.textContent = `Downloading ${redoState.done} / ${redoState.total}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
-            redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
-        };
-        const count = await redownloadGifs(progress);
-        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${count} GIF(s) replaced${redoState.videos ? ` (${redoState.videos} made from a video)` : ''}${redoState.skipped ? `, ${redoState.skipped} not animated on the site: ${redoState.stills.slice(0, 3).join(', ')}` : ''}${redoState.failed ? `, ${redoState.failed} failed: ${[...new Set(redoState.errors)].slice(0, 2).join(' | ')}` : ''}.`;
-        regif.textContent = gifLabel();
-        redoStop.hidden = true;
-        redoBar.hidden = true;
-        showLibrary();
-    }, async () => {
-        if (redoState.running) {
+    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${redoList().length} entr${redoList().length === 1 ? 'y' : 'ies'} again${lockedNote(redoList())}`, () => runRedo(redoButton, redoLabel, redoList()), async () => {
+        if (!(await canRedo())) {
             return false;
         }
-        await loadLibrary();
-        if (!stillGifs().length) {
-            libStatus.textContent = 'No GIF in the library was saved as a still picture.';
+        if (!redoList().length) {
+            libStatus.textContent = 'Nothing to describe again in that choice.';
             return false;
         }
         return true;

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.74.0';
+const VERSION = '2.75.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -10930,6 +10930,42 @@ function borrowedLine(entry) {
     return from ? `Tags from ${from.site}${from.id ? ` #${from.id}` : ''} (${from.how === 'same file' ? 'same file' : `${from.alike}% alike${from.how.includes('IQDB') ? ', found by IQDB' : ''}`})` : '';
 }
 
+const awake = { lock: null, want: false };
+
+async function keepAwake(on) {
+    awake.want = on;
+    if (!on) {
+        const lock = awake.lock;
+        awake.lock = null;
+        await lock?.release?.().catch(() => {});
+        return;
+    }
+    if (awake.lock || !navigator.wakeLock || document.visibilityState !== 'visible') {
+        return;
+    }
+    try {
+        const lock = await navigator.wakeLock.request('screen');
+        if (!awake.want) {
+            await lock.release().catch(() => {});
+            return;
+        }
+        awake.lock = lock;
+        lock.addEventListener?.('release', () => {
+            if (awake.lock === lock) {
+                awake.lock = null;
+            }
+        });
+    } catch (error) {
+        console.warn('[Image Search] could not keep the screen on', error);
+    }
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (awake.want && document.visibilityState === 'visible') {
+        keepAwake(true);
+    }
+});
+
 async function huntAll(onProgress) {
     if (redoState.running) {
         return 0;
@@ -10938,6 +10974,7 @@ async function huntAll(onProgress) {
     const queue = library.entries.filter(tagPoor);
     Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, found: 0 });
     onProgress?.();
+    keepAwake(true);
     try {
         for (const entry of queue) {
             if (redoState.cancel) {
@@ -10960,13 +10997,14 @@ async function huntAll(onProgress) {
         }
     } finally {
         redoState.running = false;
+        keepAwake(false);
         await saveLibrary();
         onProgress?.();
     }
     return redoState.found;
 }
 
-async function redoAll(onProgress, only = null) {
+async function redoAll(onProgress, only = null, onSaved = null) {
     if (redoState.running) {
         return;
     }
@@ -10974,6 +11012,13 @@ async function redoAll(onProgress, only = null) {
     const queue = [...(only || library.entries)];
     Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0 });
     onProgress?.();
+    keepAwake(true);
+    const finished = [];
+    const commit = async () => {
+        const ids = finished.splice(0);
+        await saveLibrary();
+        onSaved?.(ids);
+    };
     const worker = async () => {
         while (queue.length && !redoState.cancel) {
             const entry = queue.shift();
@@ -10983,9 +11028,10 @@ async function redoAll(onProgress, only = null) {
                 redoState.failed++;
                 console.warn('[Image Search] redo failed', entry.id, error);
             }
+            finished.push(entry.id);
             redoState.done++;
             if (redoState.done % 5 === 0) {
-                await saveLibrary();
+                await commit();
             }
             onProgress?.();
         }
@@ -10994,7 +11040,8 @@ async function redoAll(onProgress, only = null) {
         await Promise.all([worker(), worker()]);
     } finally {
         redoState.running = false;
-        await saveLibrary();
+        keepAwake(false);
+        await commit();
         onProgress?.();
     }
 }
@@ -19214,7 +19261,8 @@ function buildSettings() {
                                     <option value="sequence">Sequences only</option>
                                     <option value="cut">Cut-off descriptions only</option>
                                 </select>
-                                <div id="st_imagesearch_redo_all" class="menu_button" title="Describe again the saved pictures chosen on the left">Redo descriptions</div>
+                                <div id="st_imagesearch_redo_all" class="menu_button" title="Describe again the saved pictures chosen on the left. The screen stays on while it runs; if it is stopped or interrupted, it resumes where it was">Redo descriptions</div>
+                                <div id="st_imagesearch_redo_restart" class="menu_button" title="Drop the unfinished redo and start the next one from the beginning" hidden>Start over</div>
                                 <div id="st_imagesearch_redo_old" class="menu_button" title="Describe again only the pictures described with an older description prompt, and the sets and sequences that still have one description for all their items or no story lines">Redo out-of-date descriptions</div>
                                 <div id="st_imagesearch_hunt_all" class="menu_button" title="Look for pictures with few tags on your other sites, take their tags, then describe and file them again">Find tags for pictures with few tags</div>
                                 <div id="st_imagesearch_redo_stop" class="menu_button" title="Stop after the pictures being worked on now" hidden>Stop</div>
@@ -20153,8 +20201,43 @@ function buildSettings() {
     const redoWhich = document.getElementById('st_imagesearch_redo_which');
     const REDO_PICKS = { all: () => true, single: entry => !isMulti(entry), set: entry => isMulti(entry) && entry.kind === 'set', sequence: entry => isMulti(entry) && entry.kind === 'sequence', cut: entry => itemCut(entry).length > 0 };
     redoWhich.value = REDO_PICKS[s.redoWhich] ? s.redoWhich : 'all';
-    const redoList = () => library.entries.filter(REDO_PICKS[redoWhich.value] || REDO_PICKS.all);
-    const redoLabel = () => `Redo descriptions (${redoList().length})`;
+    const redoRestart = document.getElementById('st_imagesearch_redo_restart');
+    const resumable = () => {
+        const run = s.redoRun;
+        if (!run || run.which !== redoWhich.value || !Array.isArray(run.left) || !run.left.length) {
+            return null;
+        }
+        const live = new Set(library.entries.map(entry => entry.id));
+        run.left = run.left.filter(id => live.has(id));
+        return run.left.length ? run : null;
+    };
+    const redoList = () => {
+        const run = resumable();
+        return run ? library.entries.filter(entry => run.left.includes(entry.id)) : library.entries.filter(REDO_PICKS[redoWhich.value] || REDO_PICKS.all);
+    };
+    const redoLabel = () => {
+        const run = resumable();
+        redoRestart.hidden = !run || redoState.running;
+        return run ? `Resume redo (${run.left.length} left of ${run.total})` : `Redo descriptions (${redoList().length})`;
+    };
+    const redoRun = () => {
+        const run = resumable();
+        if (run) {
+            return run;
+        }
+        s.redoRun = { which: redoWhich.value, left: redoList().map(entry => entry.id), total: redoList().length, at: Date.now() };
+        save();
+        return s.redoRun;
+    };
+    redoRestart.addEventListener('click', () => {
+        if (redoState.running) {
+            return;
+        }
+        s.redoRun = null;
+        save();
+        libStatus.textContent = 'The unfinished redo was dropped: Redo descriptions starts from the beginning.';
+        redoButton.textContent = redoLabel();
+    });
     redoWhich.addEventListener('change', () => {
         s.redoWhich = redoWhich.value;
         save();
@@ -20164,8 +20247,9 @@ function buildSettings() {
     });
     const redoOld = document.getElementById('st_imagesearch_redo_old');
     const oldLabel = () => `Redo out-of-date descriptions (${library.entries.filter(describedOld).length})`;
-    const runRedo = async (button, label, only) => {
+    const runRedo = async (button, label, only, run = null) => {
         button.textContent = 'Describing…';
+        redoRestart.hidden = true;
         redoStop.hidden = false;
         redoStop.textContent = 'Stop';
         redoBar.hidden = false;
@@ -20173,9 +20257,17 @@ function buildSettings() {
             libStatus.textContent = `Describing ${redoState.done} / ${redoState.total}${redoState.failed ? ` (${redoState.failed} failed)` : ''}…`;
             redoBar.querySelector('.stis-progress-fill').style.width = `${Math.round(redoState.total ? redoState.done / redoState.total * 100 : 0)}%`;
         };
-        await redoAll(progress, only);
+        await redoAll(progress, only, run ? ids => {
+            const done = new Set(ids);
+            run.left = run.left.filter(id => !done.has(id));
+            save();
+        } : null);
+        if (run && !redoState.cancel) {
+            s.redoRun = null;
+            save();
+        }
         const described = redoState.done - redoState.failed;
-        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.`;
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.${redoState.cancel && run?.left.length ? ` Redo descriptions now resumes with the ${run.left.length} left.` : ''}`;
         button.textContent = typeof label === 'function' ? label() : label;
         redoStop.hidden = true;
         redoBar.hidden = true;
@@ -20204,7 +20296,10 @@ function buildSettings() {
         const count = list.filter(entry => entry.lock || (isMulti(entry) && entry.variants.some(item => item.lock))).length;
         return count ? ` (${count} locked: updated from their locked description)` : '';
     };
-    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${redoList().length} entr${redoList().length === 1 ? 'y' : 'ies'} again${lockedNote(redoList())}`, () => runRedo(redoButton, redoLabel, redoList()), async () => {
+    confirmClicks(redoButton, redoLabel, () => `Tap again to describe ${redoList().length} entr${redoList().length === 1 ? 'y' : 'ies'} again${lockedNote(redoList())}${resumable() ? ' (resuming)' : ''}`, () => {
+        const run = redoRun();
+        return runRedo(redoButton, redoLabel, library.entries.filter(entry => run.left.includes(entry.id)), run);
+    }, async () => {
         if (!(await canRedo())) {
             return false;
         }

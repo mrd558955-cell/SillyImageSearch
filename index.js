@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.75.0';
+const VERSION = '2.75.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -806,7 +806,68 @@ async function fetchWithin(url, options = {}, ms = 60000) {
 
 const MODEL_WAIT_MS = 5 * 60 * 1000;
 
+const REQUEST_BUDGET = 3500000;
+const TOO_LARGE = /too large|payload|\b413\b|entity/i;
+
+function promptSize(prompt) {
+    try {
+        return JSON.stringify(prompt)?.length || 0;
+    } catch {
+        return 0;
+    }
+}
+
+async function shrinkDataUrl(url, factor) {
+    try {
+        const blob = await (await fetch(url)).blob();
+        const bitmap = await createImageBitmap(blob);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(64, Math.round(bitmap.width * factor));
+        canvas.height = Math.max(64, Math.round(bitmap.height * factor));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close?.();
+        return canvas.toDataURL('image/jpeg', 0.75);
+    } catch {
+        return url;
+    }
+}
+
+async function shrinkPictures(prompt, budget) {
+    if (!Array.isArray(prompt)) {
+        return prompt;
+    }
+    let size = promptSize(prompt);
+    let next = prompt;
+    for (let round = 0; round < 4 && size > budget; round++) {
+        const factor = Math.max(0.3, Math.min(0.9, Math.sqrt(budget / size) * 0.9));
+        next = await Promise.all(next.map(async message => (Array.isArray(message?.content) ? {
+            ...message,
+            content: await Promise.all(message.content.map(async part => (part?.type === 'image_url' && /^data:image\//.test(part.image_url?.url || '') ? { ...part, image_url: { ...part.image_url, url: await shrinkDataUrl(part.image_url.url, factor) } } : part))),
+        } : message)));
+        const smaller = promptSize(next);
+        if (smaller >= size) {
+            break;
+        }
+        size = smaller;
+    }
+    return next;
+}
+
 async function modelRequest(service, profile, prompt, maxTokens, custom = {}, override = {}) {
+    const fitted = await shrinkPictures(prompt, REQUEST_BUDGET);
+    try {
+        return await modelRequestOnce(service, profile, fitted, maxTokens, custom, override);
+    } catch (error) {
+        const pictures = Array.isArray(fitted) && JSON.stringify(fitted).includes('"image_url"');
+        if (!pictures || !TOO_LARGE.test(String(error?.message || error))) {
+            throw error;
+        }
+        console.warn('[Image Search] the request was too large; sending the pictures smaller', error);
+        return modelRequestOnce(service, profile, await shrinkPictures(fitted, Math.floor(promptSize(fitted) / 2.5)), maxTokens, custom, override);
+    }
+}
+
+async function modelRequestOnce(service, profile, prompt, maxTokens, custom = {}, override = {}) {
     const controller = new AbortController();
     const outer = custom?.signal || null;
     const relay = () => controller.abort();
@@ -11010,7 +11071,7 @@ async function redoAll(onProgress, only = null, onSaved = null) {
     }
     await loadLibrary();
     const queue = [...(only || library.entries)];
-    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0 });
+    Object.assign(redoState, { running: true, cancel: false, done: 0, total: queue.length, failed: 0, failedIds: [] });
     onProgress?.();
     keepAwake(true);
     const finished = [];
@@ -11026,6 +11087,8 @@ async function redoAll(onProgress, only = null, onSaved = null) {
                 await redoEntry(entry, { save: false });
             } catch (error) {
                 redoState.failed++;
+                redoState.failedIds.push(entry.id);
+                redoState.errors = [...(redoState.errors || []), String(error?.message || error).slice(0, 160)].slice(-5);
                 console.warn('[Image Search] redo failed', entry.id, error);
             }
             finished.push(entry.id);
@@ -19260,6 +19323,8 @@ function buildSettings() {
                                     <option value="set">Sets only</option>
                                     <option value="sequence">Sequences only</option>
                                     <option value="cut">Cut-off descriptions only</option>
+                                    <option value="failed">Failed last time</option>
+                                    <option value="stale">Not made with my current description prompt</option>
                                 </select>
                                 <div id="st_imagesearch_redo_all" class="menu_button" title="Describe again the saved pictures chosen on the left. The screen stays on while it runs; if it is stopped or interrupted, it resumes where it was">Redo descriptions</div>
                                 <div id="st_imagesearch_redo_restart" class="menu_button" title="Drop the unfinished redo and start the next one from the beginning" hidden>Start over</div>
@@ -20199,7 +20264,7 @@ function buildSettings() {
         }
     });
     const redoWhich = document.getElementById('st_imagesearch_redo_which');
-    const REDO_PICKS = { all: () => true, single: entry => !isMulti(entry), set: entry => isMulti(entry) && entry.kind === 'set', sequence: entry => isMulti(entry) && entry.kind === 'sequence', cut: entry => itemCut(entry).length > 0 };
+    const REDO_PICKS = { all: () => true, single: entry => !isMulti(entry), set: entry => isMulti(entry) && entry.kind === 'set', sequence: entry => isMulti(entry) && entry.kind === 'sequence', cut: entry => itemCut(entry).length > 0, failed: entry => (s.redoFailed || []).includes(entry.id), stale: entry => Boolean(entry.description) && entry.described !== visionHash() };
     redoWhich.value = REDO_PICKS[s.redoWhich] ? s.redoWhich : 'all';
     const redoRestart = document.getElementById('st_imagesearch_redo_restart');
     const resumable = () => {
@@ -20264,10 +20329,15 @@ function buildSettings() {
         } : null);
         if (run && !redoState.cancel) {
             s.redoRun = null;
-            save();
         }
+        if (redoState.failedIds?.length) {
+            s.redoFailed = [...new Set([...(redoState.cancel ? s.redoFailed || [] : []), ...redoState.failedIds])];
+        } else if (!redoState.cancel) {
+            s.redoFailed = (s.redoFailed || []).filter(id => !only.some(entry => entry.id === id));
+        }
+        save();
         const described = redoState.done - redoState.failed;
-        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (see the browser console)` : ''}.${redoState.cancel && run?.left.length ? ` Redo descriptions now resumes with the ${run.left.length} left.` : ''}`;
+        libStatus.textContent = `${redoState.cancel ? 'Stopped' : 'Done'}: ${described} described${redoState.failed ? `, ${redoState.failed} failed (last error: ${redoState.errors?.[redoState.errors.length - 1] || 'see the browser console'}). Choose "Failed last time" to try just those again` : ''}.${redoState.cancel && run?.left.length ? ` Redo descriptions now resumes with the ${run.left.length} left.` : ''}`;
         button.textContent = typeof label === 'function' ? label() : label;
         redoStop.hidden = true;
         redoBar.hidden = true;

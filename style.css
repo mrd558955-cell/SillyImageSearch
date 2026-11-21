@@ -2216,6 +2216,28 @@ video.stis-preview-img {
     gap: 4px;
 }
 
+.stis-sent,
+.stis-sent-part > * {
+    flex-shrink: 0;
+}
+
+.stis-sent .stis-role-buttons .menu_button {
+    width: auto;
+    flex: 0 1 auto;
+    margin: 0;
+}
+
+.stis-sent-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.stis-sent-answer[hidden] {
+    display: none;
+}
+
 .stis-sent-title {
     font-weight: 600;
     font-size: 0.9em;

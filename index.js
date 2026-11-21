@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.72.0';
+const VERSION = '2.72.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -7214,6 +7214,21 @@ function sentPanel(entry, item) {
             wrap.appendChild(image);
         });
         const prompted = el('div', 'stis-sent-answer stis-sent-prompted');
+        const answer = el('div', 'stis-sent-answer');
+        const switcher = el('div', 'stis-sent-switch');
+        const tabs = [['prompted', 'With the prompt', prompted], ['bare', 'Pictures only', answer]];
+        const show = key => {
+            tabs.forEach(([name, , pane]) => {
+                pane.hidden = name !== key;
+            });
+            [...switcher.children].forEach(chip => chip.classList.toggle('stis-fchip-on', chip.dataset.pane === key));
+        };
+        tabs.forEach(([name, text]) => {
+            const chip = el('span', 'stis-fchip', text);
+            chip.dataset.pane = name;
+            chip.addEventListener('click', () => show(name));
+            switcher.appendChild(chip);
+        });
         if (view.prompt) {
             const area = el('textarea', 'text_pole stis-sent-prompt-text');
             area.value = view.prompt;
@@ -7254,14 +7269,14 @@ function sentPanel(entry, item) {
                 row.appendChild(current);
             }
             said.append(area, row);
-            wrap.appendChild(prompted);
+            wrap.append(switcher, prompted);
             run(view.prompt);
         } else {
             said.appendChild(el('div', 'stis-entry-text stis-sent-prompt-text', 'The prompt could not be built for this picture. Describe it again and open this again.'));
         }
-        const answer = el('div', 'stis-sent-answer');
         answer.appendChild(el('small', 'stis-sent-moments', 'Asking the vision model with these pictures only…'));
         wrap.appendChild(answer);
+        show(view.prompt ? 'prompted' : 'bare');
         picturesOnlyAsk(view.pictures).then(result => {
             answer.innerHTML = '';
             answer.appendChild(el('small', 'stis-sent-title', result.asked ? `What it says with only "${result.asked}" added (it refused the pictures alone: ${result.refused})` : 'What it says with the pictures only, nothing else'));

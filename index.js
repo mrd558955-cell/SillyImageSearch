@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.77.0';
+const VERSION = '2.78.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -13411,7 +13411,7 @@ function trackerLines(text) {
         const name = cleanPersonName(parts[0].replace(/^[\s>*_#-]+/, ''));
         const fields = {};
         parts.slice(1).forEach(part => {
-            const found = part.match(/^([A-Za-z][\w ]{0,20}?)\s*:\s*(.*)$/);
+            const found = part.match(/^([A-Za-z][\w '-]{0,30}?)\s*:\s*(.*)$/);
             if (found) {
                 fields[found[1].trim().toLowerCase()] = found[2].trim();
             }
@@ -13419,52 +13419,155 @@ function trackerLines(text) {
         if (!name || /[:{}[\]]/.test(name) || name.split(' ').length > 4 || Object.keys(fields).length < 2) {
             continue;
         }
-        const looks = Object.keys(fields).filter(key => LOOK_FIELDS.includes(key)).length >= 2;
+        const lookKeys = new Set([...LOOK_FIELDS, ...appearanceFields().map(field => field.key)]);
+        const looks = Object.keys(fields).filter(key => lookKeys.has(key)).length >= 2;
         people.push({ name, fields, looks, where: looks ? '' : fields.body || fields.location || fields.where || '' });
     }
     return people;
 }
 
-function lookLine(person) {
-    return Object.entries(person.fields).filter(([, value]) => value && !/^\[.*\]$/.test(value)).map(([key, value]) => `${key.replace(/^\w/, letter => letter.toUpperCase())}: ${value}`).join('; ').slice(0, 1500);
+const NOT_APPLICABLE = /^(n\/?a|none|nothing|no|-+|—)\.?$/i;
+const EXTRA_LOOK_FIELDS = [['injuries', 'Injuries', 'where, how bad'], ['attire', 'Attire', 'clothes top to bottom, condition'], ['accessories', 'Accessories', 'worn or held']];
+
+function fieldHint(category) {
+    const question = String(category.question || '').split(/,? (?:when|unless|if) /)[0].trim();
+    return question && !/picture|image|seen/i.test(question) ? question : String(category.label || category.id);
+}
+
+function appearanceFields() {
+    const fields = [];
+    const add = field => {
+        if (field.key && !fields.some(other => other.key === field.key)) {
+            fields.push(field);
+        }
+    };
+    const list = sheetCategories().filter(category => category.enabled !== false);
+    list.forEach(category => {
+        const label = String(category.label || category.id).trim();
+        add({ key: label.toLowerCase(), label: label.replace(/^\w/, letter => letter.toUpperCase()), hint: category.id === 'outfit' ? 'clothes top to bottom, condition' : fieldHint(category), category });
+    });
+    const hasOutfit = list.some(category => category.id === 'outfit');
+    EXTRA_LOOK_FIELDS.filter(([key]) => !(key === 'attire' && hasOutfit)).forEach(([key, label, hint]) => add({ key, label, hint, category: null }));
+    return fields;
+}
+
+function appearanceTemplate() {
+    return `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.hint}, or N/A]`).join(' | ')}`;
+}
+
+function trackedLook(names) {
+    const looks = castMemory()?.looks || {};
+    const tried = [];
+    names.filter(Boolean).forEach(name => {
+        const lower = String(name).toLowerCase().trim();
+        tried.push(lower, lower.split(' ')[0]);
+    });
+    const exact = tried.map(name => looks[name]).find(Boolean);
+    if (exact) {
+        return exact;
+    }
+    const firsts = new Set(tried.filter(name => name.length >= 3));
+    return Object.entries(looks).find(([key]) => firsts.has(key.split(' ')[0]))?.[1] || null;
+}
+
+function lookNow(look) {
+    if (!look?.fields) {
+        return '';
+    }
+    return Object.entries(look.fields).filter(([, value]) => value && !NOT_APPLICABLE.test(value)).map(([key, value]) => `${key.replace(/^\w/, letter => letter.toUpperCase())}: ${value}`).join('; ').slice(0, 1500);
 }
 
 function nowLook(names) {
-    const looks = castMemory()?.looks || {};
-    const found = names.map(name => looks[String(name || '').toLowerCase()]).find(Boolean);
-    return found?.text ? `Now, from the story's appearance tracker (this is how they look at this point of the story; it wins over the older text below): ${found.text}` : '';
+    const text = lookNow(trackedLook(names));
+    return text ? `Now, from the story's appearance tracker: ${text}` : '';
 }
 
-function lookFieldsLine() {
-    const covered = new Set(['hair', 'build', 'outfit', 'eyes']);
-    const extra = sheetCategories().filter(category => !covered.has(category.id) && category.enabled !== false);
-    const ask = category => {
-        const question = String(category.question || '').split(/,? (?:when|unless|if) /)[0].trim();
-        return question && !/picture|image|seen/i.test(question) ? question : String(category.label || category.id);
-    };
-    return extra.length ? `End every Appearance line with these fields too, same format: ${extra.map(category => `| ${String(category.label || category.id).replace(/^\w/, letter => letter.toUpperCase())}: [${ask(category)}]`).join(' ')}` : '';
+function overlayLook(sheet, names, editedAt = 0) {
+    const look = trackedLook(names);
+    if (!look?.fields) {
+        return sheet;
+    }
+    const next = { ...sheet };
+    appearanceFields().filter(field => field.category).forEach(field => {
+        const value = look.fields[field.key];
+        if (!value || NOT_APPLICABLE.test(value)) {
+            return;
+        }
+        if (editedAt && (look.when?.[field.key] || 0) <= editedAt) {
+            return;
+        }
+        const category = field.category;
+        const found = valuesIn(category, String(value).toLowerCase().replace(/_/g, ' '));
+        if (found.length) {
+            next[category.id] = category.type === 'each' ? found.join(', ') : found[0];
+        }
+    });
+    return next;
 }
 
-function publishLookFields() {
-    const value = lookFieldsLine();
+function lookExtras(names) {
+    const look = trackedLook(names);
+    if (!look?.fields) {
+        return '';
+    }
+    const plain = new Set(defaultCategories().map(category => category.id).filter(id => !['outfit', 'features', 'condition'].includes(id)));
+    const matched = new Set(appearanceFields().filter(field => field.category && plain.has(field.category.id)).map(field => field.key));
+    return Object.entries(look.fields).filter(([key, value]) => value && !NOT_APPLICABLE.test(value) && !matched.has(key)).map(([key, value]) => `${key.replace(/^\w/, letter => letter.toUpperCase())}: ${value}`).join('; ').slice(0, 800);
+}
+
+function lastKnownLooks() {
+    const memory = castMemory();
+    if (!memory?.looks || !Object.keys(memory.looks).length) {
+        return '';
+    }
+    const chat = ctx().chat || [];
+    const text = chat.slice(-6).filter(message => message && typeof message.mes === 'string').map(message => cleanForPrompt(message.mes)).join(' ');
+    const fields = appearanceFields();
+    const persona = String(ctx().name1 || '').toLowerCase();
+    const scene = new Set(castMembers().filter(member => member.here).flatMap(member => [member.name, ...(member.aliases || [])].map(name => String(name).toLowerCase())));
+    const lines = Object.entries(memory.looks).filter(([key, look]) => key === persona || scene.has(key) || [look.name, key.split(' ')[0]].some(name => name && name.length >= 3 && namePattern(name).test(text))).slice(0, 10).map(([, look]) => `- ${look.name} | ${fields.map(field => `${field.label}: ${look.fields?.[field.key] || 'N/A'}`).join(' | ')}`);
+    return lines.length ? `Last known looks of the people in this scene (start from these when they appear or come back; change only what the story changes):\n${lines.join('\n')}` : '';
+}
+
+function publishAppearance() {
+    try {
+        scanTracker();
+    } catch (error) {
+        console.warn('[Image Search] could not read the tracker', error);
+    }
+    setGlobalVar('stisAppearanceLast', lastKnownLooks());
+}
+
+function setGlobalVar(name, value) {
     try {
         const variables = ctx().variables?.global;
         if (variables?.set) {
-            if (variables.get?.('stisLookFields') !== value) {
-                variables.set('stisLookFields', value);
+            if (variables.get?.(name) !== value) {
+                variables.set(name, value);
             }
             return;
         }
         const store = ctx().extensionSettings;
         store.variables = store.variables || {};
         store.variables.global = store.variables.global || {};
-        if (store.variables.global.stisLookFields !== value) {
-            store.variables.global.stisLookFields = value;
+        if (store.variables.global[name] !== value) {
+            store.variables.global[name] = value;
             ctx().saveSettingsDebounced?.();
         }
     } catch (error) {
-        console.warn('[Image Search] could not share the look fields with the preset', error);
+        console.warn('[Image Search] could not share a variable with the preset', name, error);
     }
+}
+
+function lookFieldsLine() {
+    const covered = new Set(['hair', 'build', 'outfit', 'eyes']);
+    const extra = sheetCategories().filter(category => !covered.has(category.id) && category.enabled !== false);
+    return extra.length ? `End every Appearance line with these fields too, same format: ${extra.map(category => `| ${String(category.label || category.id).replace(/^\w/, letter => letter.toUpperCase())}: [${fieldHint(category)}]`).join(' ')}` : '';
+}
+
+function publishLookFields() {
+    setGlobalVar('stisLookFields', lookFieldsLine());
+    setGlobalVar('stisAppearanceTemplate', appearanceTemplate());
 }
 
 function namePattern(name) {
@@ -13527,23 +13630,36 @@ function scanTracker() {
     }
     memory.scanned = chat.length;
     memory.looks = memory.looks && typeof memory.looks === 'object' ? memory.looks : {};
-    const seenLooks = new Set();
-    for (let index = chat.length - 1; index >= 0 && index >= chat.length - 200; index--) {
+    for (let index = Math.max(0, chat.length - 400); index < chat.length; index++) {
         const message = chat[index];
         if (!message || message.is_user || typeof message.mes !== 'string') {
             continue;
         }
         trackerLines(message.mes).filter(person => person.looks).forEach(person => {
             const key = person.name.toLowerCase();
-            if (seenLooks.has(key)) {
-                return;
-            }
-            seenLooks.add(key);
-            const text = lookLine(person);
-            if (text && memory.looks[key]?.text !== text) {
-                memory.looks[key] = { text, at: index };
+            const look = memory.looks[key] || { name: person.name, fields: {}, when: {}, changes: [], at: index };
+            look.fields = look.fields || {};
+            look.when = look.when || {};
+            look.changes = Array.isArray(look.changes) ? look.changes : [];
+            Object.entries(person.fields).forEach(([field, raw]) => {
+                const value = String(raw || '').replace(/^\[|\]$/g, '').trim().slice(0, 300);
+                if (!value || look.fields[field] === value) {
+                    return;
+                }
+                if (look.fields[field]) {
+                    look.changes.push({ field, from: look.fields[field], to: value, at: index, when: Date.now() });
+                }
+                look.fields[field] = value;
+                look.when[field] = Date.now();
+                changed = true;
+            });
+            look.changes = look.changes.slice(-40);
+            if (look.at !== index) {
+                look.at = index;
                 changed = true;
             }
+            look.text = lookNow(look);
+            memory.looks[key] = look;
         });
     }
     Object.values(memory.npcs).forEach(npc => {
@@ -13722,11 +13838,7 @@ function castMembers() {
             add({ key: `look:${name.toLowerCase()}`, name, kind: 'saved', source, always: true });
         }
     }
-    return members.map(member => {
-        const now = nowLook([member.name, ...(member.aliases || [])]);
-        const source = now ? `${now}\n${member.source}` : member.source;
-        return { ...member, source, basis: String(hashText(source)) };
-    });
+    return members.map(member => ({ ...member, basis: String(hashText(member.source)) }));
 }
 
 function sceneMembers() {
@@ -13772,6 +13884,14 @@ async function fillCast(box) {
         const known = everyone.find(other => other.key === member.key);
         const sheet = sheetBox(member);
         sheet.prepend(el('small', 'stis-cast-kind', known ? `${kinds[known.kind] || ''}${known.here ? ' · in the scene now' : ''}${known.aliases?.length ? ` · also: ${known.aliases.slice(0, 4).join(', ')}` : ''}` : 'you (persona)'));
+        const look = trackedLook([member.name, ...(known?.aliases || [])]);
+        if (look) {
+            sheet.appendChild(el('small', 'stis-cast-now', `Now, from the appearance tracker: ${lookNow(look) || 'nothing yet'}`));
+            const recent = (look.changes || []).slice(-4).reverse();
+            if (recent.length) {
+                sheet.appendChild(el('small', 'stis-cast-changes', `Changes: ${recent.map(change => `${change.field}: ${change.from} → ${change.to}`).join(' · ')}`));
+            }
+        }
         box.appendChild(sheet);
     });
 }
@@ -13832,7 +13952,7 @@ function personaMember() {
     }
     const text = fillNames(c.powerUserSettings?.persona_description || '', c.name2).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 4000);
     const saved = parseLooks().filter(look => look.name.toLowerCase() === name.toLowerCase()).map(look => `Saved look: ${look.tags.join(', ').replace(/_/g, ' ')}`);
-    const source = [nowLook([name]), text, ...saved].filter(Boolean).join('\n');
+    const source = [text, ...saved].filter(Boolean).join('\n');
     return { key: `persona:${name.toLowerCase()}`, name, source, basis: String(hashText(source)) };
 }
 
@@ -13926,12 +14046,15 @@ async function lookSheets({ ask = true, members = allMembers() } = {}) {
     }
     return members.map(member => {
         const sheet = current(member) || (s.lookSheets[member.key]?.edited ? s.lookSheets[member.key] : null);
-        return sheet ? { name: member.name, key: member.key, ...sheet.person, edited: Boolean(sheet.edited) } : { ...sheetFromText(member.name, member.source), key: member.key, guessed: true };
+        const names = [member.name, ...(member.aliases || [])];
+        const base = sheet ? { name: member.name, key: member.key, ...sheet.person, edited: Boolean(sheet.edited) } : { ...sheetFromText(member.name, member.source), key: member.key, guessed: true };
+        const now = nowLook(names);
+        return { ...overlayLook(base, names, sheet?.edited ? Number(sheet.editedAt) || 0 : 0), ...(now ? { now, nowExtra: lookExtras(names) } : {}) };
     });
 }
 
 function sheetFields(member) {
-    return Object.fromEntries(Object.entries(member).filter(([key]) => !['name', 'key', 'edited', 'guessed', 'role'].includes(key)));
+    return Object.fromEntries(Object.entries(member).filter(([key]) => !['name', 'key', 'edited', 'guessed', 'role', 'now', 'nowExtra'].includes(key)));
 }
 
 function sheetLine(member) {
@@ -13964,7 +14087,7 @@ function sheetBox(member, onSave) {
                 }
                 const basis = allMembers().find(item => item.key === member.key)?.basis || '';
                 s.lookSheets = s.lookSheets || {};
-                s.lookSheets[member.key] = { name: member.name, person, basis, edited: true, v: SHEET_VERSION, cats: sheetHashes() };
+                s.lookSheets[member.key] = { name: member.name, person, basis, edited: true, editedAt: Date.now(), v: SHEET_VERSION, cats: sheetHashes() };
                 save();
                 replace(person);
                 Object.assign(member, { edited: true, guessed: false });
@@ -14529,7 +14652,7 @@ function judgedNotes() {
 }
 
 function castLooks() {
-    return [...lastCast.map(member => `${member.name} (look sheet): ${judgeWho(member)}`), ...judgedNotes()];
+    return [...lastCast.flatMap(member => [`${member.name} (look sheet): ${judgeWho(member)}`, ...(member.nowExtra ? [`${member.name} (now, from the story): ${member.nowExtra}`] : [])]), ...judgedNotes()];
 }
 
 function pickContext(message) {
@@ -15428,6 +15551,9 @@ function armPack(pack) {
 function onGenerationStarted(type, _options, dryRun) {
     if (dryRun || type === 'quiet' || type === 'impersonate') {
         return;
+    }
+    if (settings().enabled && settings().castTracker !== false) {
+        publishAppearance();
     }
     const record = chatPictures();
     if (sendState.pending && Date.now() - (sendState.pending.at || 0) > 15000) {

@@ -2656,3 +2656,10 @@ textarea.stis-sent-prompt-text {
     padding: 4px 8px;
     cursor: pointer;
 }
+
+.stis-cast-now,
+.stis-cast-changes {
+    display: block;
+    opacity: 0.85;
+    margin-top: 4px;
+}

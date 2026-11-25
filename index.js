@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.76.1';
+const VERSION = '2.77.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -12843,8 +12843,12 @@ function storedCategories() {
 let categoryEpoch = 0;
 let categoryBuilds = 0;
 
+let lookFieldsTimer = null;
+
 function categoriesChanged() {
     categoryEpoch++;
+    clearTimeout(lookFieldsTimer);
+    lookFieldsTimer = setTimeout(() => publishLookFields(), 500);
 }
 
 function categories() {
@@ -13394,9 +13398,11 @@ function cleanPersonName(name) {
     return String(name || '').replace(/[*_`"“”]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
 }
 
+const LOOK_FIELDS = ['hair', 'face', 'build', 'attire', 'accessories', 'clothes', 'outfit'];
+
 function trackerLines(text) {
     const people = [];
-    for (const raw of String(text || '').split('\n')) {
+    for (const raw of String(text || '').replace(/<br\s*\/?>|<\/summary>|<\/?details[^>]*>/gi, '\n').split('\n')) {
         const line = raw.replace(/<[^>]+>/g, ' ').trim();
         if ((line.match(/\|/g) || []).length < 2) {
             continue;
@@ -13413,9 +13419,52 @@ function trackerLines(text) {
         if (!name || /[:{}[\]]/.test(name) || name.split(' ').length > 4 || Object.keys(fields).length < 2) {
             continue;
         }
-        people.push({ name, fields });
+        const looks = Object.keys(fields).filter(key => LOOK_FIELDS.includes(key)).length >= 2;
+        people.push({ name, fields, looks, where: looks ? '' : fields.body || fields.location || fields.where || '' });
     }
     return people;
+}
+
+function lookLine(person) {
+    return Object.entries(person.fields).filter(([, value]) => value && !/^\[.*\]$/.test(value)).map(([key, value]) => `${key.replace(/^\w/, letter => letter.toUpperCase())}: ${value}`).join('; ').slice(0, 1500);
+}
+
+function nowLook(names) {
+    const looks = castMemory()?.looks || {};
+    const found = names.map(name => looks[String(name || '').toLowerCase()]).find(Boolean);
+    return found?.text ? `Now, from the story's appearance tracker (this is how they look at this point of the story; it wins over the older text below): ${found.text}` : '';
+}
+
+function lookFieldsLine() {
+    const covered = new Set(['hair', 'build', 'outfit', 'eyes']);
+    const extra = sheetCategories().filter(category => !covered.has(category.id) && category.enabled !== false);
+    const ask = category => {
+        const question = String(category.question || '').split(/,? (?:when|unless|if) /)[0].trim();
+        return question && !/picture|image|seen/i.test(question) ? question : String(category.label || category.id);
+    };
+    return extra.length ? `End every Appearance line with these fields too, same format: ${extra.map(category => `| ${String(category.label || category.id).replace(/^\w/, letter => letter.toUpperCase())}: [${ask(category)}]`).join(' ')}` : '';
+}
+
+function publishLookFields() {
+    const value = lookFieldsLine();
+    try {
+        const variables = ctx().variables?.global;
+        if (variables?.set) {
+            if (variables.get?.('stisLookFields') !== value) {
+                variables.set('stisLookFields', value);
+            }
+            return;
+        }
+        const store = ctx().extensionSettings;
+        store.variables = store.variables || {};
+        store.variables.global = store.variables.global || {};
+        if (store.variables.global.stisLookFields !== value) {
+            store.variables.global.stisLookFields = value;
+            ctx().saveSettingsDebounced?.();
+        }
+    } catch (error) {
+        console.warn('[Image Search] could not share the look fields with the preset', error);
+    }
 }
 
 function namePattern(name) {
@@ -13477,6 +13526,26 @@ function scanTracker() {
         });
     }
     memory.scanned = chat.length;
+    memory.looks = memory.looks && typeof memory.looks === 'object' ? memory.looks : {};
+    const seenLooks = new Set();
+    for (let index = chat.length - 1; index >= 0 && index >= chat.length - 200; index--) {
+        const message = chat[index];
+        if (!message || message.is_user || typeof message.mes !== 'string') {
+            continue;
+        }
+        trackerLines(message.mes).filter(person => person.looks).forEach(person => {
+            const key = person.name.toLowerCase();
+            if (seenLooks.has(key)) {
+                return;
+            }
+            seenLooks.add(key);
+            const text = lookLine(person);
+            if (text && memory.looks[key]?.text !== text) {
+                memory.looks[key] = { text, at: index };
+                changed = true;
+            }
+        });
+    }
     Object.values(memory.npcs).forEach(npc => {
         if (!npc.source) {
             const passage = introPassage(npc.name, chat);
@@ -13490,9 +13559,9 @@ function scanTracker() {
     for (let index = chat.length - 1; index >= 0 && index >= chat.length - 30; index--) {
         const message = chat[index];
         if (message && !message.is_user && typeof message.mes === 'string') {
-            const lines = trackerLines(message.mes);
+            const lines = trackerLines(message.mes).filter(person => person.where);
             if (lines.length) {
-                latest = { at: index, people: lines.map(person => ({ name: person.name, here: !/off[\s-]*screen|not present|absent/i.test(person.fields.body || person.fields.location || '') })) };
+                latest = { at: index, people: lines.map(person => ({ name: person.name, here: !/off[\s-]*screen|not present|absent/i.test(person.where) })) };
                 break;
             }
         }
@@ -13640,7 +13709,7 @@ function castMembers() {
     }
     if (s.castTracker !== false) {
         Object.values(memory?.npcs || {}).forEach(npc => {
-            const source = [npc.source, ...savedFor(npc.name)].filter(Boolean).join('\n');
+            const source = [npc.source, ...savedFor(npc.name)].filter(Boolean).join('\n') || (memory?.looks?.[npc.name.toLowerCase()] ? '(looks only from the appearance tracker)' : '');
             if (source) {
                 add({ key: `npc:${npc.name.toLowerCase()}`, name: npc.name, kind: 'story', source });
             }
@@ -13653,7 +13722,11 @@ function castMembers() {
             add({ key: `look:${name.toLowerCase()}`, name, kind: 'saved', source, always: true });
         }
     }
-    return members.map(member => ({ ...member, basis: String(hashText(member.source)) }));
+    return members.map(member => {
+        const now = nowLook([member.name, ...(member.aliases || [])]);
+        const source = now ? `${now}\n${member.source}` : member.source;
+        return { ...member, source, basis: String(hashText(source)) };
+    });
 }
 
 function sceneMembers() {
@@ -13759,7 +13832,7 @@ function personaMember() {
     }
     const text = fillNames(c.powerUserSettings?.persona_description || '', c.name2).replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 4000);
     const saved = parseLooks().filter(look => look.name.toLowerCase() === name.toLowerCase()).map(look => `Saved look: ${look.tags.join(', ').replace(/_/g, ' ')}`);
-    const source = [text, ...saved].filter(Boolean).join('\n');
+    const source = [nowLook([name]), text, ...saved].filter(Boolean).join('\n');
     return { key: `persona:${name.toLowerCase()}`, name, source, basis: String(hashText(source)) };
 }
 
@@ -20992,6 +21065,7 @@ jQuery(() => {
     watchInline();
     watchMediaDelete();
     c.eventSource.on(c.eventTypes.APP_READY, addButtons);
+    c.eventSource.on(c.eventTypes.APP_READY, () => publishLookFields());
     c.eventSource.on(c.eventTypes.APP_READY, watchInline);
     c.eventSource.on(c.eventTypes.APP_READY, watchMediaDelete);
     if (c.eventTypes.MEDIA_ATTACHMENT_DELETED) {

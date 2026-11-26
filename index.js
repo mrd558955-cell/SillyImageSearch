@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.78.1';
+const VERSION = '2.79.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -166,6 +166,7 @@ const DEFAULTS = {
     castPrompt: DEFAULT_CAST_PROMPT,
     castLore: true,
     castTracker: true,
+    fillAppearance: true,
     cardCasts: {},
     lorePeople: {},
     ownTagsPrompt: DEFAULT_OWN_TAGS_PROMPT,
@@ -2864,6 +2865,7 @@ function onChatChanged() {
     clearTimeout(castState.timer);
     castState.timer = setTimeout(() => {
         if (settings().enabled) {
+            fillAppearanceTemplate();
             prepareCast().catch(error => console.warn('[Image Search] could not read the cast', error));
         }
     }, 2500);
@@ -13416,7 +13418,8 @@ function trackerLines(text) {
                 fields[found[1].trim().toLowerCase()] = found[2].trim();
             }
         });
-        if (!name || /[:{}[\]]/.test(name) || name.split(' ').length > 4 || Object.keys(fields).length < 2) {
+        const values = Object.values(fields);
+        if (!name || /[^\p{L}\p{N} .'-]/u.test(name) || name.split(' ').length > 4 || values.length < 2 || values.every(value => /^[-+]?\d+(?:[./]\d+)?$/.test(value))) {
             continue;
         }
         const lookKeys = new Set([...LOOK_FIELDS, ...appearanceFields().map(field => field.key)]);
@@ -13456,6 +13459,25 @@ function appearanceFields() {
 
 function appearanceTemplate() {
     return `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.category ? `${field.hint} or N/A` : field.hint}]`).join(' | ')}`;
+}
+
+function appearanceBlock() {
+    return `<details><summary>👗 APPEARANCE</summary><br>${appearanceTemplate().replace('- [Name]', '- <b>[Name]</b>')}<br></details>`;
+}
+
+function fillAppearanceTemplate() {
+    if (settings().fillAppearance === false) {
+        return;
+    }
+    try {
+        const local = ctx().variables?.local;
+        const block = appearanceBlock();
+        if (local?.set && local.get?.('appearanceTemplate') !== block) {
+            local.set('appearanceTemplate', block);
+        }
+    } catch (error) {
+        console.warn('[Image Search] could not fill the appearance template', error);
+    }
 }
 
 function trackedLook(names) {
@@ -13543,6 +13565,7 @@ function publishAppearance() {
         console.warn('[Image Search] could not read the tracker', error);
     }
     setGlobalVar('stisAppearanceLast', lastKnownLooks());
+    fillAppearanceTemplate();
 }
 
 function setGlobalVar(name, value) {
@@ -13831,7 +13854,7 @@ function castMembers() {
         }
     }
     if (s.castTracker !== false) {
-        Object.values(memory?.npcs || {}).forEach(npc => {
+        Object.values(memory?.npcs || {}).filter(npc => !/[^\p{L}\p{N} .'-]/u.test(String(npc.name || ''))).forEach(npc => {
             const source = [npc.source, ...savedFor(npc.name)].filter(Boolean).join('\n') || (memory?.looks?.[npc.name.toLowerCase()] ? '(looks only from the appearance tracker)' : '');
             if (source) {
                 add({ key: `npc:${npc.name.toLowerCase()}`, name: npc.name, kind: 'story', source });
@@ -15559,7 +15582,7 @@ function onGenerationStarted(type, _options, dryRun) {
     if (dryRun || type === 'quiet' || type === 'impersonate') {
         return;
     }
-    if (settings().enabled && settings().castTracker !== false) {
+    if (settings().enabled && (settings().castTracker !== false || settings().fillAppearance !== false)) {
         publishAppearance();
     }
     const record = chatPictures();
@@ -20118,6 +20141,7 @@ function buildSettings() {
                             <div class="st-imagesearch-row"><div id="st_imagesearch_sheets_show" class="menu_button" title="Show how the characters of this chat are known for matching looks">Characters' looks</div><div id="st_imagesearch_cast_reread" class="menu_button" title="Read the characters of the card, the lorebooks and the tracker again">Read the characters again</div></div>
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_lore"><span>Find characters in the character's and the chat's lorebooks</span></label>
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_tracker"><span>Find characters the story makes, from the preset's tracker lines (Name | Agenda: … | Body: …)</span></label>
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_fill_appearance"><span>Fill the preset's appearance template ({{getvar::appearanceTemplate}}) with the filing's fields, before each reply</span></label>
                             <small class="stis-help">A card that describes several people (an RPG) is split into one character each. Characters count for pictures when they are in the scene: named in the last two messages, their lorebook entry just used, or on screen in the newest tracker line (Body: Off-screen means not there). Each card and lorebook is read once (one request each, with the tag profile), again only when it changes; a new character from the tracker gets its looks from the message where the story introduced them.</small>
                             <details class="stis-prompt-parts">
                                 <summary class="stis-label">Prompt for finding characters</summary>
@@ -20558,6 +20582,7 @@ function buildSettings() {
     bind('st_imagesearch_cast_prompt', 'castPrompt');
     bind('st_imagesearch_cast_lore', 'castLore', 'checked');
     bind('st_imagesearch_cast_tracker', 'castTracker', 'checked');
+    bind('st_imagesearch_fill_appearance', 'fillAppearance', 'checked');
     document.getElementById('st_imagesearch_cast_prompt_reset').addEventListener('click', () => {
         s.castPrompt = DEFAULT_CAST_PROMPT;
         document.getElementById('st_imagesearch_cast_prompt').value = DEFAULT_CAST_PROMPT;

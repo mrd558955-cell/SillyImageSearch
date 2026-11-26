@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.80.1';
+const VERSION = '2.80.2';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -65,6 +65,7 @@ const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
 const DEFAULT_OWN_TAGS_PROMPT = 'Each picture of a {{kind}} was tagged on its own by an image board, then described by someone looking at it. For each item below, list only those of its own tags that nothing in its description shows: not in any words, and not as something that clearly goes with it. Tags never match a description word for word and descriptions leave out small things, so be generous: when the description shows the thing a tag names, or something close to it, the tag is shown. Judge each item on its own description only.{{hints}}\n\n{{items}}\n\nReply with one line per item and nothing else, like:\nItem 1: none\nItem 2: a_tag, another_tag';
 const DEFAULT_SCENE_READ_PROMPT = 'A roleplay continues, and a saved picture will be shown with the next reply. Read the story and the newest message, and say what kind of picture fits that moment. Judge the moment itself, not what happened earlier in the story.\n\nStory so far:\n{{story}}\n\nNewest message:\n{{message}}\n\nReply with these lines only, choosing only from the choices given, and write none when a line does not apply:\nRating: one of {{ratings}}. How strong the moment is, judging nudity and sex but also violence, blood and anything disturbing. general: fine for anyone (talking, walking, eating, a calm moment). sensitive: mild (suggestive, a fight without injuries, a little blood). questionable: strong (partial nudity, wounds, real violence). explicit: R-18 (sex, gore, graphic violence).\nPose: one or two of {{poses}}\nMood: one or two of {{moods}}{{#fields}}\n{{fields}}{{/fields}}';
+const DEFAULT_APPEARANCE_RULE = '(Write a line for {{user}} every time, even when nothing about them changed, then one line for each other character in the scene.)';
 const DEFAULT_LANE_NOTE = 'Each picture says why it is on this list: "looks" (the people look right), "what happens" (the moment fits) or "both". A picture that fits both is usually the best; a "what happens" picture may still be the best when the moment fits much better.';
 const DEFAULT_CAST_PROMPT = 'Below is {{what}} from a roleplay. List every person it describes: people only, not places, groups, items, or creatures without a name. For each person give their name, the other names the text uses for them, and copy word for word every sentence that says how they look (age, body, face, hair, eyes, skin, scars, clothes). Use "" for looks when nothing is written about how they look.{{#entries}} Give the number of the entry each person comes from.{{/entries}}\n\nReply with only a JSON array, like this:\n[{"name": "Mira", "aliases": ["the healer"], "looks": "A tall woman with short red hair and a scar on her chin."{{#entries}}, "entry": 3{{/entries}}}]\nReply [] when it describes no person.\n\n{{text}}';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
@@ -169,6 +170,7 @@ const DEFAULTS = {
     castLore: true,
     castTracker: true,
     fillAppearance: true,
+    appearanceRule: DEFAULT_APPEARANCE_RULE,
     cardCasts: {},
     lorePeople: {},
     ownTagsPrompt: DEFAULT_OWN_TAGS_PROMPT,
@@ -13551,12 +13553,19 @@ function appearanceFields() {
     return [...fields, OTHER_LOOK_FIELD];
 }
 
+function appearanceRule() {
+    const rule = String(settings().appearanceRule ?? DEFAULT_APPEARANCE_RULE).trim();
+    return rule ? fillNames(rule) : '';
+}
+
 function appearanceTemplate() {
-    return `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.category ? `${field.hint} or N/A` : field.hint}]`).join(' | ')}`;
+    const line = `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.category ? `${field.hint} or N/A` : field.hint}]`).join(' | ')}`;
+    const rule = appearanceRule();
+    return rule ? `${line}\n${rule}` : line;
 }
 
 function appearanceBlock() {
-    return `<details><summary>👗 APPEARANCE</summary><br>${appearanceTemplate().replace('- [Name]', '- <b>[Name]</b>')}<br></details>`;
+    return `<details><summary>👗 APPEARANCE</summary><br>${appearanceTemplate().replace('- [Name]', '- <b>[Name]</b>').replace('\n', '<br>')}<br></details>`;
 }
 
 function fillAppearanceTemplate() {
@@ -13659,6 +13668,7 @@ function publishAppearance() {
         console.warn('[Image Search] could not read the tracker', error);
     }
     setGlobalVar('stisAppearanceLast', lastKnownLooks());
+    setGlobalVar('stisAppearanceTemplate', appearanceTemplate());
     fillAppearanceTemplate();
 }
 
@@ -20459,6 +20469,12 @@ function buildSettings() {
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_lore"><span>Find characters in the character's and the chat's lorebooks</span></label>
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_cast_tracker"><span>Find characters the story makes, from the preset's tracker lines (Name | Agenda: … | Body: …)</span></label>
                             <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_fill_appearance"><span>Fill the preset's appearance template ({{getvar::appearanceTemplate}}) with the filing's fields, before each reply</span></label>
+                            <details class="stis-prompt-parts">
+                                <summary class="stis-label">Who gets an appearance line</summary>
+                                <textarea id="st_imagesearch_appearance_rule" class="text_pole" rows="3"></textarea>
+                                <small class="stis-help">Goes under the example line of the appearance template ({{getglobalvar::stisAppearanceTemplate}} and the filled template). {{user}} and {{char}} are filled in. Empty = no rule: the AI decides who gets a line.</small>
+                                <div id="st_imagesearch_appearance_rule_reset" class="menu_button">Reset this rule</div>
+                            </details>
                             <small class="stis-help">A card that describes several people (an RPG) is split into one character each. Characters count for pictures when they are in the scene: named in the last two messages, their lorebook entry just used, or on screen in the newest tracker line (Body: Off-screen means not there). Each card and lorebook is read once (one request each, with the tag profile), again only when it changes; a new character from the tracker gets its looks from the message where the story introduced them.</small>
                             <details class="stis-prompt-parts">
                                 <summary class="stis-label">Prompt for finding characters</summary>
@@ -20900,6 +20916,17 @@ function buildSettings() {
     bind('st_imagesearch_cast_lore', 'castLore', 'checked');
     bind('st_imagesearch_cast_tracker', 'castTracker', 'checked');
     bind('st_imagesearch_fill_appearance', 'fillAppearance', 'checked');
+    bind('st_imagesearch_appearance_rule', 'appearanceRule', 'value', () => {
+        publishLookFields();
+        fillAppearanceTemplate();
+    });
+    document.getElementById('st_imagesearch_appearance_rule_reset').addEventListener('click', () => {
+        s.appearanceRule = DEFAULT_APPEARANCE_RULE;
+        document.getElementById('st_imagesearch_appearance_rule').value = DEFAULT_APPEARANCE_RULE;
+        save();
+        publishLookFields();
+        fillAppearanceTemplate();
+    });
     document.getElementById('st_imagesearch_cast_prompt_reset').addEventListener('click', () => {
         s.castPrompt = DEFAULT_CAST_PROMPT;
         document.getElementById('st_imagesearch_cast_prompt').value = DEFAULT_CAST_PROMPT;

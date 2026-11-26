@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.78.0';
+const VERSION = '2.78.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -13427,32 +13427,35 @@ function trackerLines(text) {
 }
 
 const NOT_APPLICABLE = /^(n\/?a|none|nothing|no|-+|—)\.?$/i;
-const EXTRA_LOOK_FIELDS = [['injuries', 'Injuries', 'where, how bad'], ['attire', 'Attire', 'clothes top to bottom, condition'], ['accessories', 'Accessories', 'worn or held']];
+const OTHER_LOOK_FIELD = { key: 'other', label: 'Other', hint: '1 to 3 short sentences on anything the fields above cannot show: injuries, accessories, notable details', category: null };
 
 function fieldHint(category) {
     const question = String(category.question || '').split(/,? (?:when|unless|if) /)[0].trim();
     return question && !/picture|image|seen/i.test(question) ? question : String(category.label || category.id);
 }
 
+function tagChoices(category) {
+    const names = (category.tags || []).map(tag => tag.name).filter(Boolean);
+    if (!names.length || names.length > 14) {
+        return fieldHint(category);
+    }
+    return category.type === 'each' ? `any of ${names.join('/')}` : names.join('/');
+}
+
 function appearanceFields() {
     const fields = [];
-    const add = field => {
-        if (field.key && !fields.some(other => other.key === field.key)) {
-            fields.push(field);
-        }
-    };
-    const list = sheetCategories().filter(category => category.enabled !== false);
-    list.forEach(category => {
+    sheetCategories().filter(category => category.enabled !== false).forEach(category => {
         const label = String(category.label || category.id).trim();
-        add({ key: label.toLowerCase(), label: label.replace(/^\w/, letter => letter.toUpperCase()), hint: category.id === 'outfit' ? 'clothes top to bottom, condition' : fieldHint(category), category });
+        const key = label.toLowerCase();
+        if (key && key !== OTHER_LOOK_FIELD.key && !fields.some(other => other.key === key)) {
+            fields.push({ key, label: label.replace(/^\w/, letter => letter.toUpperCase()), hint: tagChoices(category), category });
+        }
     });
-    const hasOutfit = list.some(category => category.id === 'outfit');
-    EXTRA_LOOK_FIELDS.filter(([key]) => !(key === 'attire' && hasOutfit)).forEach(([key, label, hint]) => add({ key, label, hint, category: null }));
-    return fields;
+    return [...fields, OTHER_LOOK_FIELD];
 }
 
 function appearanceTemplate() {
-    return `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.hint}, or N/A]`).join(' | ')}`;
+    return `- [Name] | ${appearanceFields().map(field => `${field.label}: [${field.category ? `${field.hint} or N/A` : field.hint}]`).join(' | ')}`;
 }
 
 function trackedLook(names) {
@@ -13510,9 +13513,13 @@ function lookExtras(names) {
     if (!look?.fields) {
         return '';
     }
-    const plain = new Set(defaultCategories().map(category => category.id).filter(id => !['outfit', 'features', 'condition'].includes(id)));
-    const matched = new Set(appearanceFields().filter(field => field.category && plain.has(field.category.id)).map(field => field.key));
-    return Object.entries(look.fields).filter(([key, value]) => value && !NOT_APPLICABLE.test(value) && !matched.has(key)).map(([key, value]) => `${key.replace(/^\w/, letter => letter.toUpperCase())}: ${value}`).join('; ').slice(0, 800);
+    const fields = appearanceFields();
+    const unmatched = fields.filter(field => field.category).filter(field => {
+        const value = look.fields[field.key];
+        return value && !NOT_APPLICABLE.test(value) && !valuesIn(field.category, String(value).toLowerCase().replace(/_/g, ' ')).length;
+    }).map(field => `${field.label}: ${look.fields[field.key]}`);
+    const other = look.fields[OTHER_LOOK_FIELD.key];
+    return [...unmatched, ...(other && !NOT_APPLICABLE.test(other) ? [other] : [])].join('; ').slice(0, 800);
 }
 
 function lastKnownLooks() {

@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.80.0';
+const VERSION = '2.80.1';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -12235,11 +12235,23 @@ function textToCard(text) {
     return cleanCard(card);
 }
 
+function tagMeaning(tag, cap = 0) {
+    const text = (tag.words || []).filter(word => word !== tag.name && !/^#\d+-\d+$/.test(word) && ((/\d/.test(word) && /[^a-z0-9]/.test(word)) || word.split(/\s+/).length >= 3)).join(', ');
+    return cap && text.length > cap ? `${text.slice(0, cap - 1).trim()}…` : text;
+}
+
+function tagWithMeaning(tag, cap = 0) {
+    const meaning = tagMeaning(tag, cap);
+    return meaning ? `${tag.name} (${meaning})` : tag.name;
+}
+
 function categoryHint(category) {
     const tags = category.tags.map(tag => {
         const range = tag.words.find(word => /^#\d+-\d+$/.test(word));
         const [low, high] = range ? range.slice(1).split('-').map(Number) : [];
-        return range ? `${tag.name} (${high >= 100 ? `${low} and up` : `${low} to ${high}`})` : tag.name;
+        const meaning = tagMeaning(tag);
+        const notes = [range ? (high >= 100 ? `${low} and up` : `${low} to ${high}`) : '', meaning].filter(Boolean).join('; ');
+        return notes ? `${tag.name} (${notes})` : tag.name;
     }).join(', ');
     return category.type === 'each' ? `${category.question}; every one that applies, from: ${tags}` : `${category.question}; one of: ${tags}`;
 }
@@ -12957,7 +12969,7 @@ function categories() {
                 const [low, high] = word.slice(1).split('-').map(Number);
                 return { tag: tag.name, low, high };
             }));
-            category.hash = String(hashText(JSON.stringify([category.id, category.question, category.scope, category.type, category.tags, ...(category.side !== SIDE_DEFAULT.includes(category.id) ? [category.side] : [])])));
+            category.hash = String(hashText(JSON.stringify([category.id, category.question, category.scope, category.type, category.tags, ...(category.side !== SIDE_DEFAULT.includes(category.id) ? [category.side] : []), ...(category.tags.some(tag => tagMeaning(tag)) ? ['meanings shown'] : [])])));
             list.push(category);
         }
         const enabled = list.filter(category => category.enabled);
@@ -13518,11 +13530,13 @@ function fieldHint(category) {
 }
 
 function tagChoices(category) {
-    const names = (category.tags || []).map(tag => tag.name).filter(Boolean);
-    if (!names.length || names.length > 14) {
+    const tags = (category.tags || []).filter(tag => tag.name);
+    if (!tags.length || tags.length > 14) {
         return fieldHint(category);
     }
-    return category.type === 'each' ? `any of ${names.join('/')}` : names.join('/');
+    const described = tags.some(tag => tagMeaning(tag));
+    const names = tags.map(tag => tagWithMeaning(tag, 60)).join(described ? ' / ' : '/');
+    return category.type === 'each' ? `any of ${names}` : names;
 }
 
 function appearanceFields() {
@@ -14298,7 +14312,7 @@ function sceneReadFields() {
 function sceneReadPrompt(message) {
     const cut = sceneCut(message);
     const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
-    const fields = sceneReadFields().map(category => `${category.label}: ${category.type === 'each' ? 'any of' : 'one of'} ${category.tags.map(tag => tag.name.replace(/_/g, ' ')).join(', ')}`).join('\n');
+    const fields = sceneReadFields().map(category => `${category.label}: ${category.type === 'each' ? 'any of' : 'one of'} ${category.tags.map(tag => tagWithMeaning(tag).replace(/_/g, ' ')).join(', ')}`).join('\n');
     return fillTemplate(String(settings().sceneReadPrompt || DEFAULT_SCENE_READ_PROMPT), {
         story,
         message: message || '(no new message: the story simply continues)',

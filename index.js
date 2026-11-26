@@ -1,6 +1,6 @@
 const MODULE = 'st_imagesearch';
 const PROMPT_KEY = 'st_imagesearch_instruction';
-const VERSION = '2.79.0';
+const VERSION = '2.80.0';
 const BATCH = 24;
 const MAX_PAGE_CALLS = 3;
 const RANK_WINDOW = 150;
@@ -64,6 +64,8 @@ const DEFAULT_STORY_PROMPT = 'These are the items of one {{kind}}, saved for a r
 const DEFAULT_VERSIONS_PROMPT = 'These are the {{count}} versions of one picture (the same scene in several versions), saved for a roleplay. For each version you get its tags and its description, written by someone looking at that version alone.\n\n{{items}}\n\nGive each version a role and a line.\nRole: a main role, then a finer one. Main roles: base (version 1, the one the others are compared with), variation (the same moment, changed), escalation (the same moment, taken further), alternate (another take on the scene). The finer role is 1 to 3 words on what changed, like expression, outfit, undressed, pose, angle, mood.\nLine: for version 1, 1 sentence on what the scene is. For the others, 1 to 2 sentences on what this version means compared with version 1, like "In this version she is embarrassed" rather than "her cheeks are redder". Never use names, even when the tags give them: say he, she or they, or describe the person (the blond boy in orange). Only conclude what the descriptions support.\n\nReply with one line per version and nothing else, like:\n1. base: ...\n2. variation, expression: ...';
 const DEFAULT_IMPORTANCE_PROMPT = 'These pictures are the items of one {{kind}} saved for a roleplay. What each item shows:\n{{items}}\n\nThe site\'s tags for the whole group: {{tags}}\nThese tags were not found in any item: {{missing}}\n\nFor each tag that was not found, decide whether it matters. It matters when it names a key action or moment of the group, a person, or a defining feature of what the group is about (a kiss, a transformation, a weapon being used, a fight). It does not matter when it is a small detail, a background object, clothing that can be off-screen, or a tag about the file itself (resolution, artist, series, format).\n\nReply with one line per tag that was not found, like "tag: important, because ..." or "tag: minor". Then a last line: "Verdict: needs a look" if any tag is important, or "Verdict: fine".';
 const DEFAULT_OWN_TAGS_PROMPT = 'Each picture of a {{kind}} was tagged on its own by an image board, then described by someone looking at it. For each item below, list only those of its own tags that nothing in its description shows: not in any words, and not as something that clearly goes with it. Tags never match a description word for word and descriptions leave out small things, so be generous: when the description shows the thing a tag names, or something close to it, the tag is shown. Judge each item on its own description only.{{hints}}\n\n{{items}}\n\nReply with one line per item and nothing else, like:\nItem 1: none\nItem 2: a_tag, another_tag';
+const DEFAULT_SCENE_READ_PROMPT = 'A roleplay continues, and a saved picture will be shown with the next reply. Read the story and the newest message, and say what kind of picture fits that moment. Judge the moment itself, not what happened earlier in the story.\n\nStory so far:\n{{story}}\n\nNewest message:\n{{message}}\n\nReply with these lines only, choosing only from the choices given, and write none when a line does not apply:\nRating: one of {{ratings}}. How strong the moment is, judging nudity and sex but also violence, blood and anything disturbing. general: fine for anyone (talking, walking, eating, a calm moment). sensitive: mild (suggestive, a fight without injuries, a little blood). questionable: strong (partial nudity, wounds, real violence). explicit: R-18 (sex, gore, graphic violence).\nPose: one or two of {{poses}}\nMood: one or two of {{moods}}{{#fields}}\n{{fields}}{{/fields}}';
+const DEFAULT_LANE_NOTE = 'Each picture says why it is on this list: "looks" (the people look right), "what happens" (the moment fits) or "both". A picture that fits both is usually the best; a "what happens" picture may still be the best when the moment fits much better.';
 const DEFAULT_CAST_PROMPT = 'Below is {{what}} from a roleplay. List every person it describes: people only, not places, groups, items, or creatures without a name. For each person give their name, the other names the text uses for them, and copy word for word every sentence that says how they look (age, body, face, hair, eyes, skin, scars, clothes). Use "" for looks when nothing is written about how they look.{{#entries}} Give the number of the entry each person comes from.{{/entries}}\n\nReply with only a JSON array, like this:\n[{"name": "Mira", "aliases": ["the healer"], "looks": "A tall woman with short red hair and a scar on her chin."{{#entries}}, "entry": 3{{/entries}}}]\nReply [] when it describes no person.\n\n{{text}}';
 const OLD_VISION_PROMPTS = ['The user of a roleplay is about to show this picture in the story. In 2 to 4 sentences, describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe what it shows so a writer who cannot see it can refer to it: who or what is in it, their build, skin, hair, clothing, striking features, what they are doing and the mood. Describe only what is visible. Do not invent names or story. The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nDescription: 2 to 4 sentences\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas, e.g. orc, axe, armor, scar, warrior\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 5 to 8 plain everyday words a story would use for what is in it, separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out: build, skin, hair, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}', 'The user of a roleplay is about to show this picture in the story. Describe it for a writer who cannot see it, so they can refer to it in detail. Describe only what is visible; do not invent names or story. Ignore any writing in the picture (speech bubbles, captions, signs, signatures, watermarks); only mention sound effects written as onomatopoeia, such as "BOOM". The picture\'s image-board tags are below; use them as hints but trust the picture.\n\nReply in exactly this format:\nVisual: 2 to 3 sentences on how each person or creature looks and what stands out. For each person always give how old they look (child under about 13, teen 13 to 17, young adult 18 to 25, adult 26 to 39, middle-aged 40 to 59, or old), their skin colour and hair colour (and eye colour when it can be seen), then build, clothing, gear and distinctive features. Give the approximate size of people and important things, by comparison (taller than the doorway, a sword as long as her arm) or by measurement (about 2 m tall).\nExpression: 1 sentence on the face, gaze, posture and body language, and the emotion they show.\nAction: 1 to 2 sentences on what is happening.\nAtmosphere: 1 sentence on the mood of the picture.\nFraming: 1 sentence on the shot: close-up, portrait, upper body or full body, the angle, and where the person is in the picture.\nKeywords: 6 to 10 plain everyday words a story would use for what is in it and what is happening, with the action as a verb (walking, fighting), separated by commas\n\nTags: {{tags}}'];
 const SECTIONS = [['visual', 'Visual'], ['expression', 'Expression'], ['action', 'Action'], ['atmosphere', 'Atmosphere'], ['framing', 'Framing']];
@@ -170,6 +172,15 @@ const DEFAULTS = {
     cardCasts: {},
     lorePeople: {},
     ownTagsPrompt: DEFAULT_OWN_TAGS_PROMPT,
+    storyStrip: '',
+    meaningStrict: 0.3,
+    meaningLane: 50,
+    laneSplit: 50,
+    laneNote: DEFAULT_LANE_NOTE,
+    laneMarks: true,
+    sceneRead: true,
+    sceneStrength: 100,
+    sceneReadPrompt: DEFAULT_SCENE_READ_PROMPT,
     catalogSize: 30,
     sendButton: true,
     confirmPicture: true,
@@ -2136,8 +2147,27 @@ function warmThumbs(items) {
     });
 }
 
+function storyBlockNames() {
+    const extra = String(settings().storyStrip || '').split(/[,\s]+/).map(name => name.trim().replace(/^<\/?|\/?>$/g, '').toLowerCase()).filter(name => /^[a-z][\w-]*$/.test(name));
+    return [...new Set(['details', ...extra])];
+}
+
+function storyOnly(text) {
+    let out = String(text || '');
+    for (const name of storyBlockNames()) {
+        const block = new RegExp(`<${name}\\b[^>]*>(?:(?!<${name}\\b)[\\s\\S])*?<\\/${name}\\s*>`, 'gi');
+        let before;
+        do {
+            before = out;
+            out = out.replace(block, ' ');
+        } while (out !== before);
+        out = out.replace(new RegExp(`<${name}\\b[^>]*>[\\s\\S]*$`, 'i'), ' ');
+    }
+    return out;
+}
+
 function cleanForPrompt(text) {
-    return String(text || '')
+    return storyOnly(text)
         .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s+/g, ' ')
@@ -12692,7 +12722,16 @@ async function syncMeaning() {
     return meaning.syncing;
 }
 
-async function meaningRank(text, limit = 80) {
+function meaningStrict() {
+    const value = Number(settings().meaningStrict);
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.3;
+}
+
+function meaningLaneSize() {
+    return Math.max(5, Math.min(500, Number(settings().meaningLane) || 50));
+}
+
+async function meaningRank(text, limit = 80, threshold = meaningStrict()) {
     if (!meaningSource() || !String(text || '').trim()) {
         return null;
     }
@@ -12711,15 +12750,56 @@ async function meaningRank(text, limit = 80) {
     if (!want.size) {
         return null;
     }
-    const result = await vectorCall('query', { searchText: String(text).slice(-1500), topK: Math.min(limit, want.size), threshold: 0 });
+    const result = await vectorCall('query', { searchText: String(text).slice(-2000), topK: Math.min(limit, want.size), threshold });
     const order = new Map();
+    const ranked = [];
     for (const hash of result?.hashes || []) {
         const item = want.get(Number(hash));
-        if (item && !order.has(item.key)) {
-            order.set(item.key, order.size);
+        if (item && !ranked.includes(item.key)) {
+            ranked.push(item.key);
         }
     }
+    const matches = threshold > 0 && Array.isArray(result?.metadata) ? new Set(result.metadata.map(item => want.get(Number(item?.hash))?.key).filter(Boolean)) : new Set(ranked);
+    ranked.filter(key => matches.has(key)).forEach(key => order.set(key, order.size));
+    order.ranked = ranked;
+    order.items = want;
     return order;
+}
+
+async function testMeaning(box) {
+    if (!box) {
+        return;
+    }
+    box.innerHTML = '';
+    const typed = String(document.getElementById('st_imagesearch_meaning_test_text')?.value || '').trim();
+    const query = typed || meaningQuery('');
+    box.appendChild(el('small', 'stis-help', 'Searching…'));
+    let order;
+    try {
+        order = await meaningRank(query, 80);
+    } catch (error) {
+        box.innerHTML = '';
+        box.appendChild(el('small', 'stis-help', `Search by meaning did not work: ${String(error?.message || error).slice(0, 200)}`));
+        return;
+    }
+    box.innerHTML = '';
+    if (!order) {
+        box.appendChild(el('small', 'stis-help', query ? 'Search by meaning is off, or no picture has a filing card yet.' : 'Nothing to search: type a sentence or open a chat.'));
+        return;
+    }
+    const byKey = new Map([...order.items.values()].map(item => [item.key, item]));
+    box.appendChild(el('div', 'stis-meaning-query', `Text searched: ${query.slice(-2000)}`));
+    box.appendChild(el('small', 'stis-help', `${order.size} of the ${order.ranked.length} closest pictures count as matches at strictness ${meaningStrict()}.`));
+    const list = el('ol', 'stis-meaning-list');
+    order.ranked.slice(0, Math.max(order.size + 10, 15)).forEach((key, index) => {
+        if (index === order.size) {
+            list.appendChild(el('li', 'stis-meaning-cut', 'Strictness cuts here: the pictures below get no meaning points'));
+        }
+        const row = el('li', order.has(key) ? 'stis-meaning-hit' : 'stis-meaning-miss', `${order.has(key) ? '✓ ' : ''}${String(byKey.get(key)?.text || key).slice(0, 160)}`);
+        row.value = index + 1;
+        list.appendChild(row);
+    });
+    box.appendChild(list);
 }
 
 function paintCardStatus() {
@@ -13613,7 +13693,7 @@ function introPassage(name, chat) {
         if (!message || message.is_system || typeof message.mes !== 'string' || hits.length >= 3) {
             continue;
         }
-        const paragraphs = message.mes.split(/\n+/).map(part => part.replace(/<[^>]+>/g, ' ').trim()).filter(part => part && trackerLines(part).length === 0);
+        const paragraphs = storyOnly(message.mes).split(/\n+/).map(part => part.replace(/<[^>]+>/g, ' ').trim()).filter(part => part && trackerLines(part).length === 0);
         paragraphs.forEach((part, index) => {
             if (pattern.test(part) || short?.test(part)) {
                 hits.push(...paragraphs.slice(Math.max(0, index - 1), index + 2));
@@ -14206,13 +14286,130 @@ function withoutRuledOut(message) {
     return text.replace(/\s+/g, ' ').trim();
 }
 
+function sceneStrength() {
+    const value = Number(settings().sceneStrength);
+    return Number.isFinite(value) ? Math.max(0, Math.min(300, value)) / 100 : 1;
+}
+
+function sceneReadFields() {
+    return sceneCategories().filter(category => category.tags?.length);
+}
+
+function sceneReadPrompt(message) {
+    const cut = sceneCut(message);
+    const story = cut ? `(The newest message starts a new scene with "${cut}": what happened before does not count.)` : storyLines() || '(start of the story)';
+    const fields = sceneReadFields().map(category => `${category.label}: ${category.type === 'each' ? 'any of' : 'one of'} ${category.tags.map(tag => tag.name.replace(/_/g, ' ')).join(', ')}`).join('\n');
+    return fillTemplate(String(settings().sceneReadPrompt || DEFAULT_SCENE_READ_PROMPT), {
+        story,
+        message: message || '(no new message: the story simply continues)',
+        ratings: RATING_LEVELS.join(', '),
+        poses: listSetting(settings().poseList || DEFAULT_POSES).join(', '),
+        moods: listSetting(settings().moodList || DEFAULT_MOODS).join(', '),
+        fields,
+    });
+}
+
+function parseSceneRead(text) {
+    const read = { rating: '', pose: [], mood: [], scene: new Map() };
+    const poses = listSetting(settings().poseList || DEFAULT_POSES).map(item => item.toLowerCase());
+    const moods = listSetting(settings().moodList || DEFAULT_MOODS).map(item => item.toLowerCase());
+    const pick = (value, list) => list.filter(item => new RegExp(`(^|[^a-z])${item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`).test(value)).slice(0, 2);
+    for (const line of String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').split('\n')) {
+        const match = line.replace(LIST_MARK, '').replace(/\*\*/g, '').match(/^\s*([^:]{2,40}?)\s*:\s*(.+)$/);
+        if (!match) {
+            continue;
+        }
+        const label = match[1].trim().toLowerCase();
+        const value = match[2].trim().toLowerCase();
+        if (/^(none|n\/?a|-)\.?$/.test(value)) {
+            continue;
+        }
+        if (label === 'rating') {
+            read.rating = RATING_LEVELS.find(level => value.includes(level)) || read.rating;
+        } else if (label === 'pose') {
+            read.pose = pick(value, poses);
+        } else if (label === 'mood') {
+            read.mood = pick(value, moods);
+        } else {
+            const category = sceneReadFields().find(item => item.label.toLowerCase() === label || item.id === label);
+            const values = category ? valuesIn(category, value) : [];
+            if (values.length) {
+                read.scene.set(category.id, values);
+            }
+        }
+    }
+    return read.rating || read.pose.length || read.mood.length || read.scene.size ? read : null;
+}
+
+async function readScene(message) {
+    const s = settings();
+    if (s.sceneRead === false || !ctx().ConnectionManagerRequestService || !s.tagProfile) {
+        return null;
+    }
+    const reply = await textAsk(sceneReadPrompt(message), 160 + 30 * sceneReadFields().length);
+    return parseSceneRead(reply);
+}
+
+function sceneReadLine(read) {
+    if (!read) {
+        return '';
+    }
+    const scene = sceneReadFields().filter(category => read.scene.get(category.id)?.length).map(category => `${category.label} ${read.scene.get(category.id).join('/')}`);
+    return [read.rating ? `rating ${read.rating}` : '', read.pose.length ? `pose ${read.pose.join('/')}` : '', read.mood.length ? `mood ${read.mood.join('/')}` : '', ...scene].filter(Boolean).join(', ');
+}
+
+function sceneFit(view, read, fromMessage = new Map()) {
+    const out = { score: 0, note: '' };
+    if (!read) {
+        return out;
+    }
+    const card = view?.card;
+    if (!card) {
+        out.note = 'Scene read: no filing card, so it does not count → 0';
+        return out;
+    }
+    let score = 0;
+    const parts = [];
+    if (read.rating && card.rating) {
+        const gap = Math.abs(RATING_LEVELS.indexOf(card.rating) - RATING_LEVELS.indexOf(read.rating));
+        const value = gap === 0 ? 16 : gap === 1 ? 0 : -16;
+        score += value;
+        parts.push(`rating ${card.rating}${gap === 0 ? ' ✓' : ` ≠ ${read.rating}${gap === 1 ? ' (one step off)' : ''}`} ${signed(value)}`);
+    } else if (read.rating) {
+        parts.push('no rating on the card 0');
+    }
+    const pose = read.pose.filter(item => (card.pose || []).includes(item));
+    if (pose.length) {
+        score += 4;
+        parts.push(`pose ${pose.join('/')} ✓ +4`);
+    }
+    const mood = read.mood.filter(item => (card.mood || []).includes(item));
+    if (mood.length) {
+        score += 4;
+        parts.push(`mood ${mood.join('/')} ✓ +4`);
+    }
+    for (const category of sceneReadFields()) {
+        const wanted = read.scene.get(category.id) || [];
+        if (!wanted.length || (fromMessage.get(category.id) || []).length) {
+            continue;
+        }
+        const result = compareValues(category, valuesIn(category, card.scene?.[category.id] || ''), wanted);
+        score += result.score;
+        parts.push(...result.parts);
+    }
+    const strength = sceneStrength();
+    out.score = Math.round(score * strength * 10) / 10;
+    out.note = `Scene read: ${parts.join(', ') || 'nothing on the card to compare'} → ${signed(out.score)}${strength !== 1 ? ` (strength ${Math.round(strength * 100)}%)` : ''}`;
+    return out;
+}
+
 function meaningQuery(message) {
     const text = withoutRuledOut(message);
     if (sceneCut(message)) {
         return text;
     }
     const last = (ctx().chat || []).filter(m => m && !m.is_system && typeof m.mes === 'string').slice(-1)[0];
-    const before = last ? cleanForPrompt(last.mes).slice(-400) : '';
+    const before = last ? cleanForPrompt(last.mes).slice(-1000) : '';
     return `${before}\n${text}`.trim();
 }
 
@@ -14239,8 +14436,8 @@ async function rankedCandidates(message) {
     }
     let order = null;
     let meaningFailed = false;
-    const [rank, cast] = await Promise.all([
-        timed('meaning', meaningRank(meaningQuery(asked || recentText(1)), Infinity)).catch(error => {
+    const [rank, cast, read] = await Promise.all([
+        timed('meaning', meaningRank(meaningQuery(asked || recentText(1)), meaningLaneSize())).catch(error => {
             meaningFailed = true;
             if (!meaning.warned) {
                 meaning.warned = true;
@@ -14249,55 +14446,118 @@ async function rankedCandidates(message) {
             return null;
         }),
         timed('sheets', castSheets()).catch(() => []),
+        timed('scene', readScene(asked)).catch(() => null),
     ]);
     lastCast = cast;
     started = clock();
     order = rank;
+    const readLine = sceneReadLine(read);
+    const indexed = order?.items ? new Set([...order.items.values()].map(item => item.key)) : null;
     for (const choice of choices) {
+        const view = choice.view || choice.entry;
         const position = order?.get(choice.key || choice.entry.id);
         const keywords = Math.min(choice.score || 0, 24);
-        const meaningPoints = position === undefined ? 0 : Math.round(18 * (1 - position / Math.max(order.size, 1)));
-        const detail = looksDetail(choice.view || choice.entry, cast, fromMessage);
+        const meaningPoints = position === undefined ? 0 : Math.max(1, Math.round(18 * (1 - position / Math.max(order.size, 1))));
+        const detail = looksDetail(view, cast, fromMessage);
         const looks = detail.score;
         const shownPoints = choice.fresh ? 0 : -12;
         const nextPoints = choice.continues ? SEQUENCE_NEXT_POINTS : 0;
-        const clashes = banned.filter(item => showsAction(choice.view || choice.entry, item));
+        const clashes = banned.filter(item => showsAction(view, item));
         const bannedPoints = clashes.length ? -15 : 0;
+        const fit = sceneFit(view, read, fromMessage);
         let meaningNote;
         if (!meaningSource()) {
             meaningNote = 'Meaning: search by meaning is off, so it does not count.';
         } else if (meaningFailed) {
             meaningNote = 'Meaning: the search did not work this time, so it does not count.';
         } else if (position !== undefined) {
-            meaningNote = `Meaning: #${position + 1} of ${order.size} closest to the newest message → ${signed(meaningPoints)} (the closest gets +18, the farthest 0)`;
-        } else if (!(choice.view || choice.entry).card) {
+            meaningNote = `Meaning: #${position + 1} of ${order.size} close enough to the scene → ${signed(meaningPoints)} (the closest gets +18)`;
+        } else if (!view.card) {
             meaningNote = 'Meaning: no filing card yet, so it is not in the search index → 0';
-        } else {
+        } else if (order && (order.ranked || []).includes(choice.key || choice.entry.id)) {
+            meaningNote = `Meaning: not close enough to the scene (strictness ${meaningStrict()}) → 0`;
+        } else if (indexed && !indexed.has(choice.key || choice.entry.id)) {
             meaningNote = 'Meaning: not in the search index yet (it updates in the background) → 0';
-        }
-        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, cast: cast.length > 0, notes: [meaningNote, ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with ${cut ? 'your message' : 'the story'} and the character's looks → ${signed(keywords)} (at most +24)`, ...(cut ? [`Scene cut ("${cut}"): the old scene is left out of keywords, meaning and the AI's check`] : []), ...(clashes.length ? [`Your message rules out ${clashes.map(item => `"${item.word}"`).join(', ')}, and the picture shows it → ${signed(bannedPoints)}`] : []), ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : []), ...(nextPoints ? [`Next item of a sequence already started in this chat → ${signed(nextPoints)}`] : [])] };
-        choice.parts.meaningNote = choice.parts.notes.shift();
-        choice.first = keywords + looks + shownPoints + bannedPoints + nextPoints;
-        choice.total = choice.first + meaningPoints;
-    }
-    const keep = firstPassSize();
-    const first = [...choices].sort((a, b) => b.first - a.first);
-    first.forEach((choice, index) => {
-        choice.parts.notes.push(`1. Looks and keywords: ${signed(Math.round(choice.first))} → #${index + 1} of ${first.length}; the first ${Math.min(keep, first.length)} go on`);
-    });
-    const kept = first.slice(0, keep).sort((a, b) => b.total - a.total || b.first - a.first);
-    const sorted = [...kept, ...first.slice(keep)];
-    const seen = shortlistSize();
-    sorted.forEach((choice, index) => {
-        if (index < kept.length) {
-            choice.parts.notes.push(`2. ${choice.parts.meaningNote}`, `Total ${signed(Math.round(choice.total))} → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
         } else {
-            choice.parts.notes.push(`2. Not ranked by meaning (left out by the first step) → #${index + 1}; the AI compares the first ${Math.min(seen, sorted.length)}`);
+            meaningNote = 'Meaning: not among the closest pictures → 0';
         }
-    });
+        choice.lookRaw = keywords + looks;
+        choice.adjust = shownPoints + bannedPoints + nextPoints + fit.score;
+        choice.matched = position !== undefined;
+        choice.parts = { meaning: position === undefined ? null : position + 1, of: order?.size || 0, looks, keywords, shown: shownPoints, meaningPoints, scene: fit.score, cast: cast.length > 0, notes: [meaningNote, ...(readLine ? [`The scene reads as: ${readLine}`] : []), ...(fit.note ? [fit.note] : []), ...detail.notes.map(note => `Looks: ${note}`), `Keywords: words shared with ${cut ? 'your message' : 'the story'} and the character's looks → ${signed(keywords)} (at most +24)`, ...(cut ? [`Scene cut ("${cut}"): the old scene is left out of keywords, meaning and the AI's check`] : []), ...(clashes.length ? [`Your message rules out ${clashes.map(item => `"${item.word}"`).join(', ')}, and the picture shows it → ${signed(bannedPoints)}`] : []), ...(shownPoints ? [`Already shown in this chat → ${signed(shownPoints)}`] : []), ...(nextPoints ? [`Next item of a sequence already started in this chat → ${signed(nextPoints)}`] : [])] };
+        choice.parts.meaningNote = choice.parts.notes.shift();
+        choice.first = choice.lookRaw + choice.adjust;
+    }
+    const sorted = laneOrder(choices);
     timing.looks = clock() - started;
     sorted.cast = cast;
+    sorted.read = read;
     sorted.timing = timing;
+    return sorted;
+}
+
+const LANE_SCALE = 2.5;
+const LOOK_REFERENCE = 40;
+
+function laneSplit() {
+    const value = Number(settings().laneSplit);
+    return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) / 100 : 0.5;
+}
+
+function laneOrder(choices) {
+    const lookLane = [...choices].sort((a, b) => b.first - a.first);
+    lookLane.forEach((choice, index) => {
+        choice.lookPlace = index;
+    });
+    const inLooks = new Set(lookLane.slice(0, firstPassSize()));
+    const meaningLane = choices.filter(choice => choice.matched).sort((a, b) => b.parts.meaningPoints + b.adjust - (a.parts.meaningPoints + a.adjust)).slice(0, meaningLaneSize());
+    const inMeaning = new Set(meaningLane);
+    const pool = choices.filter(choice => inLooks.has(choice) || inMeaning.has(choice));
+    const high = Math.max(LOOK_REFERENCE, ...pool.map(choice => choice.lookRaw));
+    for (const choice of pool) {
+        choice.lane = inLooks.has(choice) && inMeaning.has(choice) ? 'both' : inLooks.has(choice) ? 'looks' : 'meaning';
+        choice.lookScale = Math.round(Math.max(-1, Math.min(1, choice.lookRaw / high)) * 100);
+        choice.meaningScale = choice.matched ? Math.round((choice.parts.meaningPoints / 18) * 100) : 0;
+        choice.bothBonus = Math.min(choice.lookScale, choice.meaningScale);
+        choice.total = choice.lookScale + choice.meaningScale + choice.bothBonus + choice.adjust * LANE_SCALE;
+    }
+    pool.sort((a, b) => b.total - a.total || b.first - a.first);
+    const seats = shortlistSize();
+    const looksSeats = Math.round(seats * laneSplit());
+    const quota = { looks: looksSeats, meaning: seats - looksSeats };
+    const taken = { looks: 0, meaning: 0 };
+    const front = [];
+    const waiting = [];
+    for (const choice of pool) {
+        if (front.length >= seats) {
+            waiting.push(choice);
+        } else if (choice.lane === 'both' || taken[choice.lane] < quota[choice.lane]) {
+            taken[choice.lane] = (taken[choice.lane] || 0) + (choice.lane === 'both' ? 0 : 1);
+            front.push(choice);
+        } else {
+            waiting.push(choice);
+        }
+    }
+    while (front.length < seats && waiting.length) {
+        front.push(waiting.shift());
+    }
+    front.sort((a, b) => b.total - a.total || b.first - a.first);
+    const rest = lookLane.filter(choice => !inLooks.has(choice) && !inMeaning.has(choice));
+    rest.forEach(choice => {
+        choice.lane = '';
+        choice.total = choice.first;
+    });
+    const sorted = [...front, ...waiting, ...rest];
+    const laneWords = { both: 'looks and meaning', looks: 'looks', meaning: 'meaning' };
+    sorted.forEach((choice, index) => {
+        choice.parts.notes.push(`1. Looks and keywords: ${signed(Math.round(choice.first))} → #${choice.lookPlace + 1} of ${lookLane.length}; the first ${Math.min(firstPassSize(), lookLane.length)} go on`);
+        if (choice.lane) {
+            choice.parts.lane = choice.lane;
+            choice.parts.notes.push(`2. ${choice.parts.meaningNote}`, `Came in by ${laneWords[choice.lane]}. Looks ${choice.lookScale}/100 (against the best one, or 40 points) + meaning ${choice.meaningScale}/100${choice.bothBonus ? ` ${signed(choice.bothBonus)} (the lower of the two, so pictures good at both win)` : ''}${choice.adjust ? ` ${signed(Math.round(choice.adjust * LANE_SCALE))} (scene, shown, ruled out, next)` : ''} = ${signed(Math.round(choice.total))} → #${index + 1}; the AI compares the first ${Math.min(seats, sorted.length)} (${quota.looks} seats for looks, ${quota.meaning} for meaning; pictures in both lanes take any)`);
+        } else {
+            choice.parts.notes.push(`2. ${choice.parts.meaningNote}`, `Not among the best by looks, and not close enough by meaning → #${index + 1}; the AI compares the first ${Math.min(seats, sorted.length)}`);
+        }
+    });
     return sorted;
 }
 
@@ -14317,6 +14577,9 @@ function scoreLine(choice) {
         return '';
     }
     const items = [];
+    if (parts.lane) {
+        items.push(`by ${{ both: 'looks + meaning', looks: 'looks', meaning: 'meaning' }[parts.lane]}`);
+    }
     if (parts.meaning) {
         items.push(`meaning #${parts.meaning} of ${parts.of}`);
     } else if (parts.of) {
@@ -14328,6 +14591,9 @@ function scoreLine(choice) {
         items.push('no filing card');
     }
     items.push(`keywords ${parts.keywords}`);
+    if (parts.scene) {
+        items.push(`scene ${signed(parts.scene)}`);
+    }
     return `Search: ${items.join(' · ')}`;
 }
 
@@ -14626,6 +14892,16 @@ function pictureCandidates(text) {
     return [...choices.filter(choice => choice.fresh), ...choices.filter(choice => !choice.fresh)];
 }
 
+const LANE_MARKS = { both: 'both', looks: 'looks', meaning: 'what happens' };
+
+function laneMarks() {
+    return settings().laneMarks !== false && String(settings().laneNote ?? DEFAULT_LANE_NOTE).trim() !== '';
+}
+
+function laneMark(choice) {
+    return laneMarks() && LANE_MARKS[choice.lane] ? `[${LANE_MARKS[choice.lane]}] ` : '';
+}
+
 function choiceLine(choice) {
     const { entry, variant } = choice;
     const view = choice.view || unitView(entry, variant);
@@ -14698,7 +14974,8 @@ function pickContext(message) {
     const left = everyone.filter(member => member !== plan.main && !plan.extras.includes(member) && member.key !== plan.main?.key && !plan.extras.some(extra => extra.key === member.key)).map(member => member.name);
     const focus = plan.main ? `\nThe picture must show ${plan.main.name}: judge looks against ${plan.main.name} first.${plan.extras.length ? ` ${plan.extras.map(member => member.name).join(', ')} may also be in it, but does not have to be.` : ''}` : '';
     const ignoreUser = focus + (left.length ? `\n${left.join(', ')} ${left.length > 1 ? 'are' : 'is'} not part of this check: never judge a picture by whether ${left.join(' or ')} ${left.length > 1 ? 'are' : 'is'} in it or how they look, and do not mention them in your reasons.` : '');
-    const rules = (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + (wish ? `\n${user} also says what the picture should be about (below): for the action, it counts as much as the newest message.` : '') + ignoreUser;
+    const laneNote = laneMarks() ? `\n${String(settings().laneNote ?? DEFAULT_LANE_NOTE).trim()}` : '';
+    const rules = laneNote + (banned.length ? `\nThe newest message rules out: ${banned.map(item => item.phrase).join('; ')}. Any picture showing that is wrong: rank it last.` : '') + (wish ? `\n${user} also says what the picture should be about (below): for the action, it counts as much as the newest message.` : '') + ignoreUser;
     return `A roleplay continues. ${user} just wrote the newest message below, and the reply to it will come with one saved picture. Choose that picture.\nJudge in this order:\n1. Looks: the people in the picture must look like the characters in the scene: gender, species, age, build, skin and hair colour. How the hair is styled or how long it is does not matter, and neither do clothes. A picture of someone who looks different is wrong, even if the action fits.\n2. Action: the picture must show what the newest message says happens, or its direct result (if someone gets pushed, a picture of them falling fits better than one of them standing). Read it carefully: if it says something does not happen, a picture showing it is wrong.\nWhere it happens (the place or the background) does not matter.${rules}\n\nHow the characters look:\n${looks.join('\n') || '(only what the story says)'}\n\nStory so far:\n${story}\n\nNewest message from ${user}:\n${message || '(no new message: the story simply continues)'}${wish ? `\n\nWhat ${user} wants the picture to be about:\n${wish}` : ''}`;
 }
 
@@ -14710,7 +14987,7 @@ async function askPicturePick(message, candidates) {
         return null;
     }
     const shortlist = candidates.slice(0, shortlistSize());
-    const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${choiceLine(choice)}`).join('\n')}\n\nRank all ${shortlist.length} pictures, best first, one per line, each with a short reason for its place (who it shows, what happens, what fits or does not), in at most 12 words, like this:\n#7 - Mira knocked down, right looks, follows the shove\n#12 - right looks, but she is standing calmly\nIf none of the pictures really fits, start with this line and still rank them all: #0 - why nothing fits`;
+    const prompt = `${pickContext(message)}\n\nPictures:\n${shortlist.map((choice, index) => `${index + 1}. ${laneMark(choice)}${choiceLine(choice)}`).join('\n')}\n\nRank all ${shortlist.length} pictures, best first, one per line, each with a short reason for its place (who it shows, what happens, what fits or does not), in at most 12 words, like this:\n#7 - Mira knocked down, right looks, follows the shove\n#12 - right looks, but she is standing calmly\nIf none of the pictures really fits, start with this line and still rank them all: #0 - why nothing fits`;
     const result = await modelRequest(service, s.tagProfile, service.constructPrompt([{ role: 'user', content: prompt }], s.tagProfile), 120 + 40 * shortlist.length, { stream: false, extractData: true, includePreset: false, includeInstruct: true }, samplers(0.2));
     const text = String(typeof result === 'string' ? result : result?.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const picks = [];
@@ -20110,7 +20387,33 @@ function buildSettings() {
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Pictures the AI compares</span><input type="number" min="5" max="60" id="st_imagesearch_pick_shortlist" class="text_pole"></div><small class="stis-help">Fewer is faster; a good picture ranked lower is not seen by the AI.</small></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Search by meaning</span><select id="st_imagesearch_meaning" class="text_pole"><option value="nanogpt">NanoGPT (uses your NanoGPT key)</option><option value="transformers">Local, on the SillyTavern server (free, slow on phones, downloads a model the first time)</option><option value="openai">OpenAI (needs an OpenAI key in SillyTavern)</option><option value="off">Off (keywords only)</option></select></div></div>
                         <div class="stis-set"><div class="st-imagesearch-row"><span>Embedding model</span><input type="text" id="st_imagesearch_meaning_model" class="text_pole" placeholder="text-embedding-3-small"></div><small class="stis-help">Empty = the default.</small></div>
-                        <div class="stis-set"><div class="st-imagesearch-row"><span>Kept before meaning ranking</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div><small class="stis-help">The best pictures by looks and keywords that go on to be ranked by meaning.</small></div>
+                        <div class="stis-set">
+                            <div class="st-imagesearch-row"><span>Meaning strictness (0 to 1)</span><input type="number" min="0" max="1" step="0.01" id="st_imagesearch_meaning_strict" class="text_pole"></div>
+                            <small class="stis-help">How close a picture's filing card must be to the scene to count as a match. Pictures below it get no meaning points. Higher = fewer, closer matches. Depends on the embedding model: tune it with Test.</small>
+                            <div class="st-imagesearch-row"><input type="text" id="st_imagesearch_meaning_test_text" class="text_pole" placeholder="A sentence to test (empty = the end of this chat)"><div id="st_imagesearch_meaning_test" class="menu_button">Test</div></div>
+                            <div id="st_imagesearch_meaning_test_out" class="stis-meaning-test"></div>
+                        </div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Best by looks and keywords that go on</span><input type="number" min="5" max="500" id="st_imagesearch_first_pass" class="text_pole"></div><small class="stis-help">The looks lane.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Best by meaning that go on</span><input type="number" min="5" max="500" id="st_imagesearch_meaning_lane" class="text_pole"></div><small class="stis-help">The meaning lane: only matches, and their looks do not matter for getting in.</small></div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Seats for looks, % (the rest for meaning)</span><input type="number" min="0" max="100" id="st_imagesearch_lane_split" class="text_pole"></div><small class="stis-help">Of the pictures the AI compares. Pictures that came in by both lanes take any seat and go first when they score best.</small></div>
+                        <details class="stis-set stis-prompt-parts">
+                            <summary class="stis-label">Lanes note (to the AI that compares)</summary>
+                            <textarea id="st_imagesearch_lane_note" class="text_pole" rows="4"></textarea>
+                            <small class="stis-help">Each picture on the list is marked [looks], [what happens] or [both]. Empty = no marks and no note.</small>
+                            <div id="st_imagesearch_lane_note_reset" class="menu_button">Reset this note</div>
+                        </details>
+                        <div class="stis-set">
+                            <label class="checkbox_label"><input type="checkbox" id="st_imagesearch_scene_read"> <span>Read the scene first</span></label>
+                            <small class="stis-help">A short request with the Tag model, at the same time as the meaning search: the rating, pose, mood and scene fields that fit the moment. Pictures filed the same way get points (same rating +16, one step off 0, two or more −16; pose +4; mood +4; scene fields with their own points).</small>
+                            <div class="st-imagesearch-row"><span>Scene read strength, % (100 = as above)</span><input type="number" min="0" max="300" id="st_imagesearch_scene_strength" class="text_pole"></div>
+                            <details class="stis-prompt-parts">
+                                <summary class="stis-label">Scene read prompt</summary>
+                                <textarea id="st_imagesearch_scene_prompt" class="text_pole" rows="10"></textarea>
+                                <small class="stis-help">Filled in: {{story}}, {{message}}, {{ratings}}, {{poses}}, {{moods}}, {{fields}} (one line per scene field with its choices). {{#fields}}…{{/fields}}: only when there are scene fields. The answer needs lines like "Rating: general", "Pose: …", "Mood: …", and "Field name: value".</small>
+                                <div id="st_imagesearch_scene_prompt_reset" class="menu_button">Reset this prompt</div>
+                            </details>
+                        </div>
+                        <div class="stis-set"><div class="st-imagesearch-row"><span>Left out of the story (block names)</span><input type="text" id="st_imagesearch_story_strip" class="text_pole" placeholder="internal_states, tracker"></div><small class="stis-help">Whole &lt;details&gt; blocks (the preset's internal states) are always left out of what the search and the AI read of the chat. Add other tag names here, separated by commas, for blocks wrapped another way.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_aishow"> <span>AI may show pictures</span></label><small class="stis-help">Saved pictures are offered through the lorebook "${LOREBOOK}": one entry per picture, triggered by its keywords, at most one per reply. Keep that lorebook on; your keyword edits are kept.</small></div>
                         <div class="stis-set"><label class="checkbox_label"><input type="checkbox" id="st_imagesearch_groups_lore"> <span>Also offer sets and sequences</span></label><small class="stis-help">Off: only single pictures are in the lorebook, and sets and sequences come only through the picture send. On: each set or sequence gets one entry with a line per item.</small></div>
                         <details class="stis-set stis-prompt-parts">
@@ -20704,6 +21007,25 @@ function buildSettings() {
     bind('st_imagesearch_meaning_model', 'meaningModel', 'value', meaningChanged);
     bind('st_imagesearch_pick_shortlist', 'pickShortlist', 'number');
     bind('st_imagesearch_first_pass', 'firstPass', 'number');
+    bind('st_imagesearch_meaning_strict', 'meaningStrict', 'number');
+    bind('st_imagesearch_meaning_lane', 'meaningLane', 'number');
+    bind('st_imagesearch_lane_split', 'laneSplit', 'number');
+    bind('st_imagesearch_lane_note', 'laneNote');
+    bind('st_imagesearch_scene_read', 'sceneRead', 'checked');
+    bind('st_imagesearch_scene_strength', 'sceneStrength', 'number');
+    bind('st_imagesearch_scene_prompt', 'sceneReadPrompt');
+    bind('st_imagesearch_story_strip', 'storyStrip');
+    document.getElementById('st_imagesearch_lane_note_reset').addEventListener('click', () => {
+        s.laneNote = DEFAULT_LANE_NOTE;
+        document.getElementById('st_imagesearch_lane_note').value = DEFAULT_LANE_NOTE;
+        save();
+    });
+    document.getElementById('st_imagesearch_scene_prompt_reset').addEventListener('click', () => {
+        s.sceneReadPrompt = DEFAULT_SCENE_READ_PROMPT;
+        document.getElementById('st_imagesearch_scene_prompt').value = DEFAULT_SCENE_READ_PROMPT;
+        save();
+    });
+    document.getElementById('st_imagesearch_meaning_test').addEventListener('click', () => testMeaning(document.getElementById('st_imagesearch_meaning_test_out')));
     bind('st_imagesearch_poses', 'poseList');
     bind('st_imagesearch_moods', 'moodList');
     document.getElementById('st_imagesearch_sheets_show').addEventListener('click', async () => {

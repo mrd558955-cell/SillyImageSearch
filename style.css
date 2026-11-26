@@ -2663,3 +2663,32 @@ textarea.stis-sent-prompt-text {
     opacity: 0.85;
     margin-top: 4px;
 }
+
+.stis-meaning-test .stis-meaning-query {
+    font-size: 0.85em;
+    opacity: 0.8;
+    max-height: 6em;
+    overflow: auto;
+    margin: 4px 0;
+    white-space: pre-wrap;
+}
+
+.stis-meaning-list {
+    margin: 4px 0 0;
+    padding-left: 1.6em;
+    font-size: 0.85em;
+    max-height: 22em;
+    overflow: auto;
+}
+
+.stis-meaning-list .stis-meaning-miss {
+    opacity: 0.55;
+}
+
+.stis-meaning-list .stis-meaning-cut {
+    list-style: none;
+    margin: 4px 0 4px -1.6em;
+    border-top: 2px dashed var(--SmartThemeQuoteColor, #e18a24);
+    color: var(--SmartThemeQuoteColor, #e18a24);
+    font-weight: bold;
+}
